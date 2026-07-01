@@ -21,6 +21,7 @@ dev = [
   "pytest-cov>=6.0",
   "ruff>=0.9",
   "mypy>=1.14",
+  "playwright>=1.61.0",
 ]
 
 [build-system]
@@ -55,9 +56,12 @@ max-args = 9
 "src/lbmd/application/**" = ["TID251"]
 "src/lbmd/adapters/**" = ["TID251"]
 "src/lbmd/infrastructure/**" = ["TID251"]
-"src/lbmd/composition/**" = ["TID251"]
+"src/lbmd/composition/**" = ["TID251", "PLC0415"]
 "src/lbmd/cli/**" = ["TID251"]
-"tests/**" = ["TID251", "PLR2004"]
+# browser layer embeds JS strings (E501), checks HTTP status codes (PLR2004),
+# and lazy-imports playwright (PLC0415) to keep it an optional dependency.
+"src/lbmd/infrastructure/browser/**" = ["E501", "PLR2004", "PLC0415"]
+"tests/**" = ["TID251", "PLR2004", "E501"]
 
 [tool.mypy]
 python_version = "3.11"

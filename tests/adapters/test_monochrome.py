@@ -20,6 +20,7 @@ from lbmd.adapters.sources.monochrome import (
     build_amz_params,
     monochrome_download,
     parse_amz_stream,
+    parse_kid,
     parse_search,
     pick_best,
 )
@@ -124,32 +125,49 @@ def test_parse_amz_raises_when_no_flac() -> None:
         parse_amz_stream(resp)
 
 
-def _get_json(url: str, params: dict[str, object], headers: dict[str, str] | None) -> object:
-    if "/search/" in url:
+KID_HEX = "ac460c37460d7e197f5c9a37dfa55cd2"
+# minimal fMP4 bytes carrying a tenc box: "tenc" + 8 bytes + 16-byte KID
+ENC_MP4 = (
+    b"\x00\x00\x00$ftypmp41\x00\x00\x00\x1ctenc" + bytes(8) + bytes.fromhex(KID_HEX) + b"\x00\x00"
+)
+
+
+def test_parse_kid_reads_default_kid_from_tenc() -> None:
+    assert parse_kid(ENC_MP4) == KID_HEX
+
+
+def test_parse_kid_raises_without_tenc() -> None:
+    with pytest.raises(ValueError, match="not CENC-encrypted"):
+        parse_kid(b"ftypmp41 no encryption here")
+
+
+def test_download_resolves_downloads_and_decrypts(tmp_path: Path) -> None:
+    amz_calls: list[dict[str, object]] = []
+    decrypt_calls: list[tuple[str, str, str]] = []
+
+    def search_json(query: str) -> object:
+        assert query == "Diljit Dealer"
         return SEARCH_RESPONSE
-    assert headers is not None and headers.get("X-Turnstile-JWT") == "jwt-123"
-    return AMZ_RESPONSE
 
-
-def test_download_produces_flac_via_injected_decrypt(tmp_path: Path) -> None:
-    downloaded_enc: dict[str, bytes] = {}
-    decrypt_calls: list[tuple[str, str]] = []
+    def amz_fetch(params: dict[str, object]) -> object:
+        amz_calls.append(params)
+        return AMZ_RESPONSE
 
     def get_bytes(url: str) -> bytes:
-        downloaded_enc["url"] = url.encode()
-        return b"ENCRYPTED-CENC-MP4-BYTES"
+        assert url.endswith("ql=UHD_48")  # highest FLAC selected
+        return ENC_MP4
 
-    def fake_decrypt(enc: Path, key: str, out: Path) -> None:
-        decrypt_calls.append((key, out.name))
+    def fake_decrypt(enc: Path, kid: str, key: str, out: Path) -> None:
+        decrypt_calls.append((kid, key, out.name))
         out.write_bytes(b"fLaC\x00decrypted-24bit-flac")
 
     outcome = monochrome_download(
         "Diljit Dealer",
         tmp_path,
-        get_json=_get_json,
+        search_json=search_json,
+        amz_fetch=amz_fetch,
         get_bytes=get_bytes,
         decrypt=fake_decrypt,
-        jwt="jwt-123",
         clock=iter([100.0, 106.0]).__next__,
     )
     assert outcome.tier == 1
@@ -157,19 +175,8 @@ def test_download_produces_flac_via_injected_decrypt(tmp_path: Path) -> None:
     assert outcome.elapsed_s == pytest.approx(6.0)
     assert outcome.path.suffix == ".flac"
     assert outcome.path.read_bytes().startswith(b"fLaC")
-    assert decrypt_calls and decrypt_calls[0][0] == "2748e836153cb6a42fc9c40a7e17ee36"
-    # encrypted temp cleaned up
-    assert not list(tmp_path.glob("*.mp4"))
-
-
-def test_download_requires_jwt(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="Turnstile JWT required"):
-        monochrome_download(
-            "Diljit Dealer",
-            tmp_path,
-            get_json=_get_json,
-            get_bytes=lambda u: b"",
-            decrypt=lambda e, k, o: None,
-            jwt="",
-            clock=lambda: 0.0,
-        )
+    assert amz_calls[0]["track"] == "Dealer"
+    # decrypt got the KID parsed from the file + the key from the amz response
+    assert decrypt_calls[0][0] == KID_HEX
+    assert decrypt_calls[0][1] == "2748e836153cb6a42fc9c40a7e17ee36"
+    assert not list(tmp_path.glob("*.mp4"))  # encrypted temp cleaned up

@@ -1,23 +1,19 @@
 """Tier-1 source adapter: Monochrome (Amazon Music path) -> 24-bit FLAC.
 
-Primary Tier-1 source (ADR-0015). Reverse-engineered from a real working
-capture of monochrome.tf. The pipeline is:
+Primary Tier-1 source (ADR-0015). Reverse-engineered + verified against a real
+monochrome.tf session. The working hybrid:
 
-  1. metadata  GET {tidal_base}/search/?s=<query>   (TIDAL search, no auth)
-  2. stream    GET {amz_base}/api/track/?track=&duration=&album=&artist=&quality=UHD
-               with header ``X-Turnstile-JWT`` -> stream_url + decryption_key +
-               available_qualities (24-bit/48k FLAC as ULTRA_HD).
-  3. download  GET <cloudfront stream_url>  -> CENC-encrypted fragmented MP4.
-  4. decrypt   injected step (ffmpeg / instance /api/decrypt-stream) -> native FLAC.
+  1. metadata   GET {tidal_base}/search/?s=<query>   (unauth, plain HTTP)
+  2. resolve    GET {amz_base}/api/track/?track=&duration=&album=&artist=&quality=UHD
+                with a Cloudflare Turnstile JWT. The JWT is *fingerprint-bound*,
+                so this call must be issued from the browser that minted it -> the
+                ``amz_fetch`` callable is browser-backed (see infrastructure/browser).
+  3. download   GET <signed CloudFront URL>  (no auth) -> CENC fMP4 (FLAC).
+  4. decrypt    mp4decrypt(KID:key) + ffmpeg remux -> clean native FLAC.
 
-Two real-world gates, both handled outside this pure module:
-  * The ``X-Turnstile-JWT`` is a single-use Cloudflare Turnstile token; it must be
-    minted in a browser (see composition / headless-browser acquirer) and passed in.
-  * The stream is Amazon CENC (AES-CTR, subsample) — decryption is injected, since
-    stock ffmpeg ``-decryption_key`` only partially decodes Amazon's scheme.
-
-HTTP, clock, and decrypt are injected so parsing/selection/orchestration are
-fully unit tested without network, tokens, or crypto.
+Every pure step here (parse/select/KID-extract/orchestrate) is unit tested with
+fakes; only the Turnstile mint + amz fetch (browser) and the decrypt (subprocess)
+are injected I/O.
 """
 
 from __future__ import annotations
@@ -34,13 +30,14 @@ from lbmd.domain.download import DownloadOutcome
 DEFAULT_TIDAL_BASE = "https://api.monochrome.tf"
 DEFAULT_AMZ_BASE = "https://amz.geeked.wtf"
 
-# get_json(url, params, headers) -> parsed JSON
-GetJson = Callable[[str, dict[str, Any], "dict[str, str] | None"], Any]
+SearchJson = Callable[[str], Any]  # query -> TIDAL search JSON (unauth)
+AmzFetch = Callable[[dict[str, Any]], Any]  # amz params -> track JSON (browser, auth)
 GetBytes = Callable[[str], bytes]
-Decrypt = Callable[[Path, str, Path], None]
+Decrypt = Callable[[Path, str, str, Path], None]  # (enc, kid_hex, key_hex, out)
 Clock = Callable[[], float]
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_KID_BYTES = 16  # CENC default_KID is a 16-byte UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,35 +122,43 @@ def parse_amz_stream(resp: dict[str, Any]) -> AmzStream:
     )
 
 
+def parse_kid(mp4: bytes) -> str:
+    """Read the default_KID (hex) from the CENC ``tenc`` box of a fragmented MP4.
+
+    tenc payload: version(1) flags(3) reserved(1) default_byte_blocks(1)
+    default_isProtected(1) default_Per_Sample_IV_Size(1) default_KID(16).
+    """
+    marker = mp4.find(b"tenc")
+    if marker < 0:
+        raise ValueError("no tenc box (file is not CENC-encrypted)")
+    kid = mp4[marker + 12 : marker + 12 + _KID_BYTES]
+    if len(kid) != _KID_BYTES:
+        raise ValueError("truncated tenc box")
+    return kid.hex()
+
+
 def monochrome_download(
     query: str,
     out_dir: Path,
     *,
-    get_json: GetJson,
+    search_json: SearchJson,
+    amz_fetch: AmzFetch,
     get_bytes: GetBytes,
     decrypt: Decrypt,
-    jwt: str,
-    tidal_base: str = DEFAULT_TIDAL_BASE,
-    amz_base: str = DEFAULT_AMZ_BASE,
     clock: Clock = time.monotonic,
 ) -> DownloadOutcome:
     """Resolve + download the best 24-bit FLAC for ``query`` via Monochrome."""
-    if not jwt:
-        raise RuntimeError("Turnstile JWT required (mint in a browser; see composition)")
     start = clock()
-    search = get_json(f"{tidal_base}/search/", {"s": query}, None)
-    track = pick_best(parse_search(search))
-
-    headers = {"X-Turnstile-JWT": jwt, "Origin": "https://monochrome.tf"}
-    amz = get_json(f"{amz_base}/api/track/", build_amz_params(track), headers)
-    stream = parse_amz_stream(amz)
+    track = pick_best(parse_search(search_json(query)))
+    stream = parse_amz_stream(amz_fetch(build_amz_params(track)))
 
     stem = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]")
     enc = out_dir / f"{stem}.enc.mp4"
     flac = out_dir / f"{stem}.flac"
     try:
         enc.write_bytes(get_bytes(stream.stream_url))
-        decrypt(enc, stream.decryption_key, flac)
+        kid = parse_kid(enc.read_bytes())
+        decrypt(enc, kid, stream.decryption_key, flac)
     finally:
         enc.unlink(missing_ok=True)
     return DownloadOutcome(
