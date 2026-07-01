@@ -38,6 +38,11 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "TID", "PL", "RUF"]
 
+[tool.ruff.lint.pylint]
+# Source adapters inject several collaborators (http, decrypt, clock, jwt) for
+# testability; allow the wider keyword-only signature.
+max-args = 9
+
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # Enforce hexagonal layering: domain/ports must not reach outward. The ban is
 # global; per-file-ignores below lift it for the layers allowed to wire concretes.

@@ -12,20 +12,14 @@ from __future__ import annotations
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
+
+from lbmd.domain.download import DownloadOutcome
+
+__all__ = ["DownloadOutcome", "build_command", "download", "extract_path"]
 
 Runner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
 Clock = Callable[[], float]
-
-
-@dataclass(frozen=True, slots=True)
-class DownloadOutcome:
-    path: Path
-    tier: int
-    source: str
-    elapsed_s: float
-    query: str
 
 
 def build_command(query: str, out_dir: Path) -> list[str]:

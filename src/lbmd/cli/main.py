@@ -13,7 +13,9 @@ from typing import Annotated
 import typer
 
 from lbmd import __version__
-from lbmd.application.download import DownloadReport, acquire_many
+from lbmd.application.cascade import CascadeResult, run_cascade
+from lbmd.composition.sources import build_default_sources
+from lbmd.infrastructure.audio.probe import probe
 
 app = typer.Typer(
     name="lbmd",
@@ -35,16 +37,23 @@ def version() -> None:
     typer.echo(__version__)
 
 
-def _fmt_report(idx: int, r: DownloadReport) -> str:
-    if not r.ok or r.outcome is None or r.info is None or r.verdict is None:
-        return f"{idx:>2}. FAIL  {r.query}\n      error: {r.error}"
-    mb = r.info.size_bytes / 1_048_576
-    lossless = "LOSSLESS" if r.verdict.lossless else "lossy"
+def _fmt_result(idx: int, res: CascadeResult) -> str:
+    trail = (
+        " -> ".join(f"T{a.tier}:{a.source}{'✓' if a.ok else '✗'}" for a in res.attempts)
+        or "no sources"
+    )
+    w = res.winner
+    if w is None or w.outcome is None or w.info is None or w.verdict is None:
+        detail = res.attempts[-1].detail if res.attempts else "no sources registered"
+        return f"{idx:>2}. FAIL  {res.query}\n      cascade: {trail}\n      last: {detail}"
+    mb = w.info.size_bytes / 1_048_576
+    tag = "LOSSLESS" if w.verdict.lossless else "lossy"
     return (
-        f"{idx:>2}. OK    {r.outcome.path.name}\n"
-        f"      tier {r.outcome.tier} ({r.outcome.source}) | "
-        f"{r.outcome.elapsed_s:.1f}s | {mb:.1f} MB | {r.info.duration_s:.0f}s | "
-        f"{lossless}: {r.verdict.label}"
+        f"{idx:>2}. OK    {w.outcome.path.name}\n"
+        f"      cascade: {trail}\n"
+        f"      won tier {w.outcome.tier} ({w.outcome.source}) | "
+        f"{w.outcome.elapsed_s:.1f}s | {mb:.1f} MB | {w.info.duration_s:.0f}s | "
+        f"{tag}: {w.verdict.label}"
     )
 
 
@@ -53,13 +62,16 @@ def download(
     queries: Annotated[list[str], typer.Argument(help="Track queries (free text or URL).")],
     out: Annotated[Path, typer.Option("--out", "-o", help="Output directory.")] = Path("downloads"),
 ) -> None:
-    """Download one or more tracks (Tier-3 yt-dlp today) and report quality."""
+    """Download tracks via the tier cascade (Tier 1 Monochrome -> Tier 3 yt-dlp;
+    Tier 2 skipped) and report which tier won plus the quality."""
     out.mkdir(parents=True, exist_ok=True)
-    reports = acquire_many(queries, out)
-    for i, r in enumerate(reports, 1):
-        typer.echo(_fmt_report(i, r))
-    ok = sum(1 for r in reports if r.ok)
-    typer.echo(f"\n{ok}/{len(reports)} downloaded into {out}/")
+    sources = build_default_sources()
+    ok = 0
+    for i, q in enumerate(queries, 1):
+        res = run_cascade(q, out, sources, prober=probe)
+        typer.echo(_fmt_result(i, res))
+        ok += 1 if res.winner is not None else 0
+    typer.echo(f"\n{ok}/{len(queries)} acquired into {out}/")
 
 
 if __name__ == "__main__":  # pragma: no cover
