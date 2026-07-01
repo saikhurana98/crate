@@ -173,6 +173,12 @@ Status values: `ready` (deps merged, awaiting pickup) · `in-progress` (worker s
 - **owner:** unassigned
 - **branch:** —  **pr:** —  **failure_count:** 0  **merged_at:** —
 
+### 3S-slskd-shim
+- **status:** pending-deps
+- **deps:** 2-contracts-fakes, 4H-tier-cascade
+- **owner:** unassigned
+- **branch:** —  **pr:** —  **failure_count:** 0  **merged_at:** —
+
 ---
 
 ## Phase 4 — Application use cases
@@ -219,6 +225,12 @@ Status values: `ready` (deps merged, awaiting pickup) · `in-progress` (worker s
 - **owner:** unassigned
 - **branch:** —  **pr:** —  **failure_count:** 0  **merged_at:** —
 
+### 4H-tier-cascade
+- **status:** pending-deps
+- **deps:** 4A-scheduler, 4B-resolver-chains, 4F-verification
+- **owner:** unassigned
+- **branch:** —  **pr:** —  **failure_count:** 0  **merged_at:** —
+
 ---
 
 ## Phase 5 — Composition + entry point
@@ -252,6 +264,16 @@ Status values: `ready` (deps merged, awaiting pickup) · `in-progress` (worker s
 ### 7-integration
 - **status:** pending-deps
 - **deps:** 5-composition, 6B-debug-ui-components
+- **owner:** unassigned
+- **branch:** —  **pr:** —  **failure_count:** 0  **merged_at:** —
+
+---
+
+## Phase 8 — Packaging (Docker)
+
+### 8-docker
+- **status:** pending-deps
+- **deps:** 5-composition, 3S-slskd-shim
 - **owner:** unassigned
 - **branch:** —  **pr:** —  **failure_count:** 0  **merged_at:** —
 

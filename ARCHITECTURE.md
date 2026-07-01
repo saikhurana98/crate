@@ -15,9 +15,10 @@ This document is the master architecture. Each significant decision has its own 
 - **Bulk acquisition**: playlists and albums fan out under bounded concurrency; albums prefer source-cohesion.
 - **Multiple metadata fetchers**: chained resolvers (MusicBrainz, Spotify, Apple, …) with first-success semantics; same model for cover art.
 - **Test-first contracts**: every port has a contract test suite that any adapter must satisfy.
+- **Explo compatibility (2026-07-02)**: act as a drop-in downloader for [Explo](https://github.com/LumePart/Explo) via an slskd-compatible REST shim, honouring an explicit Tier 1→2→3 quality cascade. See [ADR-0014](docs/adr/0014-slskd-compat-shim.md), [ADR-0015](docs/adr/0015-tier-cascade-scheduler.md), [ADR-0016](docs/adr/0016-docker-packaging.md).
 
 ### Non-goals (v1)
-- No UI in this app. A separate consumer connects over WebSocket.
+- No UI in this app. Clients connect over WebSocket; a second inbound transport (the slskd shim, [ADR-0014](docs/adr/0014-slskd-compat-shim.md)) exists solely for Explo — WebSocket is no longer the *only* inbound surface, but the shim adds no business logic.
 - No multi-instance / horizontal scaling. Single Node process per NAS.
 - No production-grade auth. Local network trusted.
 - No resume of cancelled / interrupted downloads (deferred — see [`docs/adr/future-work.md`](docs/adr/future-work.md)).
@@ -565,4 +566,7 @@ Captured in [`docs/adr/future-work.md`](docs/adr/future-work.md):
 | [0011](docs/adr/0011-monorepo-decoupled-debug-ui.md) | Monorepo with decoupled debug UI |
 | [0012](docs/adr/0012-playwright-browser-pool.md) | Playwright browser pool as a managed resource |
 | [0013](docs/adr/0013-multi-resolver-chain.md) | Multiple metadata resolvers chained, first-success |
+| [0014](docs/adr/0014-slskd-compat-shim.md) | slskd-compatible REST shim for Explo integration |
+| [0015](docs/adr/0015-tier-cascade-scheduler.md) | Tier-cascade scheduler (Explo / batch mode) |
+| [0016](docs/adr/0016-docker-packaging.md) | Single-container Docker packaging |
 | [future](docs/adr/future-work.md) | Deferred decisions / parking lot |
