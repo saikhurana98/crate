@@ -182,13 +182,14 @@ The conductor is the **only** writer of `WORK.md` status fields. Workers may app
 | 0. Bootstrap | 1 | sequential | merged before Phase 1 |
 | 1. Domain + ports + protocol | 3 (1A domain, 1B ports, 1C protocol) | parallel after 0; 1A merges first | all three merged before Phase 2 |
 | 2. Contract test suites + fakes | 1 | sequential | merged before Phase 3 |
-| 3. Adapters + infrastructure | 14 (3A–3R) | full parallel after 2; 3D waits for 3P | each merged independently |
-| 4. Application use cases | 7 (4A–4G) | parallel after Phase 1 + Phase 2 | each merged independently |
+| 3. Adapters + infrastructure | 15 (3A–3R, 3S) | full parallel after 2; 3D waits for 3P; 3S waits for 4H | each merged independently |
+| 4. Application use cases | 8 (4A–4G, 4H) | parallel after Phase 1 + Phase 2 | each merged independently |
 | 5. Composition + entry point | 1 | sequential after Phase 3 + Phase 4 | merged before Phase 7 |
 | 6. Debug UI | 2 (6A, 6B) | parallel from Phase 1C onward | merged before Phase 7 |
 | 7. Integration + smoke | 1 | sequential after Phase 5 + Phase 6 | merged → project ready |
+| 8. Packaging (Docker) | 1 (8-docker) | sequential after Phase 5 + 3S | merged → deployable |
 
-Critical path: 0 → 1A → 2 → (3 + 4 in parallel) → 5 → 7. With 5-way parallelism in Phase 3 + 4, wall-clock target ~25 hours.
+Critical path: 0 → 1A → 2 → (3 + 4 in parallel) → 5 → 7. With 5-way parallelism in Phase 3 + 4, wall-clock target ~25 hours. The Explo track (4H → 3S → 8-docker) runs alongside and gates on the same Phase 5 composition.
 
 ## 8. Unit catalogue (the work breakdown)
 
@@ -217,6 +218,7 @@ Critical path: 0 → 1A → 2 → (3 + 4 in parallel) → 5 → 7. With 5-way pa
 | **3P-browser-pool** | 3 | `infrastructure/browser/playwright-pool.ts` + tests | 2 |
 | **3Q-ws-server** | 3 | `infrastructure/ws/{server.ts, protocol-validator.ts, subscription-registry.ts}` + tests | 1C, 2 |
 | **3R-ops** | 3 | `infrastructure/ops/{metrics.ts, health.ts, logger-pino.ts}` + tests | 2 |
+| **3S-slskd-shim** | 3 | `infrastructure/slskd-shim/{server.ts, dto.ts, search-map.ts, transfer-map.ts}` + tests (contract seeded from captured Explo→slskd traces) | 2, 4H |
 | **4A-scheduler** | 4 | `application/scheduler/{race.ts, eligibility.ts, health.ts}` + tests | 1A, 1B, 2 |
 | **4B-resolver-chains** | 4 | `application/{resolver-chain,cover-art-chain}.ts` + tests | 1A, 1B, 2 |
 | **4C-download-live-set** | 4 | `application/download-for-live-set.ts` + tests | 4A, 4B |
@@ -224,10 +226,12 @@ Critical path: 0 → 1A → 2 → (3 + 4 in parallel) → 5 → 7. With 5-way pa
 | **4E-upgrade** | 4 | `application/upgrade-quality.ts`, `application/upgrade-daemon.ts` + tests | 4A |
 | **4F-verification** | 4 | `application/verify-track.ts`, `application/verification/decide.ts` + tests | 1A, 1B, 2 |
 | **4G-purge-daemon** | 4 | `application/purge-daemon.ts` + tests | 1A, 1B, 2 |
+| **4H-tier-cascade** | 4 | `application/download-cascade.ts`, tier eligibility (adds `tier` predicate; `SourceAdapter.capabilities.tier` flag owned by 1B) + tests | 4A, 4B, 4F |
 | **5-composition** | 5 | `composition/{container.ts, config.ts}`, `index.ts`, `config/lbmd.config.example.json` + container tests | all of 3, all of 4 |
 | **6A-debug-ui-shell** | 6 | `apps/debug-ui/src/{main.ts, ws-client.ts, app.tsx}` + tests | 1C |
 | **6B-debug-ui-components** | 6 | `apps/debug-ui/src/components/**`, styles + tests | 6A |
-| **7-integration** | 7 | `tests/integration/**`, `apps/debug-ui/tests/e2e.spec.ts` | 5, 6B |
+| **7-integration** | 7 | `tests/integration/**`, `apps/debug-ui/tests/e2e.spec.ts` (adds `explo-slskd-shim.e2e.ts`, `tier-cascade.e2e.ts`) | 5, 6B |
+| **8-docker** | 8 | `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `docker-compose.explo.yml` | 5, 3S |
 
 ## 9. Repo-wide ground rules for every agent
 

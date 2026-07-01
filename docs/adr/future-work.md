@@ -61,3 +61,15 @@ This file tracks decisions and features that were considered during the v1 archi
 - **Today**: first-success only. ADR-0013 documents the alternate `merge-all` strategy as a port capability but ships no use of it.
 - **Why deferred**: first-success covers initial use cases; merge-all introduces conflict-resolution complexity without a clear win.
 - **What's needed**: per-field priority order, conflict logging, opt-in flag on `MetadataResolver` chain config.
+
+## 11. Native Explo `lbmd` download backend (Strategy B escape hatch)
+
+- **Today**: [ADR-0014](0014-slskd-compat-shim.md) integrates with Explo by emulating the slskd REST API (Strategy A). Explo sees a synthetic single-result "user" and never learns lbmd's richer job state.
+- **Why deferred**: the shim needs zero Explo fork and survives upstream updates. A native backend is only worth it if the shim proves too lossy (e.g. Explo drives slskd endpoints/fields the shim can't fake, or lbmd state that can't round-trip through the slskd DTO shape).
+- **What's needed**: fork Explo, add an `lbmd` entry to its Go `DOWNLOAD_SERVICES` set calling lbmd's WebSocket/HTTP API directly; a rebase strategy against upstream Explo; contract parity tests. Track shim/slskd version drift (`WORK.md`) to know when this trips.
+
+## 12. slskd-shim fidelity gaps
+
+- **Today**: shim maps the subset of slskd endpoints Explo drives; `MIGRATE_DOWNLOADS` / `USE_SUBDIRECTORY` layout parity and Explo's exact per-version call set are approximated from the published slskd API + captured traces.
+- **Why deferred**: v1 targets the common Explo path; edge behaviours (partial-directory transfers, per-peer queue semantics) aren't exercised by Explo's slskd client.
+- **What's needed**: a captured-trace corpus from a live Explo run pinned as the shim contract fixture; periodic re-capture when Explo or slskd releases bump the API.
