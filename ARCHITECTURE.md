@@ -4,6 +4,8 @@
 
 This document is the master architecture. Each significant decision has its own ADR under [`docs/adr/`](docs/adr/). Read this for the bird's-eye view; read the ADRs for context and alternatives considered.
 
+> **⚠️ Pivot (2026-07-02):** the project pivoted to a **Python CLI, test-first** — see [ADR-0017](docs/adr/0017-pivot-python-cli-tdd.md). It supersedes the TypeScript/Node/pnpm, WebSocket-protocol, and debug-UI decisions. The tiered-cascade, verification, hexagonal, SQLite, NAS, and Explo-shim design below still holds; the language/transport/build-process details in this doc trail ADR-0017 until reworked. **ADR-0017 is authoritative on any conflict.**
+
 ---
 
 ## 1. Goals & non-goals
