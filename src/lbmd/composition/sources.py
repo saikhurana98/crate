@@ -20,6 +20,7 @@ from lbmd.adapters.sources import ytdlp
 from lbmd.adapters.sources.monochrome import DEFAULT_TIDAL_BASE, monochrome_download
 from lbmd.application.cascade import SourceEntry
 from lbmd.domain.download import DownloadOutcome
+from lbmd.domain.meta import TrackMeta
 from lbmd.domain.tiers import SourceRef, Tier
 from lbmd.infrastructure import http
 from lbmd.infrastructure.audio.decrypt import mp4decrypt_cenc
@@ -30,6 +31,7 @@ def build_default_sources() -> list[SourceEntry]:  # pragma: no cover - env + IO
     entries: list[SourceEntry] = []
 
     if os.environ.get("LBMD_MONOCHROME", "").lower() in ("1", "true", "yes"):
+        from lbmd.adapters.metadata import musicbrainz, spotify
         from lbmd.infrastructure.browser.amz_session import AmzSession
 
         session = AmzSession()
@@ -37,14 +39,30 @@ def build_default_sources() -> list[SourceEntry]:  # pragma: no cover - env + IO
         def search_json(query: str) -> Any:
             return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
 
+        def resolve_meta(query: str) -> TrackMeta | None:
+            # Spotify link -> exact ISRC + clean metadata; else MusicBrainz. Best-effort.
+            try:
+                return spotify.resolve(query, get_json=http.get_json) or musicbrainz.resolve(
+                    query, get_json=http.get_json
+                )
+            except Exception:
+                return None
+
         def monochrome(query: str, out_dir: Path) -> DownloadOutcome:
+            meta = resolve_meta(query)
+            # Use the authority's clean title/artist for TIDAL search (esp. for a
+            # Spotify URL, where the raw query is a link), and its ISRC to pick the
+            # exact master.
+            search_text = f"{meta.artist} {meta.title}" if meta else query
+            isrc = meta.isrc if meta else None
             return monochrome_download(
-                query,
+                search_text,
                 out_dir,
                 search_json=search_json,
                 amz_fetch=session.fetch_amz,
                 get_bytes=http.get_bytes,
                 decrypt=mp4decrypt_cenc,
+                isrc=isrc,
             )
 
         entries.append(

@@ -48,6 +48,7 @@ class MonoTrack:
     album: str
     duration_s: int | None
     hires: bool
+    isrc: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,7 @@ def parse_search(data: dict[str, Any]) -> list[MonoTrack]:
                 album=str(item.get("album", {}).get("title", "")),
                 duration_s=item.get("duration"),
                 hires=_is_hires(item),
+                isrc=item.get("isrc"),
             )
         )
     return tracks
@@ -94,6 +96,20 @@ def pick_best(tracks: list[MonoTrack]) -> MonoTrack:
         if track.hires:
             return track
     return tracks[0]
+
+
+def select(tracks: list[MonoTrack], isrc: str | None) -> MonoTrack:
+    """Prefer the exact ISRC match (the right master); else fall back to hi-res.
+
+    ISRC matching is non-regressive: when no result matches (or no ISRC is
+    known) this behaves exactly like :func:`pick_best`.
+    """
+    if isrc:
+        wanted = isrc.upper()
+        for track in tracks:
+            if track.isrc and track.isrc.upper() == wanted:
+                return track
+    return pick_best(tracks)
 
 
 def build_amz_params(track: MonoTrack) -> dict[str, Any]:
@@ -145,11 +161,16 @@ def monochrome_download(
     amz_fetch: AmzFetch,
     get_bytes: GetBytes,
     decrypt: Decrypt,
+    isrc: str | None = None,
     clock: Clock = time.monotonic,
 ) -> DownloadOutcome:
-    """Resolve + download the best 24-bit FLAC for ``query`` via Monochrome."""
+    """Resolve + download the best 24-bit FLAC for ``query`` via Monochrome.
+
+    When ``isrc`` is given, the exact-matching master is chosen (ADR-0013 /
+    SpotiFLAC-style); otherwise the hi-res heuristic applies.
+    """
     start = clock()
-    track = pick_best(parse_search(search_json(query)))
+    track = select(parse_search(search_json(query)), isrc)
     stream = parse_amz_stream(amz_fetch(build_amz_params(track)))
 
     stem = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]")

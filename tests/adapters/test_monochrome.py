@@ -17,12 +17,14 @@ from pathlib import Path
 import pytest
 
 from lbmd.adapters.sources.monochrome import (
+    MonoTrack,
     build_amz_params,
     monochrome_download,
     parse_amz_stream,
     parse_kid,
     parse_search,
     pick_best,
+    select,
 )
 
 SEARCH_RESPONSE = {
@@ -36,6 +38,7 @@ SEARCH_RESPONSE = {
                 "mediaMetadata": {"tags": ["HIRES_LOSSLESS"]},
                 "artist": {"name": "Diljit Dosanjh"},
                 "album": {"title": "Dealer"},
+                "isrc": "QT65Z2673203",
             }
         ]
     }
@@ -82,11 +85,32 @@ def test_parse_search_maps_metadata() -> None:
     assert t.album == "Dealer"
     assert t.duration_s == 110
     assert t.hires is True
+    assert t.isrc == "QT65Z2673203"
 
 
 def test_pick_best_raises_on_empty() -> None:
     with pytest.raises(LookupError, match="no Monochrome match"):
         pick_best([])
+
+
+def _t(id: int, hires: bool, isrc: str | None) -> MonoTrack:
+    return MonoTrack(id, "T", "A", "Al", 100, hires, isrc)
+
+
+def test_select_prefers_exact_isrc_match_over_hires() -> None:
+    tracks = [_t(1, True, "AAA111111111"), _t(2, False, "BBB222222222")]
+    # ISRC points at the non-hi-res track #2 -> exact master wins over hi-res heuristic
+    assert select(tracks, "bbb222222222").id == 2  # case-insensitive
+
+
+def test_select_falls_back_to_hires_when_no_isrc_match() -> None:
+    tracks = [_t(1, False, "AAA111111111"), _t(2, True, "BBB222222222")]
+    assert select(tracks, "ZZZ999999999").id == 2  # no match -> hi-res pick_best
+
+
+def test_select_without_isrc_is_pick_best() -> None:
+    tracks = [_t(1, False, None), _t(2, True, None)]
+    assert select(tracks, None).id == 2
 
 
 def test_build_amz_params_from_track() -> None:
