@@ -39,9 +39,20 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "SIM", "TID", "PL", "RUF"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-# Enforce hexagonal layering: domain must not reach outward.
+# Enforce hexagonal layering: domain/ports must not reach outward. The ban is
+# global; per-file-ignores below lift it for the layers allowed to wire concretes.
 "lbmd.adapters".msg = "domain/ports must not import adapters (hexagonal layering)"
 "lbmd.infrastructure".msg = "domain/ports must not import infrastructure (hexagonal layering)"
+
+[tool.ruff.lint.per-file-ignores]
+# Only domain/ + ports/ are forbidden from importing outward. Application wires
+# concretes today (ports/composition refactor is deferred, ADR-0017).
+"src/lbmd/application/**" = ["TID251"]
+"src/lbmd/adapters/**" = ["TID251"]
+"src/lbmd/infrastructure/**" = ["TID251"]
+"src/lbmd/composition/**" = ["TID251"]
+"src/lbmd/cli/**" = ["TID251"]
+"tests/**" = ["TID251", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.11"
