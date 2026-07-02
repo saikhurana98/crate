@@ -13,6 +13,8 @@ from lbmd.adapters.sources.soulseek import (
     SlskFile,
     is_lossless,
     parse_responses,
+    rank_files,
+    search_variants,
     select_file,
     soulseek_download,
 )
@@ -106,7 +108,6 @@ def test_download_selects_and_returns_local_path(tmp_path: Path) -> None:
     enqueued: list[tuple[str, str]] = []
 
     def search(query: str) -> list:  # type: ignore[type-arg]
-        assert query == "Marjaani Pritam"
         return RESPONSES
 
     def download(file: SlskFile, out_dir: Path) -> Path:
@@ -138,3 +139,62 @@ def test_download_raises_when_no_match(tmp_path: Path) -> None:
             download=lambda f, d: Path("x"),
             clock=lambda: 0.0,
         )
+
+
+def test_rank_files_orders_lossless_and_free_slot_first() -> None:
+    ranked = rank_files(parse_responses(RESPONSES), "Marjaani Pritam")
+    assert ranked[0].filename.endswith("Marjaani - Pritam.flac")  # flac + free slot on top
+    assert len(ranked) == 2  # the wrong-song flac is filtered out by the title guard
+
+
+def test_download_falls_to_next_peer_when_first_fails(tmp_path: Path) -> None:
+    tried: list[str] = []
+
+    def download(file: SlskFile, out_dir: Path) -> Path:
+        tried.append(file.username)
+        if file.username == "peerB":  # best peer stalls
+            raise RuntimeError("peer stalled")
+        dest = out_dir / "Marjaani - Pritam.mp3"
+        dest.write_bytes(b"ok")
+        return dest
+
+    outcome = soulseek_download(
+        "Marjaani Pritam",
+        tmp_path,
+        search=lambda q: RESPONSES,
+        download=download,
+        clock=iter([1.0, 4.0]).__next__,
+    )
+    assert outcome.source == "soulseek"
+    assert tried == ["peerB", "peerA"]  # best peer failed -> fell to next
+
+
+def test_search_variants_drops_stopwords_and_edge_tokens() -> None:
+    # 'the'/'weeknd' block Soulseek's filename match; a title-only variant is tried
+    variants = search_variants("The Weeknd Blinding Lights")
+    assert variants[0] == "weeknd blinding lights"  # cleaned full (stopword dropped)
+    assert "blinding lights" in variants  # drop leading token -> title only
+
+
+def test_download_retries_reduced_query_when_full_query_empty(tmp_path: Path) -> None:
+    seen: list[str] = []
+    flac = {
+        "username": "p",
+        "hasFreeUploadSlot": True,
+        "uploadSpeed": 1,
+        "files": [{"filename": "x\\Blinding Lights.flac", "size": 1, "bitRate": 1411}],
+    }
+
+    def search(q: str) -> list:  # type: ignore[type-arg]
+        seen.append(q)
+        return [flac] if q == "blinding lights" else []  # only the reduced query hits
+
+    outcome = soulseek_download(
+        "The Weeknd Blinding Lights",
+        tmp_path,
+        search=search,
+        download=lambda f, d: (d / "Blinding Lights.flac"),
+        clock=iter([0.0, 1.0]).__next__,
+    )
+    assert outcome.source == "soulseek"
+    assert "weeknd blinding lights" in seen and "blinding lights" in seen  # retried

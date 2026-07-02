@@ -87,8 +87,10 @@ def _iter_files(transfers: Any) -> Any:
 
 
 def _is_completed(transfers: Any, base: str) -> bool:
+    # slskd terminal states are "Completed, <Succeeded|Errored|Cancelled|TimedOut|Rejected>".
+    # Only Succeeded means the file is on disk.
     return any(
-        f.get("filename", "").endswith(base) and f.get("state", "").startswith("Completed")
+        f.get("filename", "").endswith(base) and "Succeeded" in f.get("state", "")
         for f in _iter_files(transfers)
     )
 
@@ -96,7 +98,7 @@ def _is_completed(transfers: Any, base: str) -> bool:
 def _is_failed(transfers: Any, base: str) -> bool:
     return any(
         f.get("filename", "").endswith(base)
-        and any(s in f.get("state", "") for s in ("Failed", "Errored", "Cancelled", "Rejected"))
+        and any(s in f.get("state", "") for s in ("Errored", "Cancelled", "Rejected", "TimedOut"))
         for f in _iter_files(transfers)
     )
 

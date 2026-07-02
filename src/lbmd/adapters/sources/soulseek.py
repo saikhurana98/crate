@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from lbmd.domain.download import DownloadOutcome
-from lbmd.domain.matching import title_matches
+from lbmd.domain.matching import norm_tokens, title_matches
 
 Search = Callable[[str], list[dict[str, Any]]]  # query -> slskd response items
 Download = Callable[["SlskFile", Path], Path]  # chosen file + out dir -> local path
@@ -69,24 +69,48 @@ def is_lossless(file: SlskFile) -> bool:
     return Path(_basename(file.filename)).suffix.lower() in _LOSSLESS_EXT
 
 
-def select_file(candidates: list[SlskFile], query: str, min_bitrate_kbps: int = 0) -> SlskFile:
-    """Keep title-matching candidates above the bitrate floor, then prefer
-    lossless, a free upload slot, higher bitrate, faster peer.
-
-    Raises LookupError when nothing matches (cascade advances a tier).
-    """
+def rank_files(candidates: list[SlskFile], query: str, min_bitrate_kbps: int = 0) -> list[SlskFile]:
+    """Title-matching candidates above the bitrate floor, best first: prefer
+    lossless, a free upload slot, higher bitrate, faster peer."""
     floor = min_bitrate_kbps * 1000
     matching = [
         c
         for c in candidates
         if c.bitrate_bps >= floor and title_matches(Path(_basename(c.filename)).stem, query)
     ]
-    if not matching:
-        raise LookupError("no title-matching Soulseek file")
-    return max(
+    return sorted(
         matching,
         key=lambda c: (is_lossless(c), c.free_slot, c.bitrate_bps, c.upload_speed),
+        reverse=True,
     )
+
+
+def select_file(candidates: list[SlskFile], query: str, min_bitrate_kbps: int = 0) -> SlskFile:
+    """Best single title-matching file. Raises LookupError when none match."""
+    ranked = rank_files(candidates, query, min_bitrate_kbps)
+    if not ranked:
+        raise LookupError("no title-matching Soulseek file")
+    return ranked[0]
+
+
+def search_variants(query: str) -> list[str]:
+    """Soulseek matches ALL query terms against filenames, so artist/stopword
+    tokens (e.g. 'the', 'weeknd') often yield zero hits while the title alone
+    matches hundreds. Try the cleaned full query, then drop the leading and the
+    trailing token (covers both 'Artist Title' and 'Title Artist' orderings).
+    Selection still guards with the ORIGINAL query, so reducing search terms
+    can't let a wrong song through.
+    """
+    tokens = norm_tokens(query)
+    if not tokens:
+        return [query]
+    candidates = [tokens, tokens[1:], tokens[:-1]]
+    variants: list[str] = []
+    for toks in candidates:
+        text = " ".join(toks)
+        if text and text not in variants:
+            variants.append(text)
+    return variants
 
 
 def soulseek_download(
@@ -96,12 +120,29 @@ def soulseek_download(
     search: Search,
     download: Download,
     min_bitrate_kbps: int = 0,
+    max_peers: int = 4,
     clock: Clock = time.monotonic,
 ) -> DownloadOutcome:
-    """Search Soulseek, pick the best file, download it via slskd."""
+    """Search Soulseek (retrying reduced queries), then try downloading from the
+    best-ranked peers in turn — P2P transfers stall or get refused, so fall to
+    the next peer rather than failing the whole source."""
     start = clock()
-    chosen = select_file(parse_responses(search(query)), query, min_bitrate_kbps)
-    path = download(chosen, out_dir)
-    return DownloadOutcome(
-        path=path, tier=2, source="soulseek", elapsed_s=clock() - start, query=query
-    )
+    ranked: list[SlskFile] = []
+    for variant in search_variants(query):
+        ranked = rank_files(parse_responses(search(variant)), query, min_bitrate_kbps)
+        if ranked:
+            break
+    if not ranked:
+        raise LookupError("no title-matching Soulseek file")
+
+    last_error: Exception | None = None
+    for candidate in ranked[:max_peers]:
+        try:
+            path = download(candidate, out_dir)
+        except Exception as exc:  # peer stalled/refused — try the next best
+            last_error = exc
+            continue
+        return DownloadOutcome(
+            path=path, tier=2, source="soulseek", elapsed_s=clock() - start, query=query
+        )
+    raise RuntimeError(f"all Soulseek peers failed: {last_error}")
