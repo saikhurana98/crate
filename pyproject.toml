@@ -1,6 +1,6 @@
 [project]
 name = "lbmd"
-version = "0.0.0"
+version = "0.1.0"
 description = "Load-balanced music downloader — tiered FLAC acquisition CLI, Explo-compatible"
 readme = "README.md"
 requires-python = ">=3.11"
