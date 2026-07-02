@@ -5,7 +5,8 @@ tier can load-balance across several sources. Strategy is configurable per tier
 via ``LBMD_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
 ``uniform``/``distribute`` (round-robin one source per request).
 
-  Tier 1  Monochrome (Amazon 24-bit FLAC)   opt-in LBMD_MONOCHROME=1
+  Tier 1  Qobuz (hi-res FLAC, direct)        opt-in LBMD_QOBUZ=1
+          Monochrome (Amazon 24-bit FLAC)   opt-in LBMD_MONOCHROME=1
   Tier 2  Deezer (16-bit FLAC via ARL)       opt-in LBMD_DEEZER=1
           Soulseek (via slskd)               opt-in LBMD_SOULSEEK=1
           Telegram music bot                 opt-in LBMD_TELEGRAM=1
@@ -36,6 +37,28 @@ def _enabled(name: str) -> bool:
 def _strategy(tier_num: int) -> MuxStrategy:
     value = os.environ.get(f"LBMD_MUX_TIER{tier_num}", "all").lower()
     return MuxStrategy.UNIFORM if value in ("uniform", "distribute") else MuxStrategy.ALL
+
+
+def _qobuz_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from lbmd.adapters.sources.qobuz import qobuz_download
+    from lbmd.infrastructure.qobuz.client import QobuzClient
+
+    client = QobuzClient(
+        os.environ["LBMD_QOBUZ_APP_ID"],
+        os.environ["LBMD_QOBUZ_APP_SECRET"],
+        os.environ["LBMD_QOBUZ_TOKEN"],
+    )
+
+    def qobuz(query: str, out_dir: Path) -> DownloadOutcome:
+        return qobuz_download(
+            query,
+            out_dir,
+            search=client.search,
+            get_file_url=client.get_file_url,
+            get_bytes=client.get_bytes,
+        )
+
+    return SourceEntry(SourceRef("qobuz", Tier.ONE), qobuz, expected_lossless=True)
 
 
 def _monochrome_source() -> SourceEntry:  # pragma: no cover - IO wiring
@@ -123,7 +146,11 @@ def _soulseek_source() -> SourceEntry:  # pragma: no cover - IO wiring
 
 def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     """Build the per-tier source pools from configuration."""
-    tier1 = [_monochrome_source()] if _enabled("LBMD_MONOCHROME") else []
+    tier1: list[SourceEntry] = []
+    if _enabled("LBMD_QOBUZ"):
+        tier1.append(_qobuz_source())
+    if _enabled("LBMD_MONOCHROME"):
+        tier1.append(_monochrome_source())
     tier2: list[SourceEntry] = []
     if _enabled("LBMD_DEEZER"):
         tier2.append(_deezer_source())
