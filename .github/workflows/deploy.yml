@@ -1,0 +1,36 @@
+name: deploy
+
+# Deploys to the self-hosted runner on music-stack: pulls the published image
+# and smoke-tests it. Runs after a successful release build, or on demand.
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["release"]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # only after a green release (or manual dispatch)
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, music-stack]
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Pull image
+        run: docker compose -f /opt/lbmd/docker-compose.yml pull
+
+      - name: Smoke test
+        run: docker compose -f /opt/lbmd/docker-compose.yml run --rm lbmd version
+
+      - name: Logout
+        if: always()
+        run: docker logout ghcr.io
