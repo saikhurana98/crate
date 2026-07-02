@@ -1,13 +1,15 @@
-"""Composition root for source wiring.
+"""Composition root — wires swappable source modules into per-tier pools.
 
-Tier 1 = Monochrome (Amazon FLAC): a browser session (AmzSession) resolves the
-fingerprint-bound stream, then httpx downloads the signed CloudFront URL and
-mp4decrypt+ffmpeg produce the FLAC. Tier 3 = yt-dlp. Tier 2 is not registered
-("skip Tier 2"), so the cascade goes Tier 1 -> Tier 3.
+Each tier is a :class:`TierMux` (a pool of sources + a fan-out strategy), so a
+tier can load-balance across several sources. Strategy is configurable per tier
+via ``LBMD_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
+``uniform``/``distribute`` (round-robin one source per request).
 
-The Tier-1 browser is opt-in via ``LBMD_MONOCHROME=1`` (it launches a real
-headed Chromium to pass Cloudflare Turnstile). When off, only Tier 3 runs.
-This is the only layer allowed to bind concrete adapters + infrastructure.
+  Tier 1  Monochrome (Amazon 24-bit FLAC)   opt-in LBMD_MONOCHROME=1
+  Tier 2  Telegram music bot                 opt-in LBMD_TELEGRAM=1
+  Tier 3  yt-dlp (lossy fallback)            always on
+
+Only this layer binds concrete adapters + infrastructure.
 """
 
 from __future__ import annotations
@@ -18,62 +20,71 @@ from typing import Any
 
 from lbmd.adapters.sources import ytdlp
 from lbmd.adapters.sources.monochrome import DEFAULT_TIDAL_BASE, monochrome_download
-from lbmd.application.cascade import SourceEntry
+from lbmd.application.cascade import MuxStrategy, SourceEntry, TierMux
 from lbmd.domain.download import DownloadOutcome
 from lbmd.domain.tiers import SourceRef, Tier
 from lbmd.infrastructure import http
 from lbmd.infrastructure.audio.decrypt import mp4decrypt_cenc
 
 
-def build_default_sources() -> list[SourceEntry]:  # pragma: no cover - env + IO wiring
-    """Tier 1 = Monochrome (opt-in), Tier 3 = yt-dlp. Tier 2 skipped."""
-    entries: list[SourceEntry] = []
+def _enabled(name: str) -> bool:
+    return os.environ.get(name, "").lower() in ("1", "true", "yes")
 
-    if os.environ.get("LBMD_MONOCHROME", "").lower() in ("1", "true", "yes"):
-        from lbmd.infrastructure.browser.amz_session import AmzSession
 
-        session = AmzSession()
+def _strategy(tier_num: int) -> MuxStrategy:
+    value = os.environ.get(f"LBMD_MUX_TIER{tier_num}", "all").lower()
+    return MuxStrategy.UNIFORM if value in ("uniform", "distribute") else MuxStrategy.ALL
 
-        def search_json(query: str) -> Any:
-            return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
 
-        def monochrome(query: str, out_dir: Path) -> DownloadOutcome:
-            return monochrome_download(
-                query,
-                out_dir,
-                search_json=search_json,
-                amz_fetch=session.fetch_amz,
-                get_bytes=http.get_bytes,
-                decrypt=mp4decrypt_cenc,
-            )
+def _monochrome_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from lbmd.infrastructure.browser.amz_session import AmzSession
 
-        entries.append(
-            SourceEntry(SourceRef("monochrome", Tier.ONE), monochrome, expected_lossless=True)
+    session = AmzSession()
+
+    def search_json(query: str) -> Any:
+        return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
+
+    def monochrome(query: str, out_dir: Path) -> DownloadOutcome:
+        return monochrome_download(
+            query,
+            out_dir,
+            search_json=search_json,
+            amz_fetch=session.fetch_amz,
+            get_bytes=http.get_bytes,
+            decrypt=mp4decrypt_cenc,
         )
 
-    if os.environ.get("LBMD_TELEGRAM", "").lower() in ("1", "true", "yes"):
-        from lbmd.adapters.sources.telegram_bot import telegram_download
-        from lbmd.infrastructure.telegram.telethon_client import TelegramBotClient
+    return SourceEntry(SourceRef("monochrome", Tier.ONE), monochrome, expected_lossless=True)
 
-        client = TelegramBotClient(
-            api_id=int(os.environ["LBMD_TG_API_ID"]),
-            api_hash=os.environ["LBMD_TG_API_HASH"],
-            session=os.environ["LBMD_TG_SESSION"],
-            bot=os.environ["LBMD_TG_BOT"],
-        )
 
-        def telegram(query: str, out_dir: Path) -> DownloadOutcome:
-            return telegram_download(
-                query, out_dir, request=client.request, download=client.download
-            )
+def _telegram_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from lbmd.adapters.sources.telegram_bot import telegram_download
+    from lbmd.infrastructure.telegram.telethon_client import TelegramBotClient
 
-        # Tier 2 accepts whatever the bot serves (prefers lossless in selection);
-        # a 320 bot MP3 still beats the Tier-3 YouTube fallback.
-        entries.append(
-            SourceEntry(SourceRef("telegram", Tier.TWO), telegram, expected_lossless=False)
-        )
-
-    entries.append(
-        SourceEntry(SourceRef("ytdlp", Tier.THREE), ytdlp.download, expected_lossless=False)
+    client = TelegramBotClient(
+        api_id=int(os.environ["LBMD_TG_API_ID"]),
+        api_hash=os.environ["LBMD_TG_API_HASH"],
+        session=os.environ["LBMD_TG_SESSION"],
+        bot=os.environ["LBMD_TG_BOT"],
     )
-    return entries
+
+    def telegram(query: str, out_dir: Path) -> DownloadOutcome:
+        return telegram_download(query, out_dir, request=client.request, download=client.download)
+
+    # accepts whatever the bot serves (prefers lossless in selection)
+    return SourceEntry(SourceRef("telegram", Tier.TWO), telegram, expected_lossless=False)
+
+
+def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
+    """Build the per-tier source pools from configuration."""
+    tier1 = [_monochrome_source()] if _enabled("LBMD_MONOCHROME") else []
+    tier2 = [_telegram_source()] if _enabled("LBMD_TELEGRAM") else []
+    tier3 = [SourceEntry(SourceRef("ytdlp", Tier.THREE), ytdlp.download, expected_lossless=False)]
+
+    tiers: list[TierMux] = []
+    if tier1:
+        tiers.append(TierMux(Tier.ONE, tier1, _strategy(1)))
+    if tier2:
+        tiers.append(TierMux(Tier.TWO, tier2, _strategy(2)))
+    tiers.append(TierMux(Tier.THREE, tier3, _strategy(3)))
+    return tiers

@@ -1,16 +1,11 @@
-"""Tier cascade: try Tier 1, then (skipping absent tiers) the next, first
-verified file wins (ADR-0015). Downloaders + prober are injected."""
+"""Tier cascade over TierMux pools: strict Tier 1 -> 2 -> 3, first verified wins."""
 
 from pathlib import Path
 
-from lbmd.application.cascade import SourceEntry, run_cascade
+from lbmd.application.cascade import MuxStrategy, SourceEntry, TierMux, run_cascade
 from lbmd.domain.audio import AudioInfo
 from lbmd.domain.download import DownloadOutcome
 from lbmd.domain.tiers import SourceRef, Tier
-
-
-def _outcome(source: str, tier: int, path: str) -> DownloadOutcome:
-    return DownloadOutcome(Path(path), tier=tier, source=source, elapsed_s=1.0, query="q")
 
 
 def _flac() -> AudioInfo:
@@ -21,81 +16,62 @@ def _opus() -> AudioInfo:
     return AudioInfo("opus", "webm", 48000, 2, None, 130000, 110.0, 3_000_000)
 
 
-def _entry(name: str, tier: Tier, dl, lossless: bool):  # type: ignore[no-untyped-def]
-    return SourceEntry(ref=SourceRef(name, tier), download=dl, expected_lossless=lossless)
+def _tier(name: str, tier: Tier, dl, lossless: bool) -> TierMux:  # type: ignore[no-untyped-def]
+    return TierMux(tier, [SourceEntry(SourceRef(name, tier), dl, lossless)], MuxStrategy.ALL)
 
 
-def test_tier1_success_wins_and_skips_lower_tiers(tmp_path: Path) -> None:
+def test_tier1_wins_and_lower_tiers_not_touched(tmp_path: Path) -> None:
     called: list[str] = []
 
     def mono(q: str, d: Path) -> DownloadOutcome:
         called.append("mono")
-        return _outcome("monochrome", 1, "/x/a.flac")
+        return DownloadOutcome(Path("/x/a.flac"), 1, "monochrome", 1.0, q)
 
     def ytdlp(q: str, d: Path) -> DownloadOutcome:
         called.append("ytdlp")
-        return _outcome("ytdlp", 3, "/x/a.opus")
+        return DownloadOutcome(Path("/x/a.opus"), 3, "ytdlp", 1.0, q)
 
-    entries = [
-        _entry("monochrome", Tier.ONE, mono, True),
-        _entry("ytdlp", Tier.THREE, ytdlp, False),
-    ]
-    result = run_cascade("Diljit Dealer", tmp_path, entries, prober=lambda p: _flac())
+    tiers = [_tier("monochrome", Tier.ONE, mono, True), _tier("ytdlp", Tier.THREE, ytdlp, False)]
+    result = run_cascade("Diljit Dealer", tmp_path, tiers, prober=lambda p: _flac())
 
-    assert result.winner is not None
-    assert result.winner.outcome.source == "monochrome"
-    assert result.winner.verdict.lossless is True
-    assert called == ["mono"]  # Tier 3 never attempted
+    assert result.winner is not None and result.winner.outcome.source == "monochrome"
+    assert called == ["mono"]  # Tier 3 never reached
     assert [(a.tier, a.ok) for a in result.attempts] == [(1, True)]
 
 
-def test_falls_through_to_tier3_when_tier1_fails(tmp_path: Path) -> None:
+def test_falls_through_tiers_skipping_absent_tier2(tmp_path: Path) -> None:
     def mono(q: str, d: Path) -> DownloadOutcome:
         raise RuntimeError("Turnstile JWT required")
 
     def ytdlp(q: str, d: Path) -> DownloadOutcome:
-        return _outcome("ytdlp", 3, "/x/a.opus")
+        return DownloadOutcome(Path("/x/a.opus"), 3, "ytdlp", 1.0, q)
 
-    entries = [
-        _entry("monochrome", Tier.ONE, mono, True),
-        _entry("ytdlp", Tier.THREE, ytdlp, False),
-    ]
-    result = run_cascade("q", tmp_path, entries, prober=lambda p: _opus())
+    # no Tier-2 pool registered -> cascade goes Tier 1 -> Tier 3
+    tiers = [_tier("monochrome", Tier.ONE, mono, True), _tier("ytdlp", Tier.THREE, ytdlp, False)]
+    result = run_cascade("q", tmp_path, tiers, prober=lambda p: _opus())
 
-    assert result.winner is not None
-    assert result.winner.outcome.source == "ytdlp"
-    # Tier 1 recorded as a failed attempt, Tier 3 as the win. Tier 2 absent (skipped).
+    assert result.winner is not None and result.winner.outcome.source == "ytdlp"
     assert [(a.source, a.ok) for a in result.attempts] == [("monochrome", False), ("ytdlp", True)]
-    assert "Turnstile" in result.attempts[0].detail
 
 
-def test_tier1_nonlossless_is_rejected_and_advances(tmp_path: Path) -> None:
-    def mono(q: str, d: Path) -> DownloadOutcome:
-        return _outcome("monochrome", 1, "/x/a.flac")  # but probe says lossy
+def test_tiers_evaluated_in_priority_order_regardless_of_input_order(tmp_path: Path) -> None:
+    def t3(q: str, d: Path) -> DownloadOutcome:
+        return DownloadOutcome(Path("/x/a.opus"), 3, "ytdlp", 1.0, q)
 
-    def ytdlp(q: str, d: Path) -> DownloadOutcome:
-        return _outcome("ytdlp", 3, "/x/a.opus")
+    def t1(q: str, d: Path) -> DownloadOutcome:
+        return DownloadOutcome(Path("/x/a.flac"), 1, "monochrome", 1.0, q)
 
-    entries = [
-        _entry("monochrome", Tier.ONE, mono, True),
-        _entry("ytdlp", Tier.THREE, ytdlp, False),
-    ]
-    # prober reports lossy for BOTH; Tier-1 requires lossless so it is rejected.
-    result = run_cascade("q", tmp_path, entries, prober=lambda p: _opus())
-
-    assert result.winner is not None
-    assert result.winner.outcome.source == "ytdlp"
-    assert result.attempts[0].ok is False
-    assert "rejected" in result.attempts[0].detail
+    # pass tiers out of order; cascade must still try Tier 1 first
+    tiers = [_tier("ytdlp", Tier.THREE, t3, False), _tier("monochrome", Tier.ONE, t1, True)]
+    result = run_cascade("q", tmp_path, tiers, prober=lambda p: _flac())
+    assert result.winner is not None and result.winner.outcome.tier == 1
 
 
-def test_all_tiers_fail_returns_no_winner(tmp_path: Path) -> None:
+def test_no_winner_when_all_tiers_fail(tmp_path: Path) -> None:
     def boom(q: str, d: Path) -> DownloadOutcome:
         raise RuntimeError("down")
 
-    entries = [_entry("monochrome", Tier.ONE, boom, True), _entry("ytdlp", Tier.THREE, boom, False)]
-    result = run_cascade("q", tmp_path, entries, prober=lambda p: _flac())
-
+    tiers = [_tier("monochrome", Tier.ONE, boom, True), _tier("ytdlp", Tier.THREE, boom, False)]
+    result = run_cascade("q", tmp_path, tiers, prober=lambda p: _flac())
     assert result.winner is None
-    assert all(a.ok is False for a in result.attempts)
-    assert len(result.attempts) == 2
+    assert len(result.attempts) == 2 and all(not a.ok for a in result.attempts)

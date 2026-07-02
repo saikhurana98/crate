@@ -14,7 +14,7 @@ import typer
 
 from lbmd import __version__
 from lbmd.application.cascade import CascadeResult, run_cascade
-from lbmd.composition.sources import build_default_sources
+from lbmd.composition.sources import build_tiers
 from lbmd.infrastructure.audio.probe import probe
 
 app = typer.Typer(
@@ -65,10 +65,10 @@ def download(
     """Download tracks via the tier cascade (Tier 1 Monochrome -> Tier 3 yt-dlp;
     Tier 2 skipped) and report which tier won plus the quality."""
     out.mkdir(parents=True, exist_ok=True)
-    sources = build_default_sources()
+    tiers = build_tiers()
     ok = 0
     for i, q in enumerate(queries, 1):
-        res = run_cascade(q, out, sources, prober=probe)
+        res = run_cascade(q, out, tiers, prober=probe)
         typer.echo(_fmt_result(i, res))
         ok += 1 if res.winner is not None else 0
     typer.echo(f"\n{ok}/{len(queries)} acquired into {out}/")
