@@ -17,12 +17,15 @@ from pathlib import Path
 import pytest
 
 from lbmd.adapters.sources.monochrome import (
+    MonoTrack,
     build_amz_params,
     monochrome_download,
     parse_amz_stream,
     parse_kid,
     parse_search,
     pick_best,
+    select_by_title,
+    title_matches,
 )
 
 SEARCH_RESPONSE = {
@@ -89,6 +92,31 @@ def test_pick_best_raises_on_empty() -> None:
         pick_best([])
 
 
+def _mt(title: str, hires: bool = True) -> MonoTrack:
+    return MonoTrack(1, title, "A", "Al", 100, hires)
+
+
+def test_title_matches_accepts_and_rejects() -> None:
+    # real song present in query -> match
+    assert title_matches("Marjaani", "Marjaani Pritam") is True
+    assert title_matches("I Hate Luv Storys", "I Hate Luv Storys Vishal-Shekhar") is True
+    # different song that fuzzy-search wrongly surfaced -> reject
+    assert title_matches("Channa Mereya", "Marjaani Pritam") is False
+    assert title_matches("Hate It Or Luv It", "I Hate Luv Storys Vishal-Shekhar") is False
+
+
+def test_select_by_title_picks_matching_result_over_wrong_hires() -> None:
+    tracks = [_mt("Channa Mereya", hires=True), _mt("Marjaani", hires=False)]
+    # wrong song is hi-res, but title guard rejects it and keeps the real one
+    assert select_by_title(tracks, "Marjaani Pritam").title == "Marjaani"
+
+
+def test_select_by_title_raises_when_no_title_match() -> None:
+    tracks = [_mt("Channa Mereya"), _mt("Ae Dil Hai Mushkil")]
+    with pytest.raises(LookupError, match="no title-matching"):
+        select_by_title(tracks, "Marjaani Pritam")
+
+
 def test_build_amz_params_from_track() -> None:
     track = pick_best(parse_search(SEARCH_RESPONSE))
     params = build_amz_params(track)
@@ -139,6 +167,35 @@ def test_parse_kid_reads_default_kid_from_tenc() -> None:
 def test_parse_kid_raises_without_tenc() -> None:
     with pytest.raises(ValueError, match="not CENC-encrypted"):
         parse_kid(b"ftypmp41 no encryption here")
+
+
+def test_download_guards_on_match_title_not_query(tmp_path: Path) -> None:
+    # search surfaces a wrong single-word title that only matches the query's ARTIST
+    wrong = {
+        "data": {
+            "items": [
+                {
+                    "id": 9,
+                    "title": "BENNY",
+                    "artist": {"name": "Beats By Luca"},
+                    "album": {"title": "x"},
+                    "duration": 100,
+                    "audioQuality": "LOSSLESS",
+                }
+            ]
+        }
+    }
+    with pytest.raises(LookupError, match="no title-matching"):
+        monochrome_download(
+            "Besharmi Ki Height Benny Dayal",  # query used for search (has artist "Benny")
+            tmp_path,
+            search_json=lambda q: wrong,
+            amz_fetch=lambda p: AMZ_RESPONSE,
+            get_bytes=lambda u: b"",
+            decrypt=lambda e, k, key, o: None,
+            match_title="Besharmi Ki Height",  # guard uses this -> "BENNY" rejected
+            clock=lambda: 0.0,
+        )
 
 
 def test_download_resolves_downloads_and_decrypts(tmp_path: Path) -> None:

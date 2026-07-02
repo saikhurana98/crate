@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from lbmd.domain.download import DownloadOutcome
+from lbmd.domain.matching import title_matches
 
 DEFAULT_TIDAL_BASE = "https://api.monochrome.tf"
 DEFAULT_AMZ_BASE = "https://amz.geeked.wtf"
@@ -96,6 +97,18 @@ def pick_best(tracks: list[MonoTrack]) -> MonoTrack:
     return tracks[0]
 
 
+def select_by_title(tracks: list[MonoTrack], query: str) -> MonoTrack:
+    """Keep only results whose title matches the query, then pick the best.
+
+    Raises LookupError when nothing matches, so the cascade advances to the next
+    tier rather than accepting a wrong-song FLAC.
+    """
+    matching = [t for t in tracks if title_matches(t.title, query)]
+    if not matching:
+        raise LookupError("no title-matching Monochrome result")
+    return pick_best(matching)
+
+
 def build_amz_params(track: MonoTrack) -> dict[str, Any]:
     """Amazon track-lookup query params (asks for ULTRA_HD / 24-bit)."""
     return {
@@ -145,11 +158,17 @@ def monochrome_download(
     amz_fetch: AmzFetch,
     get_bytes: GetBytes,
     decrypt: Decrypt,
+    match_title: str | None = None,
     clock: Clock = time.monotonic,
 ) -> DownloadOutcome:
-    """Resolve + download the best 24-bit FLAC for ``query`` via Monochrome."""
+    """Resolve + download the best 24-bit FLAC for ``query`` via Monochrome.
+
+    ``query`` drives the TIDAL search (title + artist gives better recall);
+    ``match_title`` (if given) is what the title guard compares against, so an
+    artist token in the query can't false-positive a wrong single-word title.
+    """
     start = clock()
-    track = pick_best(parse_search(search_json(query)))
+    track = select_by_title(parse_search(search_json(query)), match_title or query)
     stream = parse_amz_stream(amz_fetch(build_amz_params(track)))
 
     stem = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]")

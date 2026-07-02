@@ -51,6 +51,28 @@ def build_default_sources() -> list[SourceEntry]:  # pragma: no cover - env + IO
             SourceEntry(SourceRef("monochrome", Tier.ONE), monochrome, expected_lossless=True)
         )
 
+    if os.environ.get("LBMD_TELEGRAM", "").lower() in ("1", "true", "yes"):
+        from lbmd.adapters.sources.telegram_bot import telegram_download
+        from lbmd.infrastructure.telegram.telethon_client import TelegramBotClient
+
+        client = TelegramBotClient(
+            api_id=int(os.environ["LBMD_TG_API_ID"]),
+            api_hash=os.environ["LBMD_TG_API_HASH"],
+            session=os.environ["LBMD_TG_SESSION"],
+            bot=os.environ["LBMD_TG_BOT"],
+        )
+
+        def telegram(query: str, out_dir: Path) -> DownloadOutcome:
+            return telegram_download(
+                query, out_dir, request=client.request, download=client.download
+            )
+
+        # Tier 2 accepts whatever the bot serves (prefers lossless in selection);
+        # a 320 bot MP3 still beats the Tier-3 YouTube fallback.
+        entries.append(
+            SourceEntry(SourceRef("telegram", Tier.TWO), telegram, expected_lossless=False)
+        )
+
     entries.append(
         SourceEntry(SourceRef("ytdlp", Tier.THREE), ytdlp.download, expected_lossless=False)
     )
