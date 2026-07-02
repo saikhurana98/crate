@@ -9,6 +9,7 @@ dependencies = [
   "typer>=0.15",
   "httpx>=0.28",
   "pydantic>=2.10",
+  "pycryptodome>=3.23.0",
 ]
 
 [project.scripts]
@@ -73,7 +74,7 @@ mypy_path = "src"
 packages = ["lbmd"]
 
 [[tool.mypy.overrides]]
-module = ["telethon.*"]
+module = ["telethon.*", "Crypto.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

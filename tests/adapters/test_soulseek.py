@@ -193,7 +193,7 @@ def test_download_retries_reduced_query_when_full_query_empty(tmp_path: Path) ->
         "The Weeknd Blinding Lights",
         tmp_path,
         search=search,
-        download=lambda f, d: (d / "Blinding Lights.flac"),
+        download=lambda f, d: d / "Blinding Lights.flac",
         clock=iter([0.0, 1.0]).__next__,
     )
     assert outcome.source == "soulseek"

@@ -6,8 +6,9 @@ via ``LBMD_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
 ``uniform``/``distribute`` (round-robin one source per request).
 
   Tier 1  Monochrome (Amazon 24-bit FLAC)   opt-in LBMD_MONOCHROME=1
-  Tier 2  Telegram music bot                 opt-in LBMD_TELEGRAM=1
+  Tier 2  Deezer (16-bit FLAC via ARL)       opt-in LBMD_DEEZER=1
           Soulseek (via slskd)               opt-in LBMD_SOULSEEK=1
+          Telegram music bot                 opt-in LBMD_TELEGRAM=1
   Tier 3  yt-dlp (lossy fallback)            always on
 
 Only this layer binds concrete adapters + infrastructure.
@@ -76,6 +77,26 @@ def _telegram_source() -> SourceEntry:  # pragma: no cover - IO wiring
     return SourceEntry(SourceRef("telegram", Tier.TWO), telegram, expected_lossless=False)
 
 
+def _deezer_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from lbmd.adapters.sources.deezer import deezer_download
+    from lbmd.infrastructure.deezer.client import DeezerClient
+
+    client = DeezerClient(os.environ["LBMD_DEEZER_ARL"])
+
+    def deezer(query: str, out_dir: Path) -> DownloadOutcome:
+        return deezer_download(
+            query,
+            out_dir,
+            search=client.search,
+            resolve_url=client.resolve_url,
+            get_bytes=client.get_bytes,
+        )
+
+    # Deezer always serves FLAC when available; if the account tier lacks it the
+    # client raises and the cascade advances.
+    return SourceEntry(SourceRef("deezer", Tier.TWO), deezer, expected_lossless=True)
+
+
 def _soulseek_source() -> SourceEntry:  # pragma: no cover - IO wiring
     from lbmd.adapters.sources.soulseek import soulseek_download
     from lbmd.infrastructure.soulseek.slskd_client import SlskdClient
@@ -104,10 +125,12 @@ def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     """Build the per-tier source pools from configuration."""
     tier1 = [_monochrome_source()] if _enabled("LBMD_MONOCHROME") else []
     tier2: list[SourceEntry] = []
-    if _enabled("LBMD_TELEGRAM"):
-        tier2.append(_telegram_source())
+    if _enabled("LBMD_DEEZER"):
+        tier2.append(_deezer_source())
     if _enabled("LBMD_SOULSEEK"):
         tier2.append(_soulseek_source())
+    if _enabled("LBMD_TELEGRAM"):
+        tier2.append(_telegram_source())
     tier3 = [SourceEntry(SourceRef("ytdlp", Tier.THREE), ytdlp.download, expected_lossless=False)]
 
     tiers: list[TierMux] = []
