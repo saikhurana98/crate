@@ -7,6 +7,7 @@ via ``LBMD_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
 
   Tier 1  Monochrome (Amazon 24-bit FLAC)   opt-in LBMD_MONOCHROME=1
   Tier 2  Telegram music bot                 opt-in LBMD_TELEGRAM=1
+          Soulseek (via slskd)               opt-in LBMD_SOULSEEK=1
   Tier 3  yt-dlp (lossy fallback)            always on
 
 Only this layer binds concrete adapters + infrastructure.
@@ -75,10 +76,38 @@ def _telegram_source() -> SourceEntry:  # pragma: no cover - IO wiring
     return SourceEntry(SourceRef("telegram", Tier.TWO), telegram, expected_lossless=False)
 
 
+def _soulseek_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from lbmd.adapters.sources.soulseek import soulseek_download
+    from lbmd.infrastructure.soulseek.slskd_client import SlskdClient
+
+    client = SlskdClient(
+        os.environ["LBMD_SLSKD_URL"],
+        os.environ["LBMD_SLSKD_API_KEY"],
+        os.environ["LBMD_SLSKD_DOWNLOADS"],
+    )
+    min_kbps = int(os.environ.get("LBMD_SLSKD_MIN_BITRATE", "0"))
+
+    def soulseek(query: str, out_dir: Path) -> DownloadOutcome:
+        return soulseek_download(
+            query,
+            out_dir,
+            search=client.search,
+            download=client.download,
+            min_bitrate_kbps=min_kbps,
+        )
+
+    # prefers lossless in selection; a good Soulseek MP3 still beats Tier-3 YouTube
+    return SourceEntry(SourceRef("soulseek", Tier.TWO), soulseek, expected_lossless=False)
+
+
 def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     """Build the per-tier source pools from configuration."""
     tier1 = [_monochrome_source()] if _enabled("LBMD_MONOCHROME") else []
-    tier2 = [_telegram_source()] if _enabled("LBMD_TELEGRAM") else []
+    tier2: list[SourceEntry] = []
+    if _enabled("LBMD_TELEGRAM"):
+        tier2.append(_telegram_source())
+    if _enabled("LBMD_SOULSEEK"):
+        tier2.append(_soulseek_source())
     tier3 = [SourceEntry(SourceRef("ytdlp", Tier.THREE), ytdlp.download, expected_lossless=False)]
 
     tiers: list[TierMux] = []
