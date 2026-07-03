@@ -74,5 +74,27 @@ def download(
     typer.echo(f"\n{ok}/{len(queries)} acquired into {out}/")
 
 
+@app.command()
+def serve(  # pragma: no cover - network server loop
+    port: Annotated[int, typer.Option("--port", "-p", help="Listen port.")] = 2416,
+    host: Annotated[str, typer.Option(help="Listen address.")] = "0.0.0.0",
+) -> None:
+    """Run the slskd-compatible shim so Explo (SLSKD_URL) downloads via the tier
+    cascade. Config: LBMD_SERVE_DOWNLOADS (output dir), LBMD_SERVE_API_KEY."""
+    import os
+
+    from lbmd.adapters.inbound.slskd_shim import ShimState
+    from lbmd.composition.sources import build_shim_download
+    from lbmd.infrastructure.http_server.serve import run_server
+
+    downloads = Path(os.environ.get("LBMD_SERVE_DOWNLOADS", "downloads"))
+    downloads.mkdir(parents=True, exist_ok=True)
+    shim = ShimState(
+        build_shim_download(), downloads, api_key=os.environ.get("LBMD_SERVE_API_KEY") or None
+    )
+    typer.echo(f"lbmd slskd-shim listening on {host}:{port}  downloads -> {downloads}")
+    run_server(shim, host, port)
+
+
 if __name__ == "__main__":  # pragma: no cover
     app()
