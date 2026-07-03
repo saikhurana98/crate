@@ -59,7 +59,7 @@ max-args = 9
 "src/lbmd/adapters/**" = ["TID251"]
 "src/lbmd/infrastructure/**" = ["TID251"]
 "src/lbmd/composition/**" = ["TID251", "PLC0415"]
-"src/lbmd/cli/**" = ["TID251"]
+"src/lbmd/cli/**" = ["TID251", "PLC0415"]
 # browser layer embeds JS strings (E501), checks HTTP status codes (PLR2004),
 # and lazy-imports playwright (PLC0415) to keep it an optional dependency.
 "src/lbmd/infrastructure/browser/**" = ["E501", "PLR2004", "PLC0415"]

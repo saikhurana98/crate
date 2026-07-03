@@ -18,6 +18,7 @@ Only this layer binds concrete adapters + infrastructure.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -167,3 +168,20 @@ def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
         tiers.append(TierMux(Tier.TWO, tier2, _strategy(2)))
     tiers.append(TierMux(Tier.THREE, tier3, _strategy(3)))
     return tiers
+
+
+def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - IO wiring
+    """A ``download(query, out_dir) -> path`` that runs the full cascade — used by
+    the slskd shim (`lbmd serve`) so Explo pulls through the tiered stack."""
+    from lbmd.application.cascade import run_cascade
+    from lbmd.infrastructure.audio.probe import probe
+
+    tiers = build_tiers()
+
+    def download(query: str, out_dir: Path) -> Path:
+        result = run_cascade(query, out_dir, tiers, prober=probe)
+        if result.winner is None or result.winner.outcome is None:
+            raise RuntimeError(f"no source produced a file for {query!r}")
+        return result.winner.outcome.path
+
+    return download
