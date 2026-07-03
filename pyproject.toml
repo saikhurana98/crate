@@ -65,7 +65,7 @@ max-args = 9
 "src/lbmd/infrastructure/browser/**" = ["E501", "PLR2004", "PLC0415"]
 # telegram client lazy-imports telethon (optional dep) inside methods
 "src/lbmd/infrastructure/telegram/**" = ["PLC0415"]
-"tests/**" = ["TID251", "PLR2004", "E501"]
+"tests/**" = ["TID251", "PLR2004", "E501", "PLC0415"]
 
 [tool.mypy]
 python_version = "3.11"
