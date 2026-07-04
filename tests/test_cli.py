@@ -49,7 +49,7 @@ def test_download_renders_cascade_trail_and_winner(tmp_path: Path, monkeypatch) 
     )
     results = iter([good, bad])
     monkeypatch.setattr(cli, "build_tiers", lambda: [])
-    monkeypatch.setattr(cli, "run_cascade", lambda q, o, t, prober: next(results))
+    monkeypatch.setattr(cli, "run_cascade", lambda q, o, t, prober, recorder=None: next(results))
 
     result = runner.invoke(app, ["download", "Dua Lipa Levitating", "missing", "-o", str(tmp_path)])
     assert result.exit_code == 0

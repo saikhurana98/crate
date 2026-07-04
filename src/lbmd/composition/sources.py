@@ -170,18 +170,49 @@ def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     return tiers
 
 
+def db_path() -> Path:  # pragma: no cover - env read
+    """Console/history SQLite path. Must be a local FS, never NFS (ADR-0018)."""
+    return Path(os.environ.get("LBMD_DB", "data/lbmd.db"))
+
+
+def build_recorder(requested_via: str) -> Any:  # pragma: no cover - IO wiring
+    """A RequestStore bound to ``requested_via`` for writing history."""
+    from lbmd.infrastructure.sqlite.db import connect
+    from lbmd.infrastructure.sqlite.store import RequestStore
+
+    return RequestStore(connect(db_path()), requested_via=requested_via)
+
+
 def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - IO wiring
     """A ``download(query, out_dir) -> path`` that runs the full cascade — used by
-    the slskd shim (`lbmd serve`) so Explo pulls through the tiered stack."""
+    the slskd shim (`lbmd serve`) so Explo pulls through the tiered stack. Records
+    every request to the console DB."""
     from lbmd.application.cascade import run_cascade
     from lbmd.infrastructure.audio.probe import probe
 
     tiers = build_tiers()
+    recorder = build_recorder("explo")
 
     def download(query: str, out_dir: Path) -> Path:
-        result = run_cascade(query, out_dir, tiers, prober=probe)
+        result = run_cascade(query, out_dir, tiers, prober=probe, recorder=recorder)
         if result.winner is None or result.winner.outcome is None:
             raise RuntimeError(f"no source produced a file for {query!r}")
         return result.winner.outcome.path
 
     return download
+
+
+def build_console_app() -> Any:  # pragma: no cover - IO wiring
+    """FastAPI app for `lbmd console`: a read-only view over the history DB."""
+    from lbmd.adapters.inbound.ops_api import create_app
+    from lbmd.infrastructure.sqlite.db import connect
+    from lbmd.infrastructure.sqlite.store import RequestStore
+
+    store = RequestStore(connect(db_path()))
+    static_env = os.environ.get("LBMD_CONSOLE_STATIC")
+    static_dir = Path(static_env) if static_env else None
+    return create_app(
+        store,
+        api_key=os.environ.get("LBMD_OPS_API_KEY") or None,
+        static_dir=static_dir,
+    )

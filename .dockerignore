@@ -10,6 +10,9 @@ docs
 .pytest_cache
 .coverage
 downloads
+data
+**/node_modules
+apps/console/dist
 *.md
 !README.md
 Dockerfile

@@ -10,6 +10,8 @@ dependencies = [
   "httpx>=0.28",
   "pydantic>=2.10",
   "pycryptodome>=3.23.0",
+  "fastapi>=0.115",
+  "uvicorn>=0.34",
 ]
 
 [project.scripts]

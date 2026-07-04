@@ -7,6 +7,7 @@ off to application use-cases — no business logic here.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -14,7 +15,7 @@ import typer
 
 from lbmd import __version__
 from lbmd.application.cascade import CascadeResult, run_cascade
-from lbmd.composition.sources import build_tiers
+from lbmd.composition.sources import build_recorder, build_tiers
 from lbmd.infrastructure.audio.probe import probe
 
 app = typer.Typer(
@@ -66,9 +67,12 @@ def download(
     Tier 2 skipped) and report which tier won plus the quality."""
     out.mkdir(parents=True, exist_ok=True)
     tiers = build_tiers()
+    # record to the console DB only when one is configured (keeps ad-hoc local
+    # downloads side-effect-free; the server sets LBMD_DB).
+    recorder = build_recorder("cli") if os.environ.get("LBMD_DB") else None
     ok = 0
     for i, q in enumerate(queries, 1):
-        res = run_cascade(q, out, tiers, prober=probe)
+        res = run_cascade(q, out, tiers, prober=probe, recorder=recorder)
         typer.echo(_fmt_result(i, res))
         ok += 1 if res.winner is not None else 0
     typer.echo(f"\n{ok}/{len(queries)} acquired into {out}/")
@@ -94,6 +98,22 @@ def serve(  # pragma: no cover - network server loop
     )
     typer.echo(f"lbmd slskd-shim listening on {host}:{port}  downloads -> {downloads}")
     run_server(shim, host, port)
+
+
+@app.command()
+def console(  # pragma: no cover - network server loop
+    port: Annotated[int, typer.Option("--port", "-p", help="Listen port.")] = 8788,
+    host: Annotated[str, typer.Option(help="Listen address.")] = "0.0.0.0",
+) -> None:
+    """Run the management console (read-only stats/history dashboard + API) over
+    the history DB. Config: LBMD_DB (shared with `serve`), LBMD_OPS_API_KEY,
+    LBMD_CONSOLE_STATIC (built UI dir)."""
+    import uvicorn
+
+    from lbmd.composition.sources import build_console_app
+
+    typer.echo(f"lbmd console listening on {host}:{port}")
+    uvicorn.run(build_console_app(), host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":  # pragma: no cover
