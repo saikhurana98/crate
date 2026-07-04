@@ -13,6 +13,7 @@ import {
   type TierCfg,
 } from "./api";
 import { bytes, dur, ago as relTime, pct, esc } from "./format";
+import { createRenderer, effect } from "./reactive";
 
 const C = {
   good: "#4ade80",
@@ -677,12 +678,13 @@ function headerHtml(): string {
   </header>`;
 }
 
-function render(): void {
+// Pure view: State -> HTML. The renderer reconciles it into the DOM (morph), so
+// this can run every tick without wiping the page.
+function view(): string {
   if (state.error) {
-    root.innerHTML = `<div style="max-width:600px;margin:80px auto;padding:24px;color:#f87171;font:500 14px 'Space Grotesk';text-align:center">Failed to load console: ${esc(state.error)}</div>`;
-    return;
+    return `<div style="max-width:600px;margin:80px auto;padding:24px;color:#f87171;font:500 14px 'Space Grotesk';text-align:center">Failed to load console: ${esc(state.error)}</div>`;
   }
-  root.innerHTML = `${headerHtml()}
+  return `${headerHtml()}
     <main style="max-width:1560px;margin:0 auto;padding:20px 28px 72px;animation:fadein .25s ease">
       ${statCardsHtml()}
       <div class="grid2" style="display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start">
@@ -693,8 +695,10 @@ function render(): void {
     ${drawerHtml()}
     ${panelHtml()}
     ${state.toast ? `<div style="position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:10px;background:#1b212a;border:1px solid rgba(74,222,128,.35);border-radius:12px;padding:12px 18px;box-shadow:0 12px 40px rgba(0,0,0,.5);animation:toastin .3s cubic-bezier(.3,.8,.3,1)"><span style="width:8px;height:8px;border-radius:50%;background:#4ade80"></span><span style="font:600 13px 'JetBrains Mono';color:#e8ebf1">${esc(state.toast)}</span></div>` : ""}`;
-  bind();
 }
+
+// render() = schedule a batched, reconciling repaint (safe to call on every tick).
+const render = createRenderer(root, view);
 
 // ---------- events ----------
 async function openDetail(id: string): Promise<void> {
@@ -759,125 +763,140 @@ async function togglePanelEnabled(): Promise<void> {
   render();
 }
 
-function bind(): void {
-  root.querySelectorAll<HTMLElement>("[data-act]").forEach((el) => {
-    el.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const act = el.dataset.act!;
-      if (act === "strategy") setStrategy(el.dataset.tier!, el.dataset.strategy as "all" | "uniform");
-      else if (act === "openPanel") {
-        state.panelSource = el.dataset.source!;
-        state.panelValues = {};
-        state.panelSave = "idle";
-        render();
-      } else if (act === "closePanel") {
-        state.panelSource = null;
-        render();
-      } else if (act === "openDetail") void openDetail(el.dataset.id!);
-      else if (act === "closeDetail") {
-        state.selectedId = null;
-        state.detail = null;
-        render();
-      } else if (act === "toggleLogs") {
-        state.showLogs = !state.showLogs;
-        render();
-      } else if (act === "togglePanelEnabled") void togglePanelEnabled();
-      else if (act === "savePanel") void savePanel();
-      else if (act === "validatePanel") toast(`${state.panelSource} — validation not wired yet`);
-    });
+// Events are delegated on the root ONCE — they survive every reconcile, so no
+// rebinding per render (that was part of what made the old full-refresh churn).
+function bindEvents(): void {
+  root.addEventListener("click", (e) => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>("[data-act]");
+    if (!el) return;
+    e.stopPropagation();
+    const act = el.dataset.act!;
+    if (act === "strategy") setStrategy(el.dataset.tier!, el.dataset.strategy as "all" | "uniform");
+    else if (act === "openPanel") {
+      state.panelSource = el.dataset.source!;
+      state.panelValues = {};
+      state.panelSave = "idle";
+      render();
+    } else if (act === "closePanel") {
+      state.panelSource = null;
+      render();
+    } else if (act === "openDetail") void openDetail(el.dataset.id!);
+    else if (act === "closeDetail") {
+      state.selectedId = null;
+      state.detail = null;
+      render();
+    } else if (act === "toggleLogs") {
+      state.showLogs = !state.showLogs;
+      render();
+    } else if (act === "togglePanelEnabled") void togglePanelEnabled();
+    else if (act === "savePanel") void savePanel();
+    else if (act === "validatePanel") toast(`${state.panelSource} — validation not wired yet`);
   });
-  root.querySelectorAll<HTMLInputElement>('[data-inp="search"]').forEach((el) =>
-    el.addEventListener("input", () => {
+
+  root.addEventListener("input", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.dataset.inp === "search") {
       state.histSearch = el.value.trim();
       window.clearTimeout(histTimer);
       histTimer = window.setTimeout(() => void loadHistory().then(render), 250);
-    }),
-  );
-  root.querySelectorAll<HTMLInputElement>('[data-inp="panelField"]').forEach((el) =>
-    el.addEventListener("input", () => {
+    } else if (el.dataset.inp === "panelField") {
       state.panelValues[el.dataset.key!] = el.value;
       state.panelSave = "dirty";
-    }),
-  );
-  root.querySelectorAll<HTMLSelectElement>('[data-chg="status"]').forEach((el) =>
-    el.addEventListener("change", () => {
+      render(); // reflect Save button state; morph keeps the focused field intact
+    }
+  });
+
+  root.addEventListener("change", (e) => {
+    const el = e.target as HTMLSelectElement;
+    if (el.dataset.chg === "status") {
       state.histStatus = el.value;
       void loadHistory().then(render);
-    }),
-  );
-  // drag & drop
-  root.querySelectorAll<HTMLElement>("[data-drag-card]").forEach((el) => {
-    el.addEventListener("dragstart", (e) => {
-      const name = el.dataset.source!;
-      if (name === "ytdlp") {
-        e.preventDefault();
-        reject(name);
-        return;
-      }
-      state.drag.source = name;
-      e.dataTransfer!.effectAllowed = "move";
+    }
+  });
+
+  root.addEventListener("dragstart", (e) => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>("[data-drag-card]");
+    if (!el) return;
+    const name = el.dataset.source!;
+    if (name === "ytdlp") {
+      e.preventDefault();
+      reject(name);
+      return;
+    }
+    state.drag.source = name;
+    const dt = (e as DragEvent).dataTransfer;
+    if (dt) {
+      dt.effectAllowed = "move";
       try {
-        e.dataTransfer!.setData("text/plain", name);
+        dt.setData("text/plain", name);
       } catch {
         /* ignore */
       }
-    });
-    el.addEventListener("dragend", () => {
-      state.drag = { source: null, overTier: null, overIndex: null };
-      render();
-    });
-    el.addEventListener("dragover", (e) => {
-      if (!state.drag.source) return;
+    }
+  });
+
+  root.addEventListener("dragend", () => {
+    state.drag = { source: null, overTier: null, overIndex: null };
+    render();
+  });
+
+  root.addEventListener("dragover", (e) => {
+    if (!state.drag.source) return;
+    const t = e.target as HTMLElement;
+    const card = t.closest<HTMLElement>("[data-drag-card]");
+    if (card) {
       e.preventDefault();
-      e.stopPropagation();
-      const idx = Number(el.dataset.index);
-      const rect = el.getBoundingClientRect();
-      const after = e.clientX - rect.left > rect.width / 2;
-      const tier = el.dataset.tier!;
+      const idx = Number(card.dataset.index);
+      const rect = card.getBoundingClientRect();
+      const after = (e as DragEvent).clientX - rect.left > rect.width / 2;
+      const tier = card.dataset.tier!;
       const oi = after ? idx + 1 : idx;
       if (state.drag.overTier !== tier || state.drag.overIndex !== oi) {
         state.drag.overTier = tier;
         state.drag.overIndex = oi;
         render();
       }
-    });
-  });
-  root.querySelectorAll<HTMLElement>("[data-drop-tier]").forEach((el) => {
-    el.addEventListener("dragover", (e) => {
-      if (!state.drag.source) return;
+      return;
+    }
+    const col = t.closest<HTMLElement>("[data-drop-tier]");
+    if (col) {
       e.preventDefault();
-      const key = el.dataset.dropTier!;
+      const key = col.dataset.dropTier!;
       if (state.drag.overTier !== key) {
-        const col =
+        const c =
           key === "disabled"
             ? (state.layout?.disabled ?? [])
             : (state.layout?.tiers.find((t) => String(t.tier) === key)?.sources ?? []);
         state.drag.overTier = key;
-        state.drag.overIndex = col.length;
+        state.drag.overIndex = c.length;
         render();
       }
-    });
-    el.addEventListener("drop", (e) => {
-      e.preventDefault();
-      const name = state.drag.source;
-      const key = el.dataset.dropTier!;
-      const index = state.drag.overIndex;
-      state.drag = { source: null, overTier: null, overIndex: null };
-      if (!name) {
-        render();
-        return;
-      }
-      if (name === "ytdlp") {
-        reject(name);
-        return;
-      }
-      moveSource(name, key, index);
-    });
+    }
+  });
+
+  root.addEventListener("drop", (e) => {
+    const col = (e.target as HTMLElement).closest<HTMLElement>("[data-drop-tier]");
+    if (!col) return;
+    e.preventDefault();
+    const name = state.drag.source;
+    const key = col.dataset.dropTier!;
+    const index = state.drag.overIndex;
+    state.drag = { source: null, overTier: null, overIndex: null };
+    if (!name) {
+      render();
+      return;
+    }
+    if (name === "ytdlp") {
+      reject(name);
+      return;
+    }
+    moveSource(name, key, index);
   });
 }
 
 // ---------- boot ----------
 async function boot(): Promise<void> {
+  bindEvents(); // once
   render(); // header/skeleton
   try {
     await Promise.all([loadStatic(), loadHistory()]);
@@ -886,13 +905,16 @@ async function boot(): Promise<void> {
     state.error = (err as Error).message;
   }
   render();
-  connectLive();
-  window.setInterval(() => {
-    state.tick++;
-    if (state.inflight.length) render(); // tick live elapsed
-  }, 1000);
-  // periodic history refresh so completed downloads appear
-  window.setInterval(() => void loadHistory().then(render), 15000);
+
+  // side effects — run once
+  effect(connectLive);
+  effect(() => {
+    window.setInterval(() => {
+      state.tick++;
+      if (state.inflight.length) render(); // tick live elapsed (patches only those nodes)
+    }, 1000);
+    window.setInterval(() => void loadHistory().then(render), 15000); // pick up completions
+  });
 }
 
 void boot();
