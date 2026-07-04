@@ -17,7 +17,14 @@ htmlcov/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+data/
 .lbmd/
+
+# node / console UI build
+node_modules/
 
 # editor / OS
 .DS_Store

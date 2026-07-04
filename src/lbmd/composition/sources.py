@@ -18,9 +18,10 @@ Only this layer binds concrete adapters + infrastructure.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lbmd.adapters.sources import ytdlp
 from lbmd.adapters.sources.monochrome import DEFAULT_TIDAL_BASE, monochrome_download
@@ -145,8 +146,73 @@ def _soulseek_source() -> SourceEntry:  # pragma: no cover - IO wiring
     return SourceEntry(SourceRef("soulseek", Tier.TWO), soulseek, expected_lossless=False)
 
 
-def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
-    """Build the per-tier source pools from configuration."""
+def _ytdlp_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    return SourceEntry(SourceRef("ytdlp", Tier.THREE), ytdlp.download, expected_lossless=False)
+
+
+# name -> factory. Each factory reads its creds from the environment (which the
+# config store may have populated via _apply_stored_secrets) and raises if they
+# are absent — a raising source is simply skipped from the cascade.
+_FACTORIES: dict[str, Callable[[], SourceEntry]] = {
+    "qobuz": _qobuz_source,
+    "monochrome": _monochrome_source,
+    "deezer": _deezer_source,
+    "soulseek": _soulseek_source,
+    "telegram": _telegram_source,
+    "ytdlp": _ytdlp_source,
+}
+
+
+def _keyfile() -> Path:  # pragma: no cover - path
+    return db_path().parent / "config.key"
+
+
+def build_config_store() -> Any:  # pragma: no cover - IO wiring
+    from lbmd.infrastructure.crypto import SecretBox
+    from lbmd.infrastructure.sqlite.config_store import ConfigStore
+    from lbmd.infrastructure.sqlite.db import connect
+
+    return ConfigStore(connect(db_path()), SecretBox.from_keyfile(_keyfile()))
+
+
+def _config_store_if_enabled() -> Any:  # pragma: no cover - IO wiring
+    # The console/serve set LBMD_DB; ad-hoc local `download` runs stay env-only.
+    return build_config_store() if os.environ.get("LBMD_DB") else None
+
+
+def _apply_stored_secrets(config: Any) -> None:  # pragma: no cover - IO wiring
+    """Push console-stored (encrypted) credentials into the environment so the
+    source factories pick them up. Stored values take precedence over env."""
+    from lbmd.composition.catalog import SOURCES
+
+    for spec in SOURCES:
+        for env_key in spec.required_env:
+            if env_key in config.secret_keys(spec.name):
+                value = config.get_secret(spec.name, env_key)
+                if value is not None:
+                    os.environ[env_key] = value
+
+
+def _tiers_from_layout(layout: dict[str, Any]) -> list[TierMux]:  # pragma: no cover - IO wiring
+    tiers: list[TierMux] = []
+    for t in sorted(layout["tiers"], key=lambda t: int(t["tier"])):
+        entries: list[SourceEntry] = []
+        for name in t["sources"]:
+            factory = _FACTORIES.get(name)
+            if factory is None:
+                continue
+            try:
+                entries.append(factory())
+            except Exception:  # missing creds / unavailable -> skip this source
+                continue
+        strategy = MuxStrategy.UNIFORM if t["strategy"] == "uniform" else MuxStrategy.ALL
+        if entries:
+            tiers.append(TierMux(Tier(int(t["tier"])), entries, strategy))
+    return tiers
+
+
+def _tiers_from_env() -> list[TierMux]:  # pragma: no cover - env + IO wiring
+    """Legacy env-only wiring (no config store): LBMD_* flags + LBMD_MUX_TIER*."""
     tier1: list[SourceEntry] = []
     if _enabled("LBMD_QOBUZ"):
         tier1.append(_qobuz_source())
@@ -159,7 +225,7 @@ def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
         tier2.append(_soulseek_source())
     if _enabled("LBMD_TELEGRAM"):
         tier2.append(_telegram_source())
-    tier3 = [SourceEntry(SourceRef("ytdlp", Tier.THREE), ytdlp.download, expected_lossless=False)]
+    tier3 = [_ytdlp_source()]
 
     tiers: list[TierMux] = []
     if tier1:
@@ -170,18 +236,78 @@ def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     return tiers
 
 
+def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
+    """Build the per-tier source pools. When a config store is active (LBMD_DB
+    set), the stored layout (membership/order/strategy) and encrypted credentials
+    drive it; otherwise fall back to env flags."""
+    from lbmd.composition.catalog import default_layout
+
+    config = _config_store_if_enabled()
+    if config is None:
+        return _tiers_from_env()
+    _apply_stored_secrets(config)
+    layout = config.get_layout()
+    if layout is None:
+        layout = default_layout()
+        config.seed_layout(layout)
+    return _tiers_from_layout(layout)
+
+
+def db_path() -> Path:  # pragma: no cover - env read
+    """Console/history SQLite path. Must be a local FS, never NFS (ADR-0018)."""
+    return Path(os.environ.get("LBMD_DB", "data/lbmd.db"))
+
+
+def build_recorder(requested_via: str) -> Any:  # pragma: no cover - IO wiring
+    """A RequestStore bound to ``requested_via`` for writing history."""
+    from lbmd.infrastructure.sqlite.db import connect
+    from lbmd.infrastructure.sqlite.store import RequestStore
+
+    return RequestStore(connect(db_path()), requested_via=requested_via)
+
+
 def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - IO wiring
     """A ``download(query, out_dir) -> path`` that runs the full cascade — used by
-    the slskd shim (`lbmd serve`) so Explo pulls through the tiered stack."""
+    the slskd shim (`lbmd serve`) so Explo pulls through the tiered stack. Records
+    every request to the console DB."""
     from lbmd.application.cascade import run_cascade
     from lbmd.infrastructure.audio.probe import probe
 
-    tiers = build_tiers()
+    recorder = build_recorder("explo")
+    config = _config_store_if_enabled()
+    lock = threading.Lock()
+    cache: dict[str, Any] = {"version": None, "tiers": None}
+
+    def current_tiers() -> list[TierMux]:
+        # Rebuild only when the stored config version changes (hot-reload).
+        with lock:
+            version = config.version() if config is not None else 0
+            if cache["tiers"] is None or cache["version"] != version:
+                cache["tiers"] = build_tiers()
+                cache["version"] = version
+            return cast("list[TierMux]", cache["tiers"])
 
     def download(query: str, out_dir: Path) -> Path:
-        result = run_cascade(query, out_dir, tiers, prober=probe)
+        result = run_cascade(query, out_dir, current_tiers(), prober=probe, recorder=recorder)
         if result.winner is None or result.winner.outcome is None:
             raise RuntimeError(f"no source produced a file for {query!r}")
         return result.winner.outcome.path
 
     return download
+
+
+def build_console_app() -> Any:  # pragma: no cover - IO wiring
+    """FastAPI app for `lbmd console`: a read-only view over the history DB."""
+    from lbmd.adapters.inbound.ops_api import create_app
+    from lbmd.infrastructure.sqlite.db import connect
+    from lbmd.infrastructure.sqlite.store import RequestStore
+
+    store = RequestStore(connect(db_path()))
+    static_env = os.environ.get("LBMD_CONSOLE_STATIC")
+    static_dir = Path(static_env) if static_env else None
+    return create_app(
+        store,
+        api_key=os.environ.get("LBMD_OPS_API_KEY") or None,
+        static_dir=static_dir,
+        config=build_config_store(),
+    )
