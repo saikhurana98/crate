@@ -10,8 +10,14 @@ from lbmd.adapters.inbound.ops_api import create_app
 from lbmd.application.download import DownloadReport
 from lbmd.domain.audio import AudioInfo, QualityVerdict
 from lbmd.domain.download import DownloadOutcome
+from lbmd.infrastructure.crypto import SecretBox
+from lbmd.infrastructure.sqlite.config_store import ConfigStore
 from lbmd.infrastructure.sqlite.db import connect
 from lbmd.infrastructure.sqlite.store import RequestStore
+
+
+def _config(tmp_path: Path) -> ConfigStore:
+    return ConfigStore(connect(tmp_path / "cfg.db"), SecretBox(bytes(range(32))))
 
 
 def _report(source: str = "qobuz", tier: int = 1) -> DownloadReport:
@@ -78,3 +84,72 @@ def test_requests_limit_validation(tmp_path: Path) -> None:
     client = TestClient(create_app(_seeded_store(tmp_path)))
     assert client.get("/api/requests", params={"limit": 0}).status_code == 422
     assert client.get("/api/requests", params={"limit": 501}).status_code == 422
+
+
+# --- config endpoints (Phase 2) ---
+
+
+def test_config_get_seeds_then_put_bumps_version(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), config=_config(tmp_path)))
+    got = client.get("/api/config").json()
+    assert "tiers" in got and got["version"] >= 1
+    layout = {"tiers": got["tiers"], "disabled": got["disabled"]}
+    layout["tiers"][0]["strategy"] = "uniform"
+    r = client.put("/api/config", json=layout)
+    assert r.status_code == 200 and r.json()["version"] > got["version"]
+    assert client.get("/api/config").json()["tiers"][0]["strategy"] == "uniform"
+
+
+def test_config_put_invalid_is_400(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), config=_config(tmp_path)))
+    assert client.put("/api/config", json={"tiers": [], "disabled": []}).status_code == 400
+
+
+def test_config_unavailable_without_store_is_503(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    assert client.get("/api/config").status_code == 503
+
+
+def test_put_source_stores_encrypted_credentials(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    client = TestClient(create_app(_seeded_store(tmp_path), config=cfg))
+    client.get("/api/config")  # seed layout
+    r = client.put(
+        "/api/sources/qobuz",
+        json={
+            "credentials": {
+                "LBMD_QOBUZ_APP_ID": "a",
+                "LBMD_QOBUZ_APP_SECRET": "b",
+                "LBMD_QOBUZ_TOKEN": "c",
+            }
+        },
+    )
+    assert r.status_code == 200 and r.json()["credentials"] == "ok"
+    assert cfg.get_secret("qobuz", "LBMD_QOBUZ_TOKEN") == "c"
+
+
+def test_put_source_enabled_toggle_moves_in_and_out(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), config=_config(tmp_path)))
+    client.get("/api/config")
+    assert client.put("/api/sources/telegram", json={"enabled": True}).json()["enabled"] is True
+    assert "telegram" not in client.get("/api/config").json()["disabled"]
+    client.put("/api/sources/telegram", json={"enabled": False})
+    assert "telegram" in client.get("/api/config").json()["disabled"]
+
+
+def test_put_source_unknown_is_404(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), config=_config(tmp_path)))
+    assert client.put("/api/sources/nope", json={}).status_code == 404
+
+
+def test_put_source_cannot_disable_pinned_ytdlp(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), config=_config(tmp_path)))
+    client.get("/api/config")
+    assert client.put("/api/sources/ytdlp", json={"enabled": False}).status_code == 400
+
+
+def test_sources_reflect_stored_layout(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), config=_config(tmp_path)))
+    client.get("/api/config")
+    srcs = {s["name"]: s for s in client.get("/api/sources").json()}
+    assert srcs["ytdlp"]["enabled"] is True  # pinned in tier 3

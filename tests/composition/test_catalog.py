@@ -1,9 +1,17 @@
 """Source catalog + credential status — presence only, never values (ADR-0018)."""
 
+import copy
+
 import pytest
 
 from lbmd.composition import catalog
-from lbmd.composition.catalog import source_status
+from lbmd.composition.catalog import (
+    KNOWN,
+    LayoutError,
+    default_layout,
+    source_status,
+    validate_layout,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -65,3 +73,61 @@ def test_monochrome_has_no_env_secret_but_toggles(monkeypatch: pytest.MonkeyPatc
     assert mono["enabled"] is False and mono["credentials"] == "none"
     monkeypatch.setenv("LBMD_MONOCHROME", "yes")
     assert _by_name(source_status(), "monochrome")["enabled"] is True
+
+
+def test_status_overrides_from_store() -> None:
+    # enabled_of + has_secret let the stored layout/secrets drive status
+    rows = source_status(
+        enabled_of=lambda n: n == "qobuz",
+        has_secret=lambda n, k: n == "qobuz",  # all qobuz creds "stored"
+    )
+    q = _by_name(rows, "qobuz")
+    assert q["enabled"] is True and q["credentials"] == "ok"
+    assert _by_name(rows, "deezer")["enabled"] is False
+
+
+def test_default_layout_places_every_source_once() -> None:
+    lay = default_layout()
+    placed = [n for t in lay["tiers"] for n in t["sources"]] + lay["disabled"]
+    assert set(placed) == KNOWN and len(placed) == len(KNOWN)
+    t3 = next(t for t in lay["tiers"] if t["tier"] == 3)
+    assert "ytdlp" in t3["sources"]
+    assert "qobuz" in lay["disabled"]  # no env flag -> tray
+
+
+def test_validate_accepts_default_layout() -> None:
+    assert validate_layout(default_layout())["tiers"]
+
+
+def test_validate_rejects_incomplete_and_bad_shapes() -> None:
+    with pytest.raises(LayoutError):
+        validate_layout("nope")
+    with pytest.raises(LayoutError):  # missing sources -> not every source placed
+        validate_layout(
+            {
+                "tiers": [{"tier": t, "strategy": "all", "sources": []} for t in (1, 2, 3)],
+                "disabled": [],
+            }
+        )
+    lay = default_layout()
+    bad_strategy = copy.deepcopy(lay)
+    bad_strategy["tiers"][0]["strategy"] = "wat"
+    with pytest.raises(LayoutError):
+        validate_layout(bad_strategy)
+
+
+def test_validate_rejects_duplicate_source() -> None:
+    lay = default_layout()
+    lay["disabled"].append(lay["disabled"][0])  # duplicate
+    with pytest.raises(LayoutError):
+        validate_layout(lay)
+
+
+def test_validate_pins_ytdlp_to_tier3() -> None:
+    lay = default_layout()
+    # move ytdlp from tier 3 to disabled
+    for t in lay["tiers"]:
+        t["sources"] = [s for s in t["sources"] if s != "ytdlp"]
+    lay["disabled"].append("ytdlp")
+    with pytest.raises(LayoutError):
+        validate_layout(lay)

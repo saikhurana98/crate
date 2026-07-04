@@ -74,9 +74,46 @@ export interface LiveEvent {
   in_flight: RequestRow[];
 }
 
+export interface TierCfg {
+  tier: number;
+  strategy: "all" | "uniform";
+  sources: string[];
+}
+
+export interface Layout {
+  tiers: TierCfg[];
+  disabled: string[];
+  version: number;
+}
+
+export interface SourceUpdate {
+  enabled?: boolean;
+  settings?: Record<string, unknown>;
+  credentials?: Record<string, string>;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
+  return (await res.json()) as T;
+}
+
+async function send<T>(method: string, path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const j = (await res.json()) as { detail?: string };
+      if (j.detail) detail = j.detail;
+    } catch {
+      /* keep status line */
+    }
+    throw new Error(detail);
+  }
   return (await res.json()) as T;
 }
 
@@ -85,5 +122,10 @@ export const api = {
   requests: (params: URLSearchParams) => get<RequestRow[]>(`/api/requests?${params}`),
   request: (id: string) => get<RequestDetail>(`/api/requests/${encodeURIComponent(id)}`),
   sources: () => get<Source[]>("/api/sources"),
+  config: () => get<Layout>("/api/config"),
+  putConfig: (layout: { tiers: TierCfg[]; disabled: string[] }) =>
+    send<Layout>("PUT", "/api/config", layout),
+  putSource: (name: string, body: SourceUpdate) =>
+    send<Source>("PUT", `/api/sources/${encodeURIComponent(name)}`, body),
   eventsUrl: "/api/events",
 };

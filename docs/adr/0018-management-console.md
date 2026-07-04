@@ -83,6 +83,30 @@ and source catalog here are shaped to accept them without rework.
 - **DB on the NAS (per ADR-0004):** rejected — NFS + SQLite locking + two
   processes is a corruption risk.
 
+## Update (2026-07-04): Phase 2 delivered
+
+The read-only Phase 1 was superseded by the v2 design build:
+
+- **Config endpoints** `GET/PUT /api/config` (tier layout + strategy) and
+  `PUT /api/sources/{name}` (enabled + settings + credentials), backed by
+  `ConfigStore` (migration `002_config.sql`: `app_config` with a version counter,
+  `source_config`, `source_secret`). Layout validation (`validate_layout`) enforces
+  full coverage and pins `ytdlp` to Tier 3.
+- **Credentials encrypted at rest** — `SecretBox` (AES-256-GCM, pycryptodome), key
+  from `LBMD_CONFIG_KEY` or a generated 0600 keyfile beside the DB. Status is
+  reported (`ok`/`partial`/`missing`), values never returned.
+- **Cascade consumes the stored config** — `build_tiers()` reads the layout
+  (membership/order/strategy) and pushes stored secrets into the env for the
+  source factories; the shim rebuilds tiers when the config `version` changes
+  (true hot-reload, still cross-process via the DB, no restart).
+- **UI** is now a single-screen app (vanilla TS + Vite, Space Grotesk / JetBrains
+  Mono): the **Cascade map** (drag-and-drop tier board with strategy toggles and a
+  disabled tray) plus a Live / Wins / History rail, a history detail drawer (trail
+  timeline + winner facts + synthetic download log), and a source config panel.
+
+Deferred: credential "Test/validate" button (stubbed in the UI), per-byte live
+progress.
+
 ## References
 
 - ADR-0004 (SQLite, hand-rolled migrations) — schema intent; superseded on file
