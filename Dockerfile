@@ -1,7 +1,8 @@
-# Headless lbmd image — ships the sources that run without a GUI:
-#   Tier 1 Qobuz · Tier 2 Deezer + Soulseek(via external slskd) · Tier 3 yt-dlp
-# Monochrome (Amazon) needs a headed browser for Cloudflare Turnstile and is NOT
-# included here; it only works in a local/desktop install.
+# lbmd image. Ships every headless-capable source, plus Monochrome (Amazon):
+#   Tier 1 Qobuz · Monochrome · Tier 2 Deezer + Soulseek(via slskd) · Tier 3 yt-dlp
+# Monochrome needs a *headed* Chromium (Cloudflare Turnstile flags the headless
+# shell), so the runtime image bundles Playwright's Chromium + Xvfb and runs lbmd
+# under a virtual display. Turnstile may still refuse a datacenter IP.
 
 FROM python:3.12-slim AS builder
 RUN pip install --no-cache-dir uv
@@ -18,26 +19,48 @@ RUN npm ci --no-audit --no-fund
 COPY apps/console/ ./
 RUN npm run build
 
+# Build Bento4's mp4decrypt from source (CENC decrypt for Monochrome). From
+# source so it works on both amd64 and arm64 — bok.net ships amd64 binaries only.
+FROM python:3.12-slim AS bento4
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git cmake g++ make \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 https://github.com/axiomatic-systems/Bento4 /b4 \
+    && cmake -S /b4 -B /b4/build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /b4/build --target mp4decrypt -j"$(nproc)"
+
 FROM python:3.12-slim
 LABEL org.opencontainers.image.source="https://github.com/saikhurana98/load-balanced-music-downloader"
-LABEL org.opencontainers.image.description="Load-balanced tiered FLAC music downloader (headless CLI)"
+LABEL org.opencontainers.image.description="Load-balanced tiered FLAC music downloader"
 
-# ffmpeg provides ffprobe (verification) + ffmpeg (remux); yt-dlp is the Tier-3 source.
+# ffmpeg: ffprobe (verification) + remux. xvfb: virtual display for the headed
+# Monochrome browser. mp4decrypt (copied below) decrypts Amazon's CENC stream.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg xvfb \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=bento4 /b4/build/mp4decrypt /usr/local/bin/mp4decrypt
+
+# App wheel + yt-dlp (Tier 3) + Playwright (Monochrome browser driver).
 COPY --from=builder /dist/*.whl /tmp/
-RUN pip install --no-cache-dir /tmp/*.whl yt-dlp && rm -rf /tmp/*.whl
+RUN pip install --no-cache-dir /tmp/*.whl yt-dlp "playwright>=1.61.0" && rm -rf /tmp/*.whl
+
+# Chromium + its system libs, into a world-readable path the non-root user can run.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
 
 # Built console UI, served by `lbmd console` (StaticFiles) at LBMD_CONSOLE_STATIC.
 COPY --from=ui /ui/dist /app/console
 ENV LBMD_CONSOLE_STATIC=/app/console
+
+# Container browser needs --no-sandbox (unprivileged user, no setuid sandbox).
+ENV LBMD_BROWSER_NO_SANDBOX=1
 
 # non-root
 RUN useradd -m -u 1000 lbmd
 USER lbmd
 WORKDIR /downloads
 
-ENTRYPOINT ["lbmd"]
+# Run under Xvfb so the headed Chromium has a display (-a auto-picks a free one).
+ENTRYPOINT ["xvfb-run", "-a", "lbmd"]
 CMD ["--help"]
