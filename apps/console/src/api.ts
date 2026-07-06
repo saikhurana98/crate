@@ -31,6 +31,7 @@ export interface RequestRow {
   size_bytes: number | null;
   lossless: number | null;
   elapsed_s: number | null;
+  batch_id?: string | null;
 }
 
 export interface Attempt {
@@ -129,6 +130,45 @@ export interface PlayerState {
   recent: PlayerTrack[];
 }
 
+export interface BatchCounts {
+  done: number;
+  failed: number;
+  downloading: number;
+  queued: number;
+}
+
+export interface Batch {
+  id: string;
+  name: string;
+  origin: string; // spotify | youtube | paste
+  owner: string;
+  total: number;
+  paused: boolean;
+  cancelled_flag: boolean;
+  counts: BatchCounts;
+  created_at: string;
+}
+
+export interface BatchTrack {
+  id: string;
+  query: string;
+  status: string;
+  source_won: string | null;
+  tier_won: number | null;
+  error: string | null;
+}
+
+export interface BatchDetail extends Batch {
+  tracks: BatchTrack[];
+}
+
+export interface BulkResult {
+  id: string;
+  name: string;
+  origin: string;
+  total: number;
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, { headers: { Accept: "application/json" }, signal });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
@@ -167,6 +207,17 @@ export const api = {
   search: (q: string, signal?: AbortSignal) =>
     get<SpotifyTrack[]>(`/api/search?q=${encodeURIComponent(q)}&limit=20`, signal),
   enqueue: (query: string) => send<Enqueued>("POST", "/api/download", { query }),
+  bulk: (text: string) => send<BulkResult>("POST", "/api/bulk", { text }),
+  batches: () => get<Batch[]>("/api/batches"),
+  batch: (id: string) => get<BatchDetail>(`/api/batches/${encodeURIComponent(id)}`),
+  pauseBatch: (id: string, paused: boolean) =>
+    send<{ id: string; paused: boolean }>("POST", `/api/batches/${encodeURIComponent(id)}/pause`, {
+      paused,
+    }),
+  cancelBatch: (id: string) =>
+    send<{ id: string }>("POST", `/api/batches/${encodeURIComponent(id)}/cancel`, {}),
+  retry: (id: string) =>
+    send<{ id: string }>("POST", `/api/requests/${encodeURIComponent(id)}/retry`, {}),
   spotifyStatus: () => get<SpotifyStatus>("/api/spotify/status"),
   spotifyPlayer: (signal?: AbortSignal) => get<PlayerState>("/api/spotify/player", signal),
   spotifyLoginUrl: "/api/spotify/login",

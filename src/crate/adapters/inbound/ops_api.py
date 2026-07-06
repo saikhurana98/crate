@@ -24,6 +24,7 @@ from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from crate.application.bulk import ResolvedBatch
 from crate.composition.catalog import (
     KNOWN,
     PINNED,
@@ -38,6 +39,7 @@ from crate.infrastructure.sqlite.store import RequestStore
 
 SourcesFn = Callable[[], list[dict[str, Any]]]
 SearchFn = Callable[[str, int], list[dict[str, Any]]]
+BulkResolveFn = Callable[[str], ResolvedBatch]
 
 _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
@@ -73,6 +75,7 @@ def create_app(
     config: ConfigStore | None = None,
     search: SearchFn | None = None,
     spotify: SpotifyPort | None = None,
+    bulk_resolve: BulkResolveFn | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     app = FastAPI(title="crate console", docs_url=None, redoc_url=None, openapi_url=None)
@@ -152,6 +155,57 @@ def create_app(
             raise HTTPException(status_code=400, detail="query required")
         rid = store.enqueue(query)
         return {"id": rid, "query": query, "status": "queued"}
+
+    # --- bulk downloads (batches) ---
+    @api.post("/bulk")
+    def enqueue_bulk(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        text = str(body.get("text", "")).strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text required")
+        if bulk_resolve is None:
+            raise HTTPException(status_code=503, detail="bulk resolver not configured")
+        try:
+            batch = bulk_resolve(text)
+        except LookupError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # resolver/network failure
+            raise HTTPException(status_code=502, detail=f"could not resolve: {exc}") from exc
+        bid = store.create_batch(batch.name, batch.origin, batch.owner, len(batch.tracks))
+        for query in batch.tracks:
+            store.enqueue(query, batch_id=bid)
+        return {"id": bid, "name": batch.name, "origin": batch.origin, "total": len(batch.tracks)}
+
+    @api.get("/batches")
+    def batches() -> list[dict[str, Any]]:
+        return store.list_batches()
+
+    @api.get("/batches/{batch_id}")
+    def batch_detail(batch_id: str) -> dict[str, Any]:
+        record = store.get_batch(batch_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        return record
+
+    @api.post("/batches/{batch_id}/pause")
+    def pause_batch(batch_id: str, body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        paused = bool(body.get("paused", True))
+        if not store.set_batch_paused(batch_id, paused):
+            raise HTTPException(status_code=404, detail="batch not found")
+        return {"id": batch_id, "paused": paused}
+
+    @api.post("/batches/{batch_id}/cancel")
+    def cancel_batch(batch_id: str) -> dict[str, Any]:
+        if not store.cancel_batch(batch_id):
+            raise HTTPException(status_code=404, detail="batch not found")
+        return {"id": batch_id, "cancelled": True}
+
+    @api.post("/requests/{request_id}/retry")
+    def retry_request(request_id: str) -> dict[str, Any]:
+        if not store.requeue(request_id):
+            raise HTTPException(status_code=409, detail="request is not retryable")
+        return {"id": request_id, "status": "queued"}
 
     @api.get("/config")
     def get_config() -> dict[str, Any]:

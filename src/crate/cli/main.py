@@ -99,9 +99,16 @@ def serve(  # pragma: no cover - network server loop
     )
     # Drain console-queued downloads in the background (this process owns the NAS
     # mount + toolchain; the console only writes queue rows to the shared DB).
+    # Multiple worker threads give bulk batches parallelism; claim_next is atomic
+    # so they never double-claim a row.
+    concurrency = max(1, int(os.environ.get("CRATE_BULK_CONCURRENCY", "4")))
     stop = threading.Event()
-    threading.Thread(target=build_queue_worker(), args=(stop,), daemon=True).start()
-    typer.echo(f"crate slskd-shim listening on {host}:{port}  downloads -> {downloads}")
+    for _ in range(concurrency):
+        threading.Thread(target=build_queue_worker(), args=(stop,), daemon=True).start()
+    typer.echo(
+        f"crate slskd-shim listening on {host}:{port}  downloads -> {downloads}  "
+        f"(queue workers: {concurrency})"
+    )
     try:
         run_server(shim, host, port)
     finally:
