@@ -125,6 +125,9 @@ class RequestStore:
             )
 
     # --- reads (console) ---
+    # NB: all reads take self._lock too. The console shares one SQLite connection
+    # across uvicorn's threadpool + the SSE thread; without serialising, concurrent
+    # cursors on the same connection interleave and return rows from the wrong query.
     def list_requests(
         self,
         status: str | None = None,
@@ -148,24 +151,26 @@ class RequestStore:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
         params += [limit, offset]
-        return [dict(row) for row in self._conn.execute(sql, params)]
+        with self._lock:
+            return [dict(row) for row in self._conn.execute(sql, params)]
 
     def get_request(self, request_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()
-        if row is None:
-            return None
-        out = dict(row)
-        out["attempts"] = [
-            dict(a)
-            for a in self._conn.execute(
-                "SELECT * FROM attempts WHERE request_id=? ORDER BY id", (request_id,)
-            )
-        ]
-        dl = self._conn.execute(
-            "SELECT * FROM downloads WHERE request_id=?", (request_id,)
-        ).fetchone()
-        out["download"] = dict(dl) if dl else None
-        return out
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()
+            if row is None:
+                return None
+            out = dict(row)
+            out["attempts"] = [
+                dict(a)
+                for a in self._conn.execute(
+                    "SELECT * FROM attempts WHERE request_id=? ORDER BY id", (request_id,)
+                )
+            ]
+            dl = self._conn.execute(
+                "SELECT * FROM downloads WHERE request_id=?", (request_id,)
+            ).fetchone()
+            out["download"] = dict(dl) if dl else None
+            return out
 
     def stats(self) -> dict[str, Any]:
         conn = self._conn
@@ -174,33 +179,36 @@ class RequestStore:
             row = conn.execute(sql).fetchone()
             return row[0] if row and row[0] is not None else 0
 
-        total = scalar("SELECT COUNT(*) FROM requests")
-        done = scalar("SELECT COUNT(*) FROM requests WHERE status='done'")
-        failed = scalar("SELECT COUNT(*) FROM requests WHERE status='failed'")
-        in_flight = scalar("SELECT COUNT(*) FROM requests WHERE status='downloading'")
-        queued = scalar("SELECT COUNT(*) FROM requests WHERE status='queued'")
-        lossless = scalar("SELECT COUNT(*) FROM downloads WHERE lossless=1")
-        settled = done + failed
-        wins_by_source = {
-            row["source_won"]: row["n"]
-            for row in conn.execute(
-                "SELECT source_won, COUNT(*) n FROM requests "
-                "WHERE source_won IS NOT NULL GROUP BY source_won"
-            )
-        }
-        wins_by_tier = {
-            str(row["tier_won"]): row["n"]
-            for row in conn.execute(
-                "SELECT tier_won, COUNT(*) n FROM requests "
-                "WHERE tier_won IS NOT NULL GROUP BY tier_won"
-            )
-        }
-        attempts_by_source = {
-            row["source"]: {"ok": row["ok"], "total": row["n"]}
-            for row in conn.execute(
-                "SELECT source, SUM(ok) ok, COUNT(*) n FROM attempts GROUP BY source"
-            )
-        }
+        with self._lock:
+            total = scalar("SELECT COUNT(*) FROM requests")
+            done = scalar("SELECT COUNT(*) FROM requests WHERE status='done'")
+            failed = scalar("SELECT COUNT(*) FROM requests WHERE status='failed'")
+            in_flight = scalar("SELECT COUNT(*) FROM requests WHERE status='downloading'")
+            queued = scalar("SELECT COUNT(*) FROM requests WHERE status='queued'")
+            lossless = scalar("SELECT COUNT(*) FROM downloads WHERE lossless=1")
+            settled = done + failed
+            wins_by_source = {
+                row["source_won"]: row["n"]
+                for row in conn.execute(
+                    "SELECT source_won, COUNT(*) n FROM requests "
+                    "WHERE source_won IS NOT NULL GROUP BY source_won"
+                )
+            }
+            wins_by_tier = {
+                str(row["tier_won"]): row["n"]
+                for row in conn.execute(
+                    "SELECT tier_won, COUNT(*) n FROM requests "
+                    "WHERE tier_won IS NOT NULL GROUP BY tier_won"
+                )
+            }
+            attempts_by_source = {
+                row["source"]: {"ok": row["ok"], "total": row["n"]}
+                for row in conn.execute(
+                    "SELECT source, SUM(ok) ok, COUNT(*) n FROM attempts GROUP BY source"
+                )
+            }
+            total_bytes = scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM downloads")
+            avg_elapsed_s = scalar("SELECT COALESCE(AVG(elapsed_s), 0) FROM downloads")
         return {
             "total": total,
             "done": done,
@@ -210,8 +218,8 @@ class RequestStore:
             "success_rate": (done / settled) if settled else 0.0,
             "lossless": lossless,
             "lossless_rate": (lossless / done) if done else 0.0,
-            "total_bytes": scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM downloads"),
-            "avg_elapsed_s": scalar("SELECT COALESCE(AVG(elapsed_s), 0) FROM downloads"),
+            "total_bytes": total_bytes,
+            "avg_elapsed_s": avg_elapsed_s,
             "wins_by_source": wins_by_source,
             "wins_by_tier": wins_by_tier,
             "attempts_by_source": attempts_by_source,
@@ -230,17 +238,20 @@ class RequestStore:
 
     def list_batches(self) -> list[dict[str, Any]]:
         """Batches with per-status counts (newest first)."""
-        rows = self._conn.execute(
-            "SELECT b.*, "
-            "COUNT(r.id) AS n, "
-            "COALESCE(SUM(r.status='done'), 0) AS done, "
-            "COALESCE(SUM(r.status='failed'), 0) AS failed, "
-            "COALESCE(SUM(r.status='downloading'), 0) AS downloading, "
-            "COALESCE(SUM(r.status='queued'), 0) AS queued, "
-            "COALESCE(SUM(r.status='cancelled'), 0) AS cancelled "
-            "FROM batches b LEFT JOIN requests r ON r.batch_id = b.id "
-            "GROUP BY b.id ORDER BY b.created_at DESC"
-        )
+        with self._lock:
+            rows = list(
+                self._conn.execute(
+                    "SELECT b.*, "
+                    "COUNT(r.id) AS n, "
+                    "COALESCE(SUM(r.status='done'), 0) AS done, "
+                    "COALESCE(SUM(r.status='failed'), 0) AS failed, "
+                    "COALESCE(SUM(r.status='downloading'), 0) AS downloading, "
+                    "COALESCE(SUM(r.status='queued'), 0) AS queued, "
+                    "COALESCE(SUM(r.status='cancelled'), 0) AS cancelled "
+                    "FROM batches b LEFT JOIN requests r ON r.batch_id = b.id "
+                    "GROUP BY b.id ORDER BY b.created_at DESC"
+                )
+            )
         out: list[dict[str, Any]] = []
         for row in rows:
             d = dict(row)
@@ -256,19 +267,22 @@ class RequestStore:
         return out
 
     def get_batch(self, batch_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
-        if row is None:
-            return None
-        out = dict(row)
-        out["tracks"] = [
-            dict(t)
-            for t in self._conn.execute(
-                "SELECT id, query, status, source_won, tier_won, error "
-                "FROM requests WHERE batch_id=? ORDER BY created_at",
-                (batch_id,),
-            )
-        ]
-        return out
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM batches WHERE id=?", (batch_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            out = dict(row)
+            out["tracks"] = [
+                dict(t)
+                for t in self._conn.execute(
+                    "SELECT id, query, status, source_won, tier_won, error "
+                    "FROM requests WHERE batch_id=? ORDER BY created_at",
+                    (batch_id,),
+                )
+            ]
+            return out
 
     def set_batch_paused(self, batch_id: str, paused: bool) -> bool:
         with self._lock:
