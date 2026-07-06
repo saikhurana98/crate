@@ -35,9 +35,10 @@ LABEL org.opencontainers.image.description="Load-balanced tiered FLAC music down
 
 # ffmpeg: ffprobe (verification) + remux. xvfb + xauth: virtual display for the
 # headed Monochrome browser (xvfb-run needs xauth, which recommends-off omits).
-# mp4decrypt (copied below) decrypts Amazon's CENC stream.
+# tini: real PID 1 — xvfb-run's bash script hangs the server if it runs as PID 1,
+# so tini sits above it and reaps/forwards signals. mp4decrypt: CENC decrypt.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg xvfb xauth \
+    && apt-get install -y --no-install-recommends ffmpeg xvfb xauth tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=bento4 /b4/build/mp4decrypt /usr/local/bin/mp4decrypt
@@ -62,6 +63,7 @@ RUN useradd -m -u 1000 lbmd
 USER lbmd
 WORKDIR /downloads
 
-# Run under Xvfb so the headed Chromium has a display (-a auto-picks a free one).
-ENTRYPOINT ["xvfb-run", "-a", "lbmd"]
+# tini as PID 1, then Xvfb (headed Chromium needs a display; -a auto-picks one).
+# xvfb-run as PID 1 wedges the server, so it must run beneath a real init.
+ENTRYPOINT ["tini", "--", "xvfb-run", "-a", "lbmd"]
 CMD ["--help"]
