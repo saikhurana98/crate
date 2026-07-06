@@ -358,6 +358,11 @@ function moveSource(name: string, targetKey: string, index: number | null): void
 
 // ---------- shared SVG bits ----------
 const DL_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>`;
+// strategy glyphs: parallel = fork/branch, uniform = rotate/round-robin
+const iconParallel = (sz: number, sw: number): string =>
+  `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"></path><path d="M12 8l-6 5v8"></path><path d="M12 8l6 5v8"></path><path d="M12 8v13"></path></svg>`;
+const iconUniform = (sz: number, sw: number): string =>
+  `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>`;
 
 // ---------- view builders (return HTML strings) ----------
 function statCardsHtml(): string {
@@ -398,17 +403,17 @@ function cardHtml(name: string, tierKey: string, index: number, active: boolean)
   const missing = meta.credentials === "missing";
   const shake = state.rejectShake === name ? "animation:shake .48s;" : "";
   const accent = tierColor(Number(tierKey) || null);
-  const stub = active
-    ? `<span style="width:1px;height:14px;margin:0 auto;background:${accent};box-shadow:0 0 8px ${accent};animation:flowpulse 1s ease-in-out infinite"></span>`
-    : `<span style="width:1px;height:14px;margin:0 auto;background:#272c25"></span>`;
+  const stubColor = active ? accent : "#272c25";
+  const stubGlow = active ? `0 0 8px ${accent}` : "none";
+  const stubAnim = active ? "flowpulse 1s ease-in-out infinite" : "none";
   const gearOrLock = locked
     ? `<svg title="Pinned final fallback — locked" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>`
     : `<button class="gear" data-act="openPanel" data-source="${esc(name)}" title="Configure" style="background:none;border:none;cursor:pointer;color:#5d6456;padding:3px;border-radius:8px;display:inline-flex;transition:color .15s,background .15s">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2"></path></svg>
       </button>`;
-  return `<div style="flex:0 1 240px;min-width:168px;display:flex;flex-direction:column">${stub}
-    <div class="dcard" draggable="${!locked}" data-drag-card data-source="${esc(name)}" data-tier="${esc(tierKey)}" data-index="${index}"
-      style="flex:1;display:flex;align-items:center;gap:9px;background:#181c17;border:1px solid ${missing ? "rgba(255,76,56,.4)" : "#272c25"};border-radius:14px;padding:11px 12px;cursor:${locked ? "default" : "grab"};opacity:${dragging ? ".4" : "1"};transition:border-color .15s,box-shadow .15s;${shake}">
+  return `<div class="dcard" draggable="${!locked}" data-drag-card data-source="${esc(name)}" data-tier="${esc(tierKey)}" data-index="${index}"
+      style="flex:0 1 240px;min-width:168px;display:flex;align-items:center;gap:9px;background:#181c17;border:1px solid ${missing ? "rgba(255,76,56,.4)" : "#272c25"};border-radius:14px;padding:11px 12px;position:relative;z-index:1;cursor:${locked ? "default" : "grab"};opacity:${dragging ? ".4" : "1"};transition:border-color .15s,box-shadow .15s;${shake}">
+      <span style="width:6px;height:6px;border-radius:50%;background:${stubColor};box-shadow:${stubGlow};animation:${stubAnim};flex-shrink:0"></span>
       <span style="color:${locked ? "#22261f" : "#5d6456"};font:600 12px 'JetBrains Mono';letter-spacing:-2px;user-select:none">${locked ? "" : "⣿"}</span>
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:7px">
@@ -422,8 +427,7 @@ function cardHtml(name: string, tierKey: string, index: number, active: boolean)
         </div>
       </div>
       ${gearOrLock}
-    </div>
-  </div>`;
+    </div>`;
 }
 
 function tierHtml(t: TierCfg, showFall: boolean): string {
@@ -440,47 +444,49 @@ function tierHtml(t: TierCfg, showFall: boolean): string {
       ? "parallel · single source, first verified file wins"
       : `parallel · all ${n} fired at once, first verified file wins`
     : `uniform · one per request, rotating${nextName ? ` · next: ${nextName}` : ""}`;
+  const tierBg = over ? "rgba(233,237,227,.03)" : "#0e100d";
   const cells: string[] = [];
   for (let i = 0; i <= n; i++) {
     if (over && state.drag.overIndex === i)
       cells.push(
-        `<div style="flex:0 0 130px;align-self:stretch;border:1px dashed #99a091;border-radius:14px;background:rgba(233,237,227,.04);margin-top:14px"></div>`,
+        `<div style="flex:0 0 130px;min-height:56px;border:1px dashed #99a091;border-radius:14px;background:rgba(233,237,227,.04)"></div>`,
       );
     if (i < n) cells.push(cardHtml(t.sources[i], key, i, isAll || i === activeIdx));
   }
   const railColor = isAll ? "rgba(233,237,227,.3)" : "#272c25";
-  const railInset = n <= 1 ? "34%" : n === 2 ? "22%" : "14%";
-  const stratBtn = (strat: string, label: string, active: boolean) =>
-    `<button data-act="strategy" data-tier="${key}" data-strategy="${strat}" style="border:none;border-radius:16px;cursor:pointer;font:600 10px 'JetBrains Mono';letter-spacing:.04em;padding:5px 11px;background:${active ? "#e9ede3" : "transparent"};color:${active ? "#14170f" : C.faint};transition:.15s">${label}</button>`;
-  return `<div>
-    <div data-drop-tier="${key}" style="border:1px solid ${over ? "#99a091" : "#22261f"};border-radius:18px;background:${over ? "rgba(233,237,227,.03)" : "#0e100d"};padding:13px 16px 15px;transition:border-color .15s,background .15s">
-      <div style="display:flex;align-items:center;gap:11px;flex-wrap:wrap">
-        <span style="font:800 15px 'Doto';color:${accent};letter-spacing:.06em">0${key}</span>
-        <span style="font:600 13px 'Instrument Sans'">Tier ${key}</span>
-        <span style="font:500 10.5px 'JetBrains Mono';color:#5d6456">${n} ${n === 1 ? "source" : "sources"}</span>
-        <div style="margin-left:auto;display:flex;align-items:center;gap:11px">
-          <span style="font:400 10px 'JetBrains Mono';color:#5d6456">${esc(caption)}</span>
-          <div style="display:flex;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;padding:2px">
-            ${stratBtn("all", "⇉ parallel", isAll)}${stratBtn("uniform", "⟳ uniform", !isAll)}
+  const hub = `<span title="${isAll ? "Dispatch: broadcast to all sources in parallel" : "Dispatch: round-robin, uniformly distributed"}" style="width:26px;height:26px;border-radius:50%;background:#0c0e0c;border:1px solid ${accent};display:inline-flex;align-items:center;justify-content:center;color:${accent};flex-shrink:0">${isAll ? iconParallel(13, 2) : iconUniform(12, 2.2)}</span>`;
+  const stratBtn = (strat: string, label: string, icon: string, active: boolean) =>
+    `<button data-act="strategy" data-tier="${key}" data-strategy="${strat}" style="display:inline-flex;align-items:center;gap:5px;border:none;border-radius:16px;cursor:pointer;font:600 10px 'JetBrains Mono';letter-spacing:.04em;padding:5px 11px;background:${active ? "#e9ede3" : "transparent"};color:${active ? "#14170f" : C.faint};transition:.15s">${icon}${label}</button>`;
+  return `<div style="position:relative">
+    <div style="display:flex;align-items:flex-start;margin-top:12px">
+      <span style="width:27px;display:flex;justify-content:center;flex-shrink:0;margin-top:10px;position:relative;z-index:1"><span style="width:27px;height:27px;border-radius:50%;background:#0c0e0c;border:1px solid ${accent};display:inline-flex;align-items:center;justify-content:center;font:800 11px 'Doto';color:${accent}">0${key}</span></span>
+      <span style="width:14px;height:1px;background:#2c332a;flex-shrink:0;margin-top:23px"></span>
+      <div data-drop-tier="${key}" style="flex:1;min-width:0;border:1px solid ${over ? "#99a091" : "#22261f"};border-radius:18px;background:${tierBg};padding:13px 16px 15px;transition:border-color .15s,background .15s">
+        <div style="display:flex;align-items:center;gap:11px;flex-wrap:wrap">
+          <span style="font:800 15px 'Doto';color:${accent};letter-spacing:.06em">0${key}</span>
+          <span style="font:600 13px 'Instrument Sans'">Tier ${key}</span>
+          <span style="font:500 10.5px 'JetBrains Mono';color:#5d6456">${n} ${n === 1 ? "source" : "sources"}</span>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:11px">
+            <span style="font:400 10px 'JetBrains Mono';color:#5d6456">${esc(caption)}</span>
+            <div style="display:flex;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;padding:2px">
+              ${stratBtn("all", "parallel", iconParallel(10, 2.4), isAll)}${stratBtn("uniform", "uniform", iconUniform(10, 2.4), !isAll)}
+            </div>
           </div>
         </div>
-      </div>
-      <div style="display:flex;flex-direction:column;align-items:center;margin-top:9px">
-        <span style="width:26px;height:26px;border-radius:50%;background:#0c0e0c;border:1px solid ${accent};display:inline-flex;align-items:center;justify-content:center;font:600 12px 'JetBrains Mono';color:${accent}">${isAll ? "⇉" : "⟳"}</span>
-        <span style="width:1px;height:10px;background:${railColor}"></span>
-      </div>
-      <div style="height:1px;background:${railColor};margin:0 ${railInset}"></div>
-      <div style="display:flex;gap:10px;justify-content:center;min-height:86px">
-        ${cells.join("") || `<div style="align-self:center;padding:20px 8px;font:400 11px 'JetBrains Mono';color:#464d40">Drop sources here</div>`}
+        <div style="position:relative;margin-top:13px">
+          <span style="position:absolute;left:0;right:6px;top:50%;height:1px;background:${railColor}"></span>
+          <div style="position:relative;display:flex;align-items:center;gap:12px;min-height:64px">
+            ${hub}
+            ${cells.join("") || `<div style="position:relative;z-index:1;background:${tierBg};padding:8px 10px;font:400 11px 'JetBrains Mono';color:#464d40">Drop sources here</div>`}
+          </div>
+        </div>
       </div>
     </div>
     ${
       showFall
-        ? `<div style="display:flex;flex-direction:column;align-items:center;padding:2px 0">
-        <span style="width:1px;height:9px;background:#2c332a"></span>
-        <span style="font:500 9.5px 'JetBrains Mono';letter-spacing:.05em;color:#5d6456;padding:3px 11px;border:1px solid #1d211c;border-radius:12px;background:#0e100d">no verified file · fall through</span>
-        <span style="width:1px;height:9px;background:#2c332a"></span>
-        <span style="color:#464d40;font-size:9px;line-height:4px;margin-bottom:2px">▼</span>
+        ? `<div style="display:flex;align-items:center;gap:11px;margin-top:12px;position:relative">
+        <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="color:#464d40;font-size:9px;line-height:1;background:#111411;padding:3px 0">▼</span></span>
+        <span style="font:500 9.5px 'JetBrains Mono';letter-spacing:.05em;color:#5d6456">no verified file · falls through</span>
       </div>`
         : ""
     }
@@ -517,15 +523,17 @@ function cascadeHtml(): string {
       <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Cascade</h1>
       <p style="margin:4px 0 0;font:400 12.5px 'Instrument Sans';color:#99a091">Requests fall through tiers until a source produces a verified file. Drag sources between tiers; toggles set each tier's fan-out strategy.</p>
     </div>
-    <div style="display:flex;flex-direction:column;align-items:center;margin-top:12px">
-      <span style="display:inline-flex;align-items:center;gap:9px;padding:7px 16px;border-radius:20px;background:#181c17;border:1px solid #272c25;font:600 11px 'JetBrains Mono';letter-spacing:.05em;color:#e9ede3"><span style="width:6px;height:6px;border-radius:50%;background:#ff4c38;animation:pulse 1.6s ease-in-out infinite"></span>request in</span>
-      <span style="width:1px;height:14px;background:#2c332a"></span>
-      <span style="color:#464d40;font-size:9px;line-height:4px;margin-bottom:2px">▼</span>
-    </div>
-    ${tiers.map((t, i) => tierHtml(t, i < tiers.length - 1)).join("")}
-    <div style="display:flex;flex-direction:column;align-items:center">
-      <span style="width:1px;height:14px;background:#2c332a"></span>
-      <span style="display:inline-flex;align-items:center;gap:9px;padding:7px 16px;border-radius:20px;background:#dfe4d6;font:600 11px 'JetBrains Mono';letter-spacing:.05em;color:#14170f">✓ verified file → library</span>
+    <div style="position:relative;margin-top:14px">
+      <span style="position:absolute;left:13px;top:14px;bottom:14px;width:1px;background:#2c332a"></span>
+      <div style="display:flex;align-items:center;gap:12px;position:relative">
+        <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="width:11px;height:11px;border-radius:50%;background:#ff4c38;border:4px solid #111411;box-sizing:content-box;animation:pulse 1.6s ease-in-out infinite"></span></span>
+        <span style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;background:#181c17;border:1px solid #272c25;font:600 11px 'JetBrains Mono';letter-spacing:.05em;color:#e9ede3">request in</span>
+      </div>
+      ${tiers.map((t, i) => tierHtml(t, i < tiers.length - 1)).join("")}
+      <div style="display:flex;align-items:center;gap:12px;margin-top:12px;position:relative">
+        <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="width:19px;height:19px;border-radius:50%;background:#dfe4d6;display:inline-flex;align-items:center;justify-content:center;font:700 10px 'JetBrains Mono';color:#14170f;border:4px solid #111411;box-sizing:content-box">✓</span></span>
+        <span style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;background:#dfe4d6;font:600 11px 'JetBrains Mono';letter-spacing:.05em;color:#14170f">verified file → library</span>
+      </div>
     </div>
     ${trayHtml()}
   </section>`;
