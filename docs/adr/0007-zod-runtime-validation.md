@@ -10,7 +10,7 @@ TypeScript types disappear at runtime. Anywhere data crosses from outside the pr
 The boundaries we must validate:
 
 1. **WebSocket inbound messages** — clients send JSON; we must reject malformed shapes with a clear error.
-2. **Config file load** — `lbmd.config.json` must validate before the daemon boots; bad config = fail-fast.
+2. **Config file load** — `crate.config.json` must validate before the daemon boots; bad config = fail-fast.
 3. **Source-adapter responses** — third-party JSON (MusicBrainz, Spotify, AcoustID) is not trustworthy; parse, don't blindly cast.
 4. **SQLite row reads** — repository functions parse rows into domain types via a runtime check, in case schema and code drift.
 5. **External-process output** — `fpcalc`, `yt-dlp` JSON output.
@@ -34,7 +34,7 @@ Use **zod** for all runtime validation at boundaries. Specifically:
 
 - **Positive**: Bad data fails fast with a precise location ("invalid type at `body.tracks[3].duration`"). TS types and runtime checks share one source of truth. Refactoring a schema automatically refactors derived types. WS protocol drift is detectable in tests.
 - **Negative / accepted trade-offs**: Mild verbosity at boundaries — every adapter has a parse step. We accept this as the price for runtime safety.
-- **Neutral**: We could swap zod for `valibot` (smaller bundle) later; the public API surface (`.parse`, `.safeParse`, `z.infer`) is similar and migration would be mostly mechanical. The debug UI does want a small bundle, so we may revisit zod-vs-valibot for that package specifically — but `@lbmd/core` stays on zod.
+- **Neutral**: We could swap zod for `valibot` (smaller bundle) later; the public API surface (`.parse`, `.safeParse`, `z.infer`) is similar and migration would be mostly mechanical. The debug UI does want a small bundle, so we may revisit zod-vs-valibot for that package specifically — but `@crate/core` stays on zod.
 
 ## Alternatives considered
 

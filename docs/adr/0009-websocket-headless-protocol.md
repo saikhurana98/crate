@@ -29,7 +29,7 @@ REST + polling is wasteful and slow for live progress. Server-Sent Events is one
 - **Disambiguation**: when free-text input yields multiple candidates, server emits `disambiguate` with `expiresAt`. Client responds with selection within the window or the candidates are discarded.
 - **Cancellation** is a first-class client → server message: `{ type: "cancel", target: { kind: "job"|"group", id } }`.
 
-The full schema is the JSON Schema in `contracts/ws-protocol.schema.json`. Both `@lbmd/core` and `@lbmd/debug-ui` independently validate their internal protocol modules against it in CI.
+The full schema is the JSON Schema in `contracts/ws-protocol.schema.json`. Both `@crate/core` and `@crate/debug-ui` independently validate their internal protocol modules against it in CI.
 
 ## Consequences
 

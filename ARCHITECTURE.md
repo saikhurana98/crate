@@ -1,4 +1,4 @@
-# Architecture — Load-Balanced Music Downloader (lbmd)
+# Architecture — Load-Balanced Music Downloader (crate)
 
 > Headless backbone service. Acquires high-quality audio (FLAC target) from a load-balanced pool of sources for live DJ sets and background catalog building. Exposes a WebSocket API. Stores files on NAS, tracks state in SQLite.
 
@@ -359,7 +359,7 @@ NAS_ROOT/
 │   ├── .review/<job-id>-<source>.flac       # review-pending
 │   └── <Artist>/<Album>/01 - <Title>.flac
 ├── live-incoming/<job-id>.<ext>             # ephemeral DJ-set rips, purged after upgrade or 7d
-└── .lbmd/
+└── .crate/
     ├── catalog.db (+ -wal, -shm)
     └── lock                                  # advisory single-process lock
 ```
@@ -434,7 +434,7 @@ Three layers, all opt-in (zero-cost-when-off where possible).
 
 ### Structured logs (always on)
 
-`pino` JSON to stderr. `LBMD_LOG_LEVEL=debug|info|warn|error` (default `info`). Every log line carries `evt`, `request_id`, `job_id|group_id|source_id` where applicable, `duration_ms` for span events. Syslog captures.
+`pino` JSON to stderr. `CRATE_LOG_LEVEL=debug|info|warn|error` (default `info`). Every log line carries `evt`, `request_id`, `job_id|group_id|source_id` where applicable, `duration_ms` for span events. Syslog captures.
 
 ### Metrics (Prometheus exposition)
 
@@ -454,7 +454,7 @@ If `OTEL_EXPORTER_OTLP_ENDPOINT` set, init OTel SDK. Spans: `request.handle → 
 
 ## 15. Configuration
 
-Single file `lbmd.config.json` loaded at startup, validated with zod, fail-fast on invalid. Source overrides nested under `sources.<id>.*`. Example in [`config/lbmd.config.example.json`](config/lbmd.config.example.json).
+Single file `crate.config.json` loaded at startup, validated with zod, fail-fast on invalid. Source overrides nested under `sources.<id>.*`. Example in [`config/crate.config.example.json`](config/crate.config.example.json).
 
 Top-level keys: `ws`, `ops`, `nas`, `db`, `log`, `browser`, `concurrency`, `scheduler`, `verification`, `retry`, `purge`, `resolvers`, `sources`.
 
@@ -475,7 +475,7 @@ load-balanced-music-downloader/
 ├── docs/
 │   └── adr/                         # architecture decision records
 ├── packages/
-│   └── core/                        # @lbmd/core — the headless service
+│   └── core/                        # @crate/core — the headless service
 │       ├── package.json
 │       ├── tsconfig.json
 │       ├── vitest.config.ts
@@ -490,7 +490,7 @@ load-balanced-music-downloader/
 │       │   └── index.ts
 │       └── tests/                   # mirrors src/, contract tests + use-case tests
 └── apps/
-    └── debug-ui/                    # @lbmd/debug-ui — independent, ZERO imports from core
+    └── debug-ui/                    # @crate/debug-ui — independent, ZERO imports from core
         ├── package.json
         ├── vite.config.ts
         ├── index.html
@@ -502,7 +502,7 @@ load-balanced-music-downloader/
         └── tests/
 ```
 
-**Decoupling**: debug-ui has zero imports from `@lbmd/core`. Both packages independently validate their `protocol/messages.ts` against `contracts/ws-protocol.schema.json` in CI. Drift = build fail. See [ADR-0011](docs/adr/0011-monorepo-decoupled-debug-ui.md).
+**Decoupling**: debug-ui has zero imports from `@crate/core`. Both packages independently validate their `protocol/messages.ts` against `contracts/ws-protocol.schema.json` in CI. Drift = build fail. See [ADR-0011](docs/adr/0011-monorepo-decoupled-debug-ui.md).
 
 ---
 
@@ -530,7 +530,7 @@ load-balanced-music-downloader/
 - **Domain**: pure unit tests, zero mocks.
 - **Ports**: each port has a contract test suite (`tests/ports/<port>.contract.ts`) parametrised over every adapter. New adapter = wire its factory into the suite, run, fix failures.
 - **Application (use-cases)**: tests pin behaviour against in-memory adapter fakes (live in `tests/fakes/`).
-- **Adapters**: integration tests guarded by env (e.g., `LBMD_TEST_LIVE_SOURCES=1`); skipped in CI by default.
+- **Adapters**: integration tests guarded by env (e.g., `CRATE_TEST_LIVE_SOURCES=1`); skipped in CI by default.
 - **Infrastructure**: SQLite tests use temp file DB; NAS writer tests use temp dir; Playwright pool tests use a real headless Chromium.
 
 CI gate: `pnpm typecheck && pnpm lint && pnpm test`. All must pass; tests should fail loudly with "not implemented" assertions in the initial scaffold (test-first).

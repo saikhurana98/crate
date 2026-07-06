@@ -6,14 +6,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from lbmd.adapters.inbound.ops_api import create_app
-from lbmd.application.download import DownloadReport
-from lbmd.domain.audio import AudioInfo, QualityVerdict
-from lbmd.domain.download import DownloadOutcome
-from lbmd.infrastructure.crypto import SecretBox
-from lbmd.infrastructure.sqlite.config_store import ConfigStore
-from lbmd.infrastructure.sqlite.db import connect
-from lbmd.infrastructure.sqlite.store import RequestStore
+from crate.adapters.inbound.ops_api import create_app
+from crate.application.download import DownloadReport
+from crate.domain.audio import AudioInfo, QualityVerdict
+from crate.domain.download import DownloadOutcome
+from crate.infrastructure.crypto import SecretBox
+from crate.infrastructure.sqlite.config_store import ConfigStore
+from crate.infrastructure.sqlite.db import connect
+from crate.infrastructure.sqlite.store import RequestStore
 
 
 def _config(tmp_path: Path) -> ConfigStore:
@@ -28,7 +28,7 @@ def _report(source: str = "qobuz", tier: int = 1) -> DownloadReport:
 
 
 def _seeded_store(tmp_path: Path) -> RequestStore:
-    store = RequestStore(connect(tmp_path / "lbmd.db"), requested_via="explo")
+    store = RequestStore(connect(tmp_path / "crate.db"), requested_via="explo")
     done = store.open_request("Daft Punk Get Lucky")
     store.record_attempt(done, "monochrome", 1, False, "Turnstile JWT required")
     store.record_attempt(done, "qobuz", 1, True, "lossless 24-bit / 96 kHz flac")
@@ -161,14 +161,14 @@ def test_put_source_stores_encrypted_credentials(tmp_path: Path) -> None:
         "/api/sources/qobuz",
         json={
             "credentials": {
-                "LBMD_QOBUZ_APP_ID": "a",
-                "LBMD_QOBUZ_APP_SECRET": "b",
-                "LBMD_QOBUZ_TOKEN": "c",
+                "CRATE_QOBUZ_APP_ID": "a",
+                "CRATE_QOBUZ_APP_SECRET": "b",
+                "CRATE_QOBUZ_TOKEN": "c",
             }
         },
     )
     assert r.status_code == 200 and r.json()["credentials"] == "ok"
-    assert cfg.get_secret("qobuz", "LBMD_QOBUZ_TOKEN") == "c"
+    assert cfg.get_secret("qobuz", "CRATE_QOBUZ_TOKEN") == "c"
 
 
 def test_put_source_enabled_toggle_moves_in_and_out(tmp_path: Path) -> None:

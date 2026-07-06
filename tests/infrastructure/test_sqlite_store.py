@@ -5,15 +5,15 @@ end to end; no mocking of the DB."""
 
 from pathlib import Path
 
-from lbmd.application.download import DownloadReport
-from lbmd.domain.audio import AudioInfo, QualityVerdict
-from lbmd.domain.download import DownloadOutcome
-from lbmd.infrastructure.sqlite.db import connect, migrate
-from lbmd.infrastructure.sqlite.store import RequestStore
+from crate.application.download import DownloadReport
+from crate.domain.audio import AudioInfo, QualityVerdict
+from crate.domain.download import DownloadOutcome
+from crate.infrastructure.sqlite.db import connect, migrate
+from crate.infrastructure.sqlite.store import RequestStore
 
 
 def _store(tmp_path: Path, via: str = "explo") -> RequestStore:
-    return RequestStore(connect(tmp_path / "lbmd.db"), requested_via=via)
+    return RequestStore(connect(tmp_path / "crate.db"), requested_via=via)
 
 
 def _report(source: str = "qobuz", tier: int = 1, lossless: bool = True) -> DownloadReport:
@@ -24,7 +24,7 @@ def _report(source: str = "qobuz", tier: int = 1, lossless: bool = True) -> Down
 
 
 def test_migration_creates_schema_and_is_idempotent(tmp_path: Path) -> None:
-    conn = connect(tmp_path / "lbmd.db")
+    conn = connect(tmp_path / "crate.db")
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"requests", "attempts", "downloads", "schema_migrations"} <= tables
     # re-running finds nothing to apply

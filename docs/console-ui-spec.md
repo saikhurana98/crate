@@ -1,6 +1,6 @@
-# lbmd Console — UI Specification
+# crate Console — UI Specification
 
-A self-contained brief for building the lbmd management console UI. No prior
+A self-contained brief for building the crate management console UI. No prior
 context required. Backend endpoints and data shapes are given verbatim so the UI
 can bind to them directly.
 
@@ -8,8 +8,8 @@ can bind to them directly.
 
 ## 1. Product context
 
-**lbmd** is a self-hosted, tiered music downloader. When something requests a
-track (usually the discovery service **Explo**, sometimes a manual CLI call), lbmd
+**crate** is a self-hosted, tiered music downloader. When something requests a
+track (usually the discovery service **Explo**, sometimes a manual CLI call), crate
 runs a **tier cascade**: it tries Tier 1 sources first, then Tier 2, then Tier 3,
 and the first source to produce a verified file wins. Each tier is a *pool* of
 swappable **source modules** with a fan-out **strategy**.
@@ -39,7 +39,7 @@ into tiers with drag-and-drop**.
   A tiny drag-and-drop helper is fine — native HTML5 DnD API or a small library
   like SortableJS. No heavy component kits.
 - **Self-contained:** the built output is static assets served by the backend.
-  All CSS/JS bundled; no external CDNs, fonts, or network calls except the lbmd
+  All CSS/JS bundled; no external CDNs, fonts, or network calls except the crate
   API (same-origin `/api/*`).
 - **Theme:** dark, information-dense but calm. Current palette (keep or refine):
   `--bg:#0e1116` `--panel:#171b22` `--panel-2:#1e232c` `--border:#2a313c`
@@ -63,7 +63,7 @@ Single-page app, four top-level tabs (hash routes):
 3. **History** — `#/history` — searchable log of every request + drill-in detail
 4. **Sources & Tiers** — `#/sources` — the drag-and-drop configuration board
 
-Persistent top bar: product name (`lbmd console`) + the four tabs. Active tab
+Persistent top bar: product name (`crate console`) + the four tabs. Active tab
 highlighted.
 
 ---
@@ -282,12 +282,12 @@ credential **status only — never values**:
     "name": "qobuz", "tier": 1, "enabled": true, "lossless": true,
     "credentials": "ok",            // ok | partial | missing | none
     "missing_env": [],
-    "required_env": ["LBMD_QOBUZ_APP_ID","LBMD_QOBUZ_APP_SECRET","LBMD_QOBUZ_TOKEN"]
+    "required_env": ["CRATE_QOBUZ_APP_ID","CRATE_QOBUZ_APP_SECRET","CRATE_QOBUZ_TOKEN"]
   },
   { "name": "monochrome", "tier": 1, "enabled": false, "lossless": true, "credentials": "none", "missing_env": [], "required_env": [] },
-  { "name": "deezer",     "tier": 2, "enabled": true,  "lossless": true, "credentials": "ok", "missing_env": [], "required_env": ["LBMD_DEEZER_ARL"] },
-  { "name": "soulseek",   "tier": 2, "enabled": true,  "lossless": false, "credentials": "ok", "missing_env": [], "required_env": ["LBMD_SLSKD_URL","LBMD_SLSKD_API_KEY","LBMD_SLSKD_DOWNLOADS"] },
-  { "name": "telegram",   "tier": 2, "enabled": false, "lossless": false, "credentials": "missing", "missing_env": ["LBMD_TG_API_ID","LBMD_TG_API_HASH","LBMD_TG_SESSION","LBMD_TG_BOT"], "required_env": ["LBMD_TG_API_ID","LBMD_TG_API_HASH","LBMD_TG_SESSION","LBMD_TG_BOT"] },
+  { "name": "deezer",     "tier": 2, "enabled": true,  "lossless": true, "credentials": "ok", "missing_env": [], "required_env": ["CRATE_DEEZER_ARL"] },
+  { "name": "soulseek",   "tier": 2, "enabled": true,  "lossless": false, "credentials": "ok", "missing_env": [], "required_env": ["CRATE_SLSKD_URL","CRATE_SLSKD_API_KEY","CRATE_SLSKD_DOWNLOADS"] },
+  { "name": "telegram",   "tier": 2, "enabled": false, "lossless": false, "credentials": "missing", "missing_env": ["CRATE_TG_API_ID","CRATE_TG_API_HASH","CRATE_TG_SESSION","CRATE_TG_BOT"], "required_env": ["CRATE_TG_API_ID","CRATE_TG_API_HASH","CRATE_TG_SESSION","CRATE_TG_BOT"] },
   { "name": "ytdlp",      "tier": 3, "enabled": true,  "lossless": false, "credentials": "none", "missing_env": [], "required_env": [] }
 ]
 ```
@@ -316,7 +316,7 @@ Response: the applied config (echo) or `{ "error": "…" }` with a 4xx.
 {
   "enabled": true,
   "settings": { "min_bitrate_kbps": 256 },     // source-specific; see below
-  "credentials": { "LBMD_QOBUZ_TOKEN": "…" }   // write-only; stored encrypted; omit to leave unchanged
+  "credentials": { "CRATE_QOBUZ_TOKEN": "…" }   // write-only; stored encrypted; omit to leave unchanged
 }
 ```
 Response reflects updated status via the `GET /api/sources` shape (never echoes

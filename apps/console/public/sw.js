@@ -1,8 +1,8 @@
-// lbmd console service worker — offline app shell.
+// crate console service worker — offline app shell.
 // Caches same-origin static assets (index, hashed JS/CSS, icons) so the console
 // opens instantly and works offline as an installed app. NEVER touches /api
 // (live data + SSE must always hit the network).
-const CACHE = "lbmd-shell-v1";
+const CACHE = "crate-shell-v1";
 
 self.addEventListener("install", () => self.skipWaiting());
 

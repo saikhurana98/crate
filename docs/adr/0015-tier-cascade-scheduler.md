@@ -22,7 +22,7 @@ Priority must be honoured **1 → 2 → 3**; a lower tier is only reached when t
 
 1. **Between tiers: strict sequential cascade.** Attempt Tier 1; only on failure/deadline attempt Tier 2; only then Tier 3. First **verified** file wins the whole job — there is no provisional-lossy swap in this mode.
 2. **Within a tier: parallel race** across that tier's eligible adapters (reuse `application/scheduler/race.ts` from [4A]). First-byte wins, losers cancelled via `AbortSignal` (same polite-cancel contract as ADR-0003).
-3. **Per-tier deadline.** Each tier gets a bounded budget (`LBMD_CASCADE_TIER_DEADLINE_MS`, default: T1 180s, T2 120s, T3 60s). Deadline breach or all-adapters-failed → advance to the next tier. The aggregate must resolve inside Explo's 15-min no-progress window ([ADR-0014](0014-slskd-compat-shim.md)).
+3. **Per-tier deadline.** Each tier gets a bounded budget (`CRATE_CASCADE_TIER_DEADLINE_MS`, default: T1 180s, T2 120s, T3 60s). Deadline breach or all-adapters-failed → advance to the next tier. The aggregate must resolve inside Explo's 15-min no-progress window ([ADR-0014](0014-slskd-compat-shim.md)).
 4. **Verification is mandatory and unchanged.** Chromaprint identity match + FLAC health check + fake-FLAC spectrum-cutoff detector ([ADR-0005](0005-chromaprint-acoustid.md)). Ripping sites and Soulseek routinely serve transcoded fake-FLACs, so a Tier-1 "FLAC" that fails the cutoff detector is **rejected and the tier continues/advances** rather than accepted.
 5. **Eligibility filter** is the ADR-0003 filter plus a `tier` predicate: an adapter is eligible for tier N only if its `capabilities.tier === N`. Source adapters gain a `tier: 1 | 2 | 3` capability flag.
 

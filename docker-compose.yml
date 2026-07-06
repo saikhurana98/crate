@@ -1,29 +1,29 @@
-# lbmd is a CLI, so use `docker compose run`, not `up`:
-#   docker compose run --rm lbmd download "Daft Punk Get Lucky" -o /downloads
+# crate is a CLI, so use `docker compose run`, not `up`:
+#   docker compose run --rm crate download "Daft Punk Get Lucky" -o /downloads
 #
 # Put your creds in a .env file next to this (see keys below). Only the sources
 # you configure are enabled; each is opt-in.
 
 services:
-  lbmd:
-    image: ghcr.io/saikhurana98/lbmd:latest
+  crate:
+    image: ghcr.io/saikhurana98/crate:latest
     build: .
     environment:
       # Tier 1 — Qobuz (hi-res FLAC)
-      LBMD_QOBUZ: "1"
-      LBMD_QOBUZ_APP_ID: ${LBMD_QOBUZ_APP_ID:-}
-      LBMD_QOBUZ_APP_SECRET: ${LBMD_QOBUZ_APP_SECRET:-}
-      LBMD_QOBUZ_TOKEN: ${LBMD_QOBUZ_TOKEN:-}
+      CRATE_QOBUZ: "1"
+      CRATE_QOBUZ_APP_ID: ${CRATE_QOBUZ_APP_ID:-}
+      CRATE_QOBUZ_APP_SECRET: ${CRATE_QOBUZ_APP_SECRET:-}
+      CRATE_QOBUZ_TOKEN: ${CRATE_QOBUZ_TOKEN:-}
       # Tier 2 — Deezer (16-bit FLAC)
-      LBMD_DEEZER: ${LBMD_DEEZER:-}
-      LBMD_DEEZER_ARL: ${LBMD_DEEZER_ARL:-}
+      CRATE_DEEZER: ${CRATE_DEEZER:-}
+      CRATE_DEEZER_ARL: ${CRATE_DEEZER_ARL:-}
       # Tier 2 — Soulseek (needs a reachable slskd + its downloads dir mounted)
-      LBMD_SOULSEEK: ${LBMD_SOULSEEK:-}
-      LBMD_SLSKD_URL: ${LBMD_SLSKD_URL:-}
-      LBMD_SLSKD_API_KEY: ${LBMD_SLSKD_API_KEY:-}
-      LBMD_SLSKD_DOWNLOADS: /slskd-downloads
+      CRATE_SOULSEEK: ${CRATE_SOULSEEK:-}
+      CRATE_SLSKD_URL: ${CRATE_SLSKD_URL:-}
+      CRATE_SLSKD_API_KEY: ${CRATE_SLSKD_API_KEY:-}
+      CRATE_SLSKD_DOWNLOADS: /slskd-downloads
       # multiplex strategy per tier: all | uniform
-      LBMD_MUX_TIER2: ${LBMD_MUX_TIER2:-all}
+      CRATE_MUX_TIER2: ${CRATE_MUX_TIER2:-all}
     volumes:
       - ./downloads:/downloads
       # - /path/to/slskd/downloads:/slskd-downloads:ro   # if using Soulseek

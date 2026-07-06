@@ -34,7 +34,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/lbmd
+          images: ghcr.io/${{ github.repository_owner }}/crate
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=,enable={{is_default_branch}}

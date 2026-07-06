@@ -13,7 +13,7 @@ coverage.xml
 htmlcov/
 
 # runtime state / secrets
-.lbmd.env
+.crate.env
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
@@ -21,7 +21,7 @@ htmlcov/
 *.db-wal
 *.db-shm
 data/
-.lbmd/
+.crate/
 
 # node / console UI build
 node_modules/

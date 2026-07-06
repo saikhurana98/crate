@@ -5,7 +5,7 @@
 
 ## Context
 
-lbmd ran fully stateless: the cascade computed a rich result per request
+crate ran fully stateless: the cascade computed a rich result per request
 (`CascadeResult`, `DownloadReport`, `AudioInfo`, `QualityVerdict`) and then threw
 it away. There was no way to see what was downloading, what had been downloaded,
 how each track was acquired (which tier/source won, at what quality), or how the
@@ -28,7 +28,7 @@ and source catalog here are shaped to accept them without rework.
   path (console) are separate processes sharing one DB file; WAL gives them
   read-during-write concurrency, but only on a real local filesystem. SQLite
   locking over NFS is unreliable, so the file lives on CT-local disk
-  (`LBMD_DB=/data/lbmd.db`), *not* on the NAS that holds the music. This
+  (`CRATE_DB=/data/crate.db`), *not* on the NAS that holds the music. This
   contradicts ADR-0004's "DB on the NAS" note, which predates the multi-process
   console.
 - **Recording via a port.** `run_cascade` takes an optional `RequestRecorder`
@@ -37,7 +37,7 @@ and source catalog here are shaped to accept them without rework.
   SQLite `RequestStore` implements it; the composition root injects it. With no
   recorder the core behaves exactly as before — every existing test passes
   untouched. The shim path records `requested_via="explo"`, the CLI `"cli"`.
-- **API:** FastAPI + uvicorn as a new `lbmd console` command on a separate port
+- **API:** FastAPI + uvicorn as a new `crate console` command on a separate port
   (`:8788`), independent of the slskd shim (`:2416`). Read-only routes:
   `/api/stats`, `/api/requests`, `/api/requests/{id}`, `/api/sources`,
   `/api/events` (SSE), `/api/health`. FastAPI (vs. hand-rolling on the stdlib
@@ -67,7 +67,7 @@ and source catalog here are shaped to accept them without rework.
   local disk and rules out putting the DB on the NAS. Live updates carry up to
   ~2s latency (poll interval) and are coarse — per-request, not per-source-byte.
   Adding FastAPI/uvicorn grows the image and dependency surface.
-- **Neutral:** Manual `lbmd download` only records when `LBMD_DB` is set, keeping
+- **Neutral:** Manual `crate download` only records when `CRATE_DB` is set, keeping
   ad-hoc local runs side-effect-free.
 
 ## Alternatives considered
@@ -93,7 +93,7 @@ The read-only Phase 1 was superseded by the v2 design build:
   `source_config`, `source_secret`). Layout validation (`validate_layout`) enforces
   full coverage and pins `ytdlp` to Tier 3.
 - **Credentials encrypted at rest** — `SecretBox` (AES-256-GCM, pycryptodome), key
-  from `LBMD_CONFIG_KEY` or a generated 0600 keyfile beside the DB. Status is
+  from `CRATE_CONFIG_KEY` or a generated 0600 keyfile beside the DB. Status is
   reported (`ok`/`partial`/`missing`), values never returned.
 - **Cascade consumes the stored config** — `build_tiers()` reads the layout
   (membership/order/strategy) and pushes stored secrets into the env for the
@@ -117,7 +117,7 @@ The console can now originate downloads, not just observe them.
   (20 s / 128-entry) result cache, so debounced/repeated queries skip the network;
   the UI debounces 220 ms and aborts superseded requests (`AbortController`).
   Spotify is **search-only** — never a download source. Absent creds
-  (`LBMD_SPOTIFY_CLIENT_ID/_SECRET`) => 503 and the UI hides search.
+  (`CRATE_SPOTIFY_CLIENT_ID/_SECRET`) => 503 and the UI hides search.
 - **Download** — `POST /api/download {query}` inserts a `queued` request row and
   returns immediately (snappy). Downloading stays in one process: the `serve`
   (shim) process — which owns the NAS mount and full source toolchain — runs a

@@ -5,7 +5,7 @@ without any network."""
 
 from typing import Any
 
-from lbmd.infrastructure.spotify.client import SpotifyClient
+from crate.infrastructure.spotify.client import SpotifyClient
 
 _SEARCH_PAYLOAD: dict[str, Any] = {
     "tracks": {

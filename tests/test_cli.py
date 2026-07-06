@@ -5,13 +5,13 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-import lbmd.cli.main as cli
-from lbmd import __version__
-from lbmd.application.cascade import CascadeAttempt, CascadeResult
-from lbmd.application.download import DownloadReport
-from lbmd.cli.main import app
-from lbmd.domain.audio import AudioInfo, QualityVerdict
-from lbmd.domain.download import DownloadOutcome
+import crate.cli.main as cli
+from crate import __version__
+from crate.application.cascade import CascadeAttempt, CascadeResult
+from crate.application.download import DownloadReport
+from crate.cli.main import app
+from crate.domain.audio import AudioInfo, QualityVerdict
+from crate.domain.download import DownloadOutcome
 
 runner = CliRunner()
 
@@ -25,7 +25,7 @@ def test_version_command_prints_version() -> None:
 def test_help_lists_the_app() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "lbmd" in result.stdout.lower()
+    assert "crate" in result.stdout.lower()
 
 
 def test_download_renders_cascade_trail_and_winner(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 
 // base './' so the built assets load under whatever path Caddy serves the UI at.
-// Dev proxies /api to the local `lbmd console` (uvicorn on :8788), including SSE.
+// Dev proxies /api to the local `crate console` (uvicorn on :8788), including SSE.
 export default defineConfig({
   base: "./",
   server: {
