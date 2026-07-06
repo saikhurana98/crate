@@ -1265,7 +1265,7 @@ function viewDesktop(): string {
   return `${headerHtml()}
     <main style="max-width:1560px;margin:0 auto;padding:22px 28px 72px;animation:fadein .25s ease">
       ${statCardsHtml()}
-      <div class="grid2" style="display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start">
+      <div class="grid2" style="display:grid;grid-template-columns:65fr 35fr;gap:16px;align-items:start">
         ${cascadeHtml()}
         <div style="display:flex;flex-direction:column;gap:14px">${listeningHtml()}${liveHtml()}${winsHtml()}${historyHtml()}</div>
       </div>
