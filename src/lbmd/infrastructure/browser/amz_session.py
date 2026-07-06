@@ -15,6 +15,7 @@ All I/O; excluded from coverage. Pure parsing lives in the adapter.
 from __future__ import annotations
 
 import atexit
+import os
 from typing import Any
 
 SITEKEY = "0x4AAAAAADgxqF6QVMm0GLHH"
@@ -42,10 +43,16 @@ class AmzSession:  # pragma: no cover - browser I/O
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
+        # In a container the headed browser runs under Xvfb and, as an unprivileged
+        # user, needs --no-sandbox (Chrome's setuid sandbox can't init there). Gated
+        # on an env flag so a local desktop install keeps the hardened default.
+        launch_args = ["--disable-blink-features=AutomationControlled"]
+        if os.environ.get("LBMD_BROWSER_NO_SANDBOX"):
+            launch_args += ["--no-sandbox", "--disable-dev-shm-usage"]
         self._browser = self._pw.chromium.launch(
             headless=False,
             channel="chromium",
-            args=["--disable-blink-features=AutomationControlled"],
+            args=launch_args,
         )
         ctx = self._browser.new_context(user_agent=_UA)
         self._page = ctx.new_page()

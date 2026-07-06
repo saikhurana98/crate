@@ -45,7 +45,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          # amd64 only: the deploy target (music-stack) is x86_64, and the
+          # Monochrome browser image (Chromium + Bento4 build) is too heavy to
+          # emulate arm64 under QEMU in CI. Re-add arm64 with a native runner if needed.
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
