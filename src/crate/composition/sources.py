@@ -369,6 +369,43 @@ def build_spotify_search() -> Callable[[str, int], list[dict[str, Any]]] | None:
     return client.search
 
 
+def build_bulk_resolver() -> Callable[[str], Any]:  # pragma: no cover - IO wiring
+    """Resolve pasted text into a batch: Spotify playlists (if creds present),
+    YouTube playlists (yt-dlp), and plain pasted lists always work."""
+    from crate.application.bulk import ResolvedBatch, resolve_bulk
+    from crate.infrastructure.youtube import resolve_youtube_playlist
+
+    spotify_playlist: Callable[[str], dict[str, Any]] | None = None
+    client_id = os.environ.get("CRATE_SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("CRATE_SPOTIFY_CLIENT_SECRET")
+    if client_id and client_secret:
+        import httpx
+
+        from crate.infrastructure.spotify.client import SpotifyClient
+
+        http_client = httpx.Client(timeout=12.0, follow_redirects=True)
+
+        def post_form(url: str, data: dict[str, str], headers: dict[str, str]) -> Any:
+            resp = http_client.post(url, data=data, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+
+        def get_json(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+            resp = http_client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            return resp.json() if resp.content else None
+
+        client = SpotifyClient(client_id, client_secret, post_form=post_form, get_json=get_json)
+        spotify_playlist = client.playlist
+
+    def resolve(text: str) -> ResolvedBatch:
+        return resolve_bulk(
+            text, spotify_playlist=spotify_playlist, youtube_playlist=resolve_youtube_playlist
+        )
+
+    return resolve
+
+
 if TYPE_CHECKING:
     from crate.infrastructure.spotify.client import SpotifyClient as _SpotifyClient
     from crate.infrastructure.sqlite.config_store import ConfigStore as _ConfigStore
@@ -486,4 +523,5 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         config=config,
         search=build_spotify_search(),
         spotify=build_spotify_oauth(config, store),
+        bulk_resolve=build_bulk_resolver(),
     )

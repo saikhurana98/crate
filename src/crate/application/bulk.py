@@ -1,0 +1,77 @@
+"""Bulk-download resolution: turn a pasted blob into a batch of track queries.
+
+A batch comes from one of three origins, dispatched purely on the input text:
+
+  - a Spotify playlist link / URI   -> resolve via the Spotify Web API
+  - a YouTube playlist link          -> resolve via yt-dlp (flat playlist)
+  - anything else                    -> a pasted list, one query per line
+
+The two playlist resolvers are injected (IO lives at the edges), so this
+dispatcher is unit tested without a network.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+# ref/url -> {"name": str, "owner": str, "tracks": [query]}
+PlaylistResolver = Callable[[str], dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedBatch:
+    name: str
+    origin: str  # spotify | youtube | paste
+    owner: str
+    tracks: list[str]
+
+
+def _is_spotify_playlist(text: str) -> bool:
+    return "spotify.com/playlist" in text or text.startswith("spotify:playlist:")
+
+
+def _is_youtube_playlist(text: str) -> bool:
+    has_list = "list=" in text or "youtube.com/playlist" in text
+    return has_list and ("youtube.com" in text or "youtu.be" in text)
+
+
+def resolve_bulk(
+    text: str,
+    *,
+    spotify_playlist: PlaylistResolver | None = None,
+    youtube_playlist: PlaylistResolver | None = None,
+) -> ResolvedBatch:
+    """Dispatch ``text`` to the right resolver and return a :class:`ResolvedBatch`.
+
+    Raises ``LookupError`` when a playlist link is given but its resolver is
+    unavailable, or ``ValueError`` when the input yields no tracks.
+    """
+    stripped = text.strip()
+    if _is_spotify_playlist(stripped):
+        if spotify_playlist is None:
+            raise LookupError("Spotify is not configured — cannot resolve a Spotify playlist")
+        pl = spotify_playlist(stripped)
+        tracks = list(pl.get("tracks") or [])
+        if not tracks:
+            raise ValueError("playlist resolved to no tracks")
+        return ResolvedBatch(
+            str(pl.get("name") or "Playlist"), "spotify", str(pl.get("owner") or ""), tracks
+        )
+
+    if _is_youtube_playlist(stripped):
+        if youtube_playlist is None:
+            raise LookupError("YouTube playlist resolver is unavailable")
+        pl = youtube_playlist(stripped)
+        tracks = list(pl.get("tracks") or [])
+        if not tracks:
+            raise ValueError("playlist resolved to no tracks")
+        return ResolvedBatch(str(pl.get("name") or "YouTube playlist"), "youtube", "", tracks)
+
+    # pasted list — one query per non-empty line
+    lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
+    if not lines:
+        raise ValueError("nothing to enqueue")
+    name = lines[0] if len(lines) == 1 else f"Pasted list · {len(lines)} tracks"
+    return ResolvedBatch(name, "paste", "", lines)

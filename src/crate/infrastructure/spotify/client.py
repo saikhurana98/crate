@@ -13,6 +13,7 @@ over one pooled client for snappy repeated searches.
 from __future__ import annotations
 
 import base64
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -23,6 +24,9 @@ AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 SEARCH_URL = "https://api.spotify.com/v1/search"
 NOW_PLAYING_URL = "https://api.spotify.com/v1/me/player/currently-playing"
 RECENT_URL = "https://api.spotify.com/v1/me/player/recently-played"
+PLAYLIST_URL = "https://api.spotify.com/v1/playlists/"
+
+_PLAYLIST_ID = re.compile(r"playlist[/:]([A-Za-z0-9]+)")
 
 # user-scoped read of playback — the client-credentials flow cannot reach these.
 USER_SCOPES = "user-read-currently-playing user-read-recently-played"
@@ -101,6 +105,40 @@ class SpotifyClient:
         )
         items = ((data or {}).get("tracks") or {}).get("items") or []
         return [_track(it) for it in items]
+
+    def playlist(self, ref: str, max_tracks: int = 500) -> dict[str, Any]:
+        """Resolve a playlist (id, URL, or spotify: URI) to
+        ``{name, owner, tracks: [free-text query]}`` via client-credentials
+        (public playlists). Follows pagination up to ``max_tracks``."""
+        m = _PLAYLIST_ID.search(ref)
+        pid = m.group(1) if m else ref.strip()
+        headers = {"Authorization": f"Bearer {self._bearer()}"}
+        data = self._get_json(
+            f"{PLAYLIST_URL}{pid}",
+            {"fields": "name,owner(display_name),tracks(items(track(name,artists(name))),next)"},
+            headers,
+        )
+        name = str((data or {}).get("name") or "Playlist")
+        owner = str(((data or {}).get("owner") or {}).get("display_name") or "")
+        tracks_obj = (data or {}).get("tracks") or {}
+        queries: list[str] = []
+
+        def collect(items: list[dict[str, Any]]) -> None:
+            for entry in items or []:
+                track = (entry or {}).get("track") or {}
+                title = track.get("name")
+                if not title:
+                    continue
+                artists = ", ".join(a["name"] for a in track.get("artists", []) if a.get("name"))
+                queries.append(f"{artists} {title}".strip())
+
+        collect(tracks_obj.get("items") or [])
+        nxt = tracks_obj.get("next")
+        while nxt and len(queries) < max_tracks:
+            page = self._get_json(str(nxt), {}, headers)
+            collect((page or {}).get("items") or [])
+            nxt = (page or {}).get("next")
+        return {"name": name, "owner": owner, "tracks": queries[:max_tracks]}
 
     # --- user-scoped OAuth (authorization-code flow, for the Listening panel) ---
     def _basic(self) -> str:

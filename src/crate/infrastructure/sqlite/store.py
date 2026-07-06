@@ -39,24 +39,34 @@ class RequestStore:
         return rid
 
     # --- console queue (cross-process work items) ---
-    def enqueue(self, query: str) -> str:
+    def enqueue(self, query: str, batch_id: str | None = None) -> str:
         """Record a console-requested download as ``queued``; the shim's queue
-        worker claims and runs it. Returns the new request id."""
+        worker claims and runs it. ``batch_id`` groups it into a bulk batch.
+        Returns the new request id."""
         rid = _new_id()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO requests(id, query, requested_via, status, created_at) "
-                "VALUES (?, ?, ?, 'queued', ?)",
-                (rid, query, self._via, now_iso()),
+                "INSERT INTO requests(id, query, requested_via, status, created_at, batch_id) "
+                "VALUES (?, ?, ?, 'queued', ?, ?)",
+                (rid, query, self._via, now_iso(), batch_id),
             )
         return rid
 
+    # requests in a paused or cancelled batch are not claimable
+    _CLAIMABLE = (
+        "status='queued' AND (batch_id IS NULL OR batch_id NOT IN "
+        "(SELECT id FROM batches WHERE paused=1 OR cancelled=1))"
+    )
+
     def claim_next(self) -> dict[str, Any] | None:
-        """Atomically claim the oldest ``queued`` request (-> ``downloading``).
-        Returns ``{"id", "query"}`` or ``None`` when the queue is empty."""
+        """Atomically claim the oldest claimable ``queued`` request
+        (-> ``downloading``), skipping paused/cancelled batches. Safe under
+        concurrent claimers (the guarded UPDATE makes claiming exclusive).
+        Returns ``{"id", "query"}`` or ``None`` when nothing is claimable."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, query FROM requests WHERE status='queued' ORDER BY created_at LIMIT 1"
+                f"SELECT id, query FROM requests WHERE {self._CLAIMABLE} "
+                "ORDER BY created_at LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
@@ -64,7 +74,7 @@ class RequestStore:
                 "UPDATE requests SET status='downloading' WHERE id=? AND status='queued'",
                 (row["id"],),
             )
-            if cur.rowcount != 1:  # lost a race (defensive; single claimer today)
+            if cur.rowcount != 1:  # another worker claimed it first
                 return None
             return {"id": row["id"], "query": row["query"]}
 
@@ -206,3 +216,84 @@ class RequestStore:
             "wins_by_tier": wins_by_tier,
             "attempts_by_source": attempts_by_source,
         }
+
+    # --- bulk batches ---
+    def create_batch(self, name: str, origin: str, owner: str, total: int) -> str:
+        bid = _new_id()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO batches(id, name, origin, owner, total, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (bid, name, origin, owner, total, now_iso()),
+            )
+        return bid
+
+    def list_batches(self) -> list[dict[str, Any]]:
+        """Batches with per-status counts (newest first)."""
+        rows = self._conn.execute(
+            "SELECT b.*, "
+            "COUNT(r.id) AS n, "
+            "COALESCE(SUM(r.status='done'), 0) AS done, "
+            "COALESCE(SUM(r.status='failed'), 0) AS failed, "
+            "COALESCE(SUM(r.status='downloading'), 0) AS downloading, "
+            "COALESCE(SUM(r.status='queued'), 0) AS queued, "
+            "COALESCE(SUM(r.status='cancelled'), 0) AS cancelled "
+            "FROM batches b LEFT JOIN requests r ON r.batch_id = b.id "
+            "GROUP BY b.id ORDER BY b.created_at DESC"
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            d["paused"] = bool(d["paused"])
+            d["cancelled_flag"] = bool(d.pop("cancelled"))  # batch flag vs the count column
+            d["counts"] = {
+                "done": d.pop("done"),
+                "failed": d.pop("failed"),
+                "downloading": d.pop("downloading"),
+                "queued": d.pop("queued"),
+            }
+            out.append(d)
+        return out
+
+    def get_batch(self, batch_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        out["tracks"] = [
+            dict(t)
+            for t in self._conn.execute(
+                "SELECT id, query, status, source_won, tier_won, error "
+                "FROM requests WHERE batch_id=? ORDER BY created_at",
+                (batch_id,),
+            )
+        ]
+        return out
+
+    def set_batch_paused(self, batch_id: str, paused: bool) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE batches SET paused=? WHERE id=?", (1 if paused else 0, batch_id)
+            )
+        return cur.rowcount == 1
+
+    def cancel_batch(self, batch_id: str) -> bool:
+        """Flag the batch cancelled and drop its still-queued requests. Requests
+        already downloading are left to finish."""
+        with self._lock:
+            cur = self._conn.execute("UPDATE batches SET cancelled=1 WHERE id=?", (batch_id,))
+            self._conn.execute(
+                "UPDATE requests SET status='cancelled' WHERE batch_id=? AND status='queued'",
+                (batch_id,),
+            )
+        return cur.rowcount == 1
+
+    def requeue(self, request_id: str) -> bool:
+        """Retry a failed (or cancelled) request: reset it to ``queued``."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='queued', error=NULL, finished_at=NULL "
+                "WHERE id=? AND status IN ('failed', 'cancelled')",
+                (request_id,),
+            )
+        return cur.rowcount == 1

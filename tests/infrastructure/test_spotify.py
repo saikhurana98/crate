@@ -211,3 +211,35 @@ def test_recently_played_shapes_and_skips_empty() -> None:
     assert len(recent) == 1
     assert recent[0]["title"] == "Loud Places"
     assert recent[0]["played_at"] == "2026-07-05T18:00:00Z"
+
+
+def test_playlist_resolves_tracks_with_pagination() -> None:
+    page1 = {
+        "name": "Focus",
+        "owner": {"display_name": "sai"},
+        "tracks": {
+            "items": [
+                {"track": {"name": "One", "artists": [{"name": "A"}]}},
+                {"track": None},  # skipped
+            ],
+            "next": "https://api.spotify.com/v1/playlists/x/tracks?offset=100",
+        },
+    }
+    page2 = {
+        "items": [{"track": {"name": "Two", "artists": [{"name": "B"}, {"name": "C"}]}}],
+        "next": None,
+    }
+
+    calls = {"n": 0}
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        calls["n"] += 1
+        assert headers["Authorization"].startswith("Bearer ")
+        return page1 if calls["n"] == 1 else page2
+
+    def post(url: str, data: dict[str, str], headers: dict[str, str]) -> Any:
+        return {"access_token": "t", "expires_in": 3600}
+
+    pl = _oauth_client(post=post, get=get).playlist("https://open.spotify.com/playlist/abc123?si=z")
+    assert pl["name"] == "Focus" and pl["owner"] == "sai"
+    assert pl["tracks"] == ["A One", "B, C Two"]  # artist-first, second-page followed

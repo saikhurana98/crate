@@ -5,6 +5,8 @@
 import "./styles.css";
 import {
   api,
+  type Batch,
+  type BatchDetail,
   type Layout,
   type LiveEvent,
   type PlayerState,
@@ -121,6 +123,13 @@ interface State {
   player: PlayerState | null; // now-playing + recently-played
   isMobile: boolean; // viewport <= 640px -> tabbed app layout
   activeTab: "cascade" | "activity" | "tracks"; // mobile bottom-nav selection
+  page: "console" | "bulk"; // top-level page (bulk downloads is a separate screen)
+  bulkPanel: boolean; // right-side bulk drawer open
+  bulkText: string; // paste box (playlist link / track list)
+  bulkBusy: boolean; // submit in flight
+  batches: Batch[]; // bulk batches (polled)
+  expandedBatches: Record<string, boolean>; // batch id -> show track rows
+  batchDetails: Record<string, BatchDetail>; // fetched track rows for expanded batches
 }
 
 const state: State = {
@@ -155,6 +164,13 @@ const state: State = {
   player: null,
   isMobile: typeof matchMedia !== "undefined" ? matchMedia("(max-width: 640px)").matches : false,
   activeTab: "cascade",
+  page: "console",
+  bulkPanel: false,
+  bulkText: "",
+  bulkBusy: false,
+  batches: [],
+  expandedBatches: {},
+  batchDetails: {},
 };
 
 const root = document.getElementById("app")!;
@@ -238,6 +254,68 @@ async function loadPlayer(): Promise<void> {
   } catch {
     /* 409 not connected / transient — leave the last snapshot */
   }
+}
+
+// ---------- bulk downloads ----------
+async function loadBatches(): Promise<void> {
+  try {
+    state.batches = await api.batches();
+    // refresh the track rows of any expanded batch
+    await Promise.all(
+      Object.keys(state.expandedBatches)
+        .filter((id) => state.expandedBatches[id])
+        .map(async (id) => {
+          try {
+            state.batchDetails[id] = await api.batch(id);
+          } catch {
+            /* batch gone */
+          }
+        }),
+    );
+  } catch {
+    /* transient */
+  }
+}
+async function submitBulk(): Promise<void> {
+  const text = state.bulkText.trim();
+  if (!text || state.bulkBusy) return;
+  state.bulkBusy = true;
+  render();
+  try {
+    const res = await api.bulk(text);
+    state.bulkText = "";
+    toast(`Batch “${res.name}” — ${res.total} track${res.total === 1 ? "" : "s"} queued`);
+    await loadBatches();
+    state.page = "bulk";
+    state.bulkPanel = false;
+  } catch (err) {
+    toast(`Bulk failed: ${(err as Error).message}`);
+  } finally {
+    state.bulkBusy = false;
+    render();
+  }
+}
+async function toggleBatch(id: string): Promise<void> {
+  const open = !state.expandedBatches[id];
+  state.expandedBatches[id] = open;
+  render();
+  if (open && !state.batchDetails[id]) {
+    try {
+      state.batchDetails[id] = await api.batch(id);
+      render();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+async function batchAction(fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn();
+    await loadBatches();
+  } catch (err) {
+    toast(`Failed: ${(err as Error).message}`);
+  }
+  render();
 }
 
 // ---------- search + enqueue ----------
@@ -905,6 +983,22 @@ function searchDropdownHtml(): string {
   return `<div style="position:absolute;top:calc(100% + 8px);left:0;right:0;background:#111411;border:1px solid #272c25;border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.65);overflow:hidden;animation:fadein .15s ease;z-index:70">${body}</div>`;
 }
 
+function activeDownloads(): number {
+  const inBatches = state.batches.reduce((n, b) => n + b.counts.queued + b.counts.downloading, 0);
+  const singles = state.inflight.filter((r) => !r.batch_id).length;
+  return inBatches + singles;
+}
+function downloadsNavHtml(): string {
+  const n = activeDownloads();
+  const badge =
+    n > 0
+      ? `<span style="font:700 10px 'Doto';min-width:17px;height:17px;padding:0 4px;border-radius:10px;background:#ff4c38;color:#0c0e0c;display:inline-flex;align-items:center;justify-content:center">${n}</span>`
+      : "";
+  return `<button data-act="gotoBulk" title="Bulk downloads" style="display:inline-flex;align-items:center;gap:7px;border:1px solid #272c25;border-radius:20px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 13px;background:#131612;color:#99a091;transition:border-color .15s" class="ghost">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>downloads${badge}
+    </button>`;
+}
+
 function headerHtml(): string {
   const saveMap: Record<SaveState, [string, string, string, string, boolean]> = {
     idle: ["All changes saved", C.faint, "#131612", "#272c25", false],
@@ -931,6 +1025,7 @@ function headerHtml(): string {
       </div>
       ${search}
       <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+        ${downloadsNavHtml()}
         <div style="display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:20px;background:${bg};border:1px solid ${bd};transition:.2s">
           ${spin ? `<span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>` : ""}
           <span style="font:600 11px 'JetBrains Mono';color:${col}">${txt}</span>
@@ -1118,6 +1213,7 @@ function mHeaderHtml(): string {
     <span style="font:800 16px 'Doto';letter-spacing:.08em">crate</span>
     <span style="font:500 10px 'JetBrains Mono';color:#5d6456;letter-spacing:.14em;text-transform:uppercase;margin-top:1px">console</span>
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <button data-act="gotoBulk" title="Bulk downloads" style="display:inline-flex;align-items:center;gap:5px;border:1px solid #272c25;border-radius:20px;cursor:pointer;padding:6px 10px;background:#131612;color:#99a091"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>${activeDownloads() > 0 ? `<span style="font:700 9px 'Doto';min-width:15px;height:15px;padding:0 3px;border-radius:9px;background:#ff4c38;color:#0c0e0c;display:inline-flex;align-items:center;justify-content:center">${activeDownloads()}</span>` : ""}</button>
       <div style="display:flex;align-items:center;gap:7px;padding:6px 11px;border-radius:20px;background:${bg};border:1px solid ${bd};transition:.2s">
         ${spin ? `<span style="width:10px;height:10px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>` : ""}
         <span style="font:600 10px 'JetBrains Mono';color:${col}">${txt}</span>
@@ -1179,13 +1275,165 @@ function viewDesktop(): string {
     ${toastHtml()}`;
 }
 
+// ---------- bulk downloads page + panel ----------
+function batchActive(b: Batch): number {
+  return b.counts.queued + b.counts.downloading;
+}
+const originLabel = (o: string): string => (o === "youtube" ? "YT" : o === "spotify" ? "SPOTIFY" : "PASTE");
+
+function batchTrackRow(t: BatchDetail["tracks"][number]): string {
+  const glyph =
+    t.status === "done"
+      ? `<span style="font:600 11px 'JetBrains Mono';color:#99a091">✓</span>`
+      : t.status === "failed"
+        ? `<span style="font:600 11px 'JetBrains Mono';color:#ff4c38">✗</span>`
+        : t.status === "downloading"
+          ? `<span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>`
+          : t.status === "cancelled"
+            ? `<span style="font:600 10px 'JetBrains Mono';color:#5d6456">⊘</span>`
+            : `<span style="width:11px;height:11px;border:1.5px dashed #5d6456;border-radius:50%"></span>`;
+  const won =
+    t.status === "done" && t.source_won
+      ? `<span style="font:500 10px 'JetBrains Mono';color:#99a091;padding:2px 8px;background:#181c17;border-radius:10px;flex-shrink:0">${esc(t.source_won)}</span><span style="font:800 11px 'Doto';color:${tierColor(t.tier_won)};flex-shrink:0">T${t.tier_won}</span>`
+      : `<span style="font:500 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0">${esc(t.status)}</span>`;
+  const retry =
+    t.status === "failed" || t.status === "cancelled"
+      ? `<button class="qbtn" data-act="retryTrack" data-id="${esc(t.id)}" style="background:none;border:1px solid #272c25;border-radius:10px;color:#99a091;font:600 9.5px 'JetBrains Mono';padding:4px 10px;cursor:pointer;flex-shrink:0;transition:border-color .15s,color .15s">retry</button>`
+      : "";
+  return `<div style="display:flex;align-items:center;gap:11px;padding:8px 18px;border-top:1px solid #1a1e19">
+    <span style="width:14px;display:flex;justify-content:center;flex-shrink:0">${glyph}</span>
+    <span style="flex:1;min-width:0;font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${t.status === "queued" ? "#99a091" : "#e9ede3"}">${esc(t.query)}</span>
+    ${won}${retry}
+  </div>`;
+}
+
+function batchCardHtml(b: Batch): string {
+  const c = b.counts;
+  const settled = c.done + c.failed;
+  const pct = b.total ? Math.round((settled / b.total) * 100) : 0;
+  const active = batchActive(b) > 0 && !b.paused && !b.cancelled_flag;
+  const expanded = !!state.expandedBatches[b.id];
+  const detail = state.batchDetails[b.id];
+  const rows = expanded && detail ? detail.tracks.map(batchTrackRow).join("") : "";
+  const countLine = `${c.done}/${b.total} done${c.failed ? ` · ${c.failed} failed` : ""}${c.downloading ? ` · ${c.downloading} downloading` : ""}${b.paused ? " · paused" : ""}${b.cancelled_flag ? " · cancelled" : ""}`;
+  const pauseBtn = b.cancelled_flag
+    ? ""
+    : `<button data-act="pauseBatch" data-id="${esc(b.id)}" data-paused="${b.paused ? "0" : "1"}" style="background:#181c17;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:7px 13px;cursor:pointer;transition:border-color .15s,color .15s">${b.paused ? "resume" : "pause"}</button>`;
+  const cancelBtn = b.cancelled_flag
+    ? ""
+    : `<button data-act="cancelBatch" data-id="${esc(b.id)}" style="background:none;border:1px solid #272c25;border-radius:12px;color:#5d6456;font:600 10.5px 'JetBrains Mono';padding:7px 13px;cursor:pointer;transition:border-color .15s,color .15s">cancel</button>`;
+  return `<section style="background:#111411;border:1px solid #22261f;border-radius:20px;margin-bottom:14px;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:14px;padding:15px 18px 13px">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+          <span style="font:600 14px 'Instrument Sans'">${esc(b.name)}</span>
+          <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 8px;border-radius:10px;border:1px solid #272c25;color:#99a091">${originLabel(b.origin)}</span>
+          ${b.owner ? `<span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">${esc(b.owner)}</span>` : ""}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:9px">
+          <div style="flex:1;height:4px;background:#272c25;border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#e9ede3;border-radius:4px;transition:width .6s cubic-bezier(.2,.8,.2,1)"></div></div>
+          <span style="font:400 10.5px 'JetBrains Mono';color:#99a091;flex-shrink:0">${countLine}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0">${active || b.paused ? pauseBtn : ""}${cancelBtn}</div>
+    </div>
+    ${rows}
+    <button data-act="toggleBatch" data-id="${esc(b.id)}" style="width:100%;background:#0e100d;border:none;border-top:1px solid #1a1e19;color:#5d6456;font:500 10.5px 'JetBrains Mono';padding:9px;cursor:pointer;transition:color .15s">${expanded ? "hide tracks ▴" : `show ${b.total} tracks ▾`}</button>
+  </section>`;
+}
+
+function bulkPageHtml(): string {
+  const bs = state.batches;
+  const sum = (k: keyof Batch["counts"]): number => bs.reduce((n, b) => n + b.counts[k], 0);
+  const cards: [string, string, string][] = [
+    ["Batches", String(bs.length), "playlists / lists"],
+    ["Queued", String(sum("queued")), "waiting"],
+    ["Downloading", String(sum("downloading")), "in flight"],
+    ["Done", String(sum("done")), "verified"],
+    ["Failed", String(sum("failed")), "no source"],
+  ];
+  const stats = `<div style="display:grid;grid-template-columns:repeat(${state.isMobile ? 2 : 5},1fr);gap:12px;margin-bottom:14px">${cards
+    .map(
+      ([label, value, sub]) => `<div style="background:#111411;border:1px solid #22261f;border-radius:18px;padding:14px 16px">
+        <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456">${label}</div>
+        <div style="font:800 27px 'Doto';margin-top:8px;line-height:1;color:#e9ede3">${esc(value)}</div>
+        <div style="font:400 10.5px 'JetBrains Mono';color:#5d6456;margin-top:7px">${sub}</div>
+      </div>`,
+    )
+    .join("")}</div>`;
+  const batchCards = bs.map(batchCardHtml).join("");
+  const singles = state.inflight.filter((r) => !r.batch_id);
+  const singlesHtml = singles.length
+    ? `<section style="background:#111411;border:1px solid #22261f;border-radius:20px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:15px 18px 12px"><span style="font:600 14px 'Instrument Sans'">Individual requests</span><span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">search · explo · cli · listening</span></div>
+        ${singles
+          .map(
+            (r) => `<div data-act="openDetail" data-id="${esc(r.id)}" class="hrow" style="display:flex;align-items:center;gap:11px;padding:9px 18px;border-top:1px solid #1a1e19;cursor:pointer;transition:background .12s">
+          <span style="width:11px;height:11px;border:${r.status === "queued" ? "1.5px dashed #5d6456" : "1.5px solid #272c25;border-top-color:#e9ede3;animation:spin .8s linear infinite"};border-radius:50%;flex-shrink:0"></span>
+          <span style="flex:1;min-width:0;font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.query)}</span>
+          <span style="font:500 10px 'JetBrains Mono';color:#99a091;padding:2px 8px;background:#181c17;border-radius:10px;flex-shrink:0">via ${esc(r.requested_via)}</span>
+        </div>`,
+          )
+          .join("")}
+      </section>`
+    : "";
+  const empty =
+    !bs.length && !singles.length
+      ? `<div style="background:#111411;border:1px dashed #272c25;border-radius:20px;padding:48px 20px;text-align:center">
+        <div style="font:600 14px 'Instrument Sans';color:#99a091">Nothing downloading</div>
+        <div style="font:400 12px 'Instrument Sans';color:#5d6456;margin-top:6px">Paste a Spotify / YouTube playlist link or a track list to queue in bulk.</div>
+      </div>`
+      : "";
+  const pad = state.isMobile ? "16px 16px 96px" : "22px 28px 72px";
+  return `<main style="max-width:1560px;margin:0 auto;padding:${pad};animation:fadein .25s ease">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      <button data-act="gotoConsole" style="background:#181c17;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 11px 'JetBrains Mono';padding:6px 12px;cursor:pointer">← console</button>
+      <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Downloads</h1>
+      <p style="margin:0;font:400 12.5px 'Instrument Sans';color:#99a091">Every batch + request in flight.</p>
+      <button data-act="openBulkPanel" style="margin-left:auto;background:#e9ede3;border:none;border-radius:14px;color:#14170f;font:600 12px 'Instrument Sans';padding:8px 16px;cursor:pointer">+ New batch</button>
+    </div>
+    ${stats}${batchCards}${singlesHtml}${empty}
+  </main>`;
+}
+
+function bulkPanelHtml(): string {
+  const open = state.bulkPanel;
+  const summaries = state.batches
+    .slice(0, 6)
+    .map((b) => {
+      const settled = b.counts.done + b.counts.failed;
+      const pct = b.total ? Math.round((settled / b.total) * 100) : 0;
+      return `<div style="background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:12px 14px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:8px"><span style="font:600 12.5px 'Instrument Sans';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.name)}</span><span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 7px;border-radius:10px;border:1px solid #272c25;color:#99a091;flex-shrink:0">${originLabel(b.origin)}</span></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:9px"><div style="flex:1;height:4px;background:#272c25;border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#e9ede3;border-radius:4px"></div></div><span style="font:400 10px 'JetBrains Mono';color:#99a091;flex-shrink:0">${b.counts.done}/${b.total}</span></div>
+      </div>`;
+    })
+    .join("");
+  const inner = `<div style="padding:20px 22px;border-bottom:1px solid #1d211c;display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+      <div><div style="font:600 17px 'Instrument Sans';letter-spacing:-.01em">Bulk downloads</div><div style="font:500 10.5px 'JetBrains Mono';color:#99a091;margin-top:7px">Playlist link or one track per line.</div></div>
+      <button data-act="closeBulkPanel" style="background:#181c17;border:1px solid #272c25;border-radius:10px;color:#99a091;cursor:pointer;padding:6px 9px;flex-shrink:0;display:inline-flex"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"></path></svg></button>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:18px 22px">
+      <textarea data-inp="bulk" rows="5" placeholder="https://open.spotify.com/playlist/…&#10;or paste tracks, one per line" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:12px 14px;resize:vertical;line-height:1.5">${esc(state.bulkText)}</textarea>
+      <button data-act="submitBulk" ${state.bulkBusy ? "disabled" : ""} style="width:100%;margin-top:10px;background:${state.bulkBusy ? "#272c25" : "#e9ede3"};border:none;border-radius:14px;color:${state.bulkBusy ? "#99a091" : "#14170f"};font:600 13px 'Instrument Sans';padding:12px;cursor:${state.bulkBusy ? "default" : "pointer"};display:flex;align-items:center;justify-content:center;gap:8px">${state.bulkBusy ? `<span style="width:12px;height:12px;border:1.5px solid rgba(20,23,15,.3);border-top-color:#14170f;border-radius:50%;animation:spin .8s linear infinite"></span>Resolving…` : "Start batch"}</button>
+      <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin:18px 0 10px">Batches</div>
+      ${summaries || `<div style="padding:16px 0;text-align:center;font:400 12px 'Instrument Sans';color:#5d6456">No batches yet.</div>`}
+    </div>
+    <div style="padding:16px 22px;border-top:1px solid #1d211c"><button data-act="gotoBulk" style="width:100%;background:#181c17;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:600 13px 'Instrument Sans';padding:12px;cursor:pointer">Open downloads page</button></div>`;
+  return `<div data-act="closeBulkPanel" style="position:fixed;inset:0;background:rgba(5,7,5,.6);z-index:54;transition:opacity .28s;opacity:${open ? "1" : "0"};pointer-events:${open ? "auto" : "none"}"></div>
+    <aside style="position:fixed;top:0;right:0;bottom:0;width:min(440px,94vw);background:#111411;border-left:1px solid #22261f;z-index:55;transform:${open ? "translateX(0)" : "translateX(103%)"};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column">${inner}</aside>`;
+}
+
 // Pure view: State -> HTML. The renderer reconciles it into the DOM (morph), so
 // this can run every tick without wiping the page.
 function view(): string {
   if (state.error) {
     return `<div style="max-width:600px;margin:80px auto;padding:24px;color:#ff4c38;font:500 14px 'Instrument Sans';text-align:center">Failed to load console: ${esc(state.error)}</div>`;
   }
-  return state.isMobile ? viewMobile() : viewDesktop();
+  if (state.page === "bulk") {
+    return `${headerHtml()}${bulkPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
+  }
+  return `${state.isMobile ? viewMobile() : viewDesktop()}${bulkPanelHtml()}`;
 }
 
 // render() = schedule a batched, reconciling repaint (safe to call on every tick).
@@ -1287,7 +1535,30 @@ function bindEvents(): void {
       state.activeTab = (el.dataset.tab as State["activeTab"]) || "cascade";
       window.scrollTo(0, 0);
       render();
-    } else if (act === "validatePanel") toast(`${state.panelSource} — validation not wired yet`);
+    } else if (act === "gotoBulk") {
+      state.page = "bulk";
+      state.bulkPanel = false;
+      window.scrollTo(0, 0);
+      render();
+      void loadBatches().then(render);
+    } else if (act === "gotoConsole") {
+      state.page = "console";
+      window.scrollTo(0, 0);
+      render();
+    } else if (act === "openBulkPanel") {
+      state.bulkPanel = true;
+      render();
+      void loadBatches().then(render);
+    } else if (act === "closeBulkPanel") {
+      state.bulkPanel = false;
+      render();
+    } else if (act === "submitBulk") void submitBulk();
+    else if (act === "toggleBatch") void toggleBatch(el.dataset.id!);
+    else if (act === "pauseBatch")
+      void batchAction(() => api.pauseBatch(el.dataset.id!, el.dataset.paused === "1"));
+    else if (act === "cancelBatch") void batchAction(() => api.cancelBatch(el.dataset.id!));
+    else if (act === "retryTrack") void batchAction(() => api.retry(el.dataset.id!));
+    else if (act === "validatePanel") toast(`${state.panelSource} — validation not wired yet`);
   });
 
   // queue from the search dropdown must fire before focusout closes it
@@ -1317,6 +1588,8 @@ function bindEvents(): void {
       state.panelValues[el.dataset.key!] = el.value;
       state.panelSave = "dirty";
       render(); // reflect Save button state; morph keeps the focused field intact
+    } else if (el.dataset.inp === "bulk") {
+      state.bulkText = el.value; // capture without re-render so the textarea isn't clobbered
     }
   });
 
@@ -1460,6 +1733,7 @@ async function boot(): Promise<void> {
   }
   render();
   void loadSpotifyStatus().then(render);
+  void loadBatches().then(render);
 
   // side effects — run once
   effect(connectLive);
@@ -1470,6 +1744,12 @@ async function boot(): Promise<void> {
     }, 1000);
     window.setInterval(() => void loadHistory().then(render), 15000); // pick up completions
     window.setInterval(() => void loadPlayer().then(render), 5000); // now-playing refresh
+    // batches: poll faster while the bulk page/panel is open, slow otherwise
+    window.setInterval(() => {
+      if (state.page === "bulk" || state.bulkPanel || state.batches.length) {
+        void loadBatches().then(render);
+      }
+    }, 3000);
   });
 }
 

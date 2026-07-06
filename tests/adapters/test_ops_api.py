@@ -279,3 +279,59 @@ def test_spotify_player_states(tmp_path: Path) -> None:
     on = TestClient(create_app(_seeded_store(tmp_path), spotify=_FakePort(connected=True)))
     body = on.get("/api/spotify/player").json()
     assert body["now_playing"]["title"] == "X" and body["recent"] == []
+
+
+# --- bulk downloads ---
+from crate.application.bulk import ResolvedBatch  # noqa: E402
+
+
+def _bulk_client(tmp_path: Path, resolver=None) -> TestClient:
+    store = RequestStore(connect(tmp_path / "bulk.db"), requested_via="console")
+    return TestClient(create_app(store, bulk_resolve=resolver))
+
+
+def test_bulk_creates_batch_and_enqueues(tmp_path: Path) -> None:
+    resolver = lambda text: ResolvedBatch("My PL", "paste", "", ["a x", "b y", "c z"])  # noqa: E731
+    client = _bulk_client(tmp_path, resolver)
+    r = client.post("/api/bulk", json={"text": "a x\nb y\nc z"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["origin"] == "paste" and body["total"] == 3
+    batches = client.get("/api/batches").json()
+    assert len(batches) == 1 and batches[0]["counts"]["queued"] == 3
+    detail = client.get(f"/api/batches/{body['id']}").json()
+    assert len(detail["tracks"]) == 3
+
+
+def test_bulk_error_mapping(tmp_path: Path) -> None:
+    # no resolver -> 503
+    assert _bulk_client(tmp_path).post("/api/bulk", json={"text": "x"}).status_code == 503
+    # empty text -> 400
+    c = _bulk_client(tmp_path, lambda t: ResolvedBatch("n", "paste", "", ["a"]))
+    assert c.post("/api/bulk", json={"text": "  "}).status_code == 400
+
+    def raise_lookup(_t: str) -> ResolvedBatch:
+        raise LookupError("spotify not configured")
+
+    c2 = _bulk_client(tmp_path, raise_lookup)
+    assert (
+        c2.post("/api/bulk", json={"text": "https://open.spotify.com/playlist/x"}).status_code
+        == 503
+    )
+
+
+def test_batch_pause_cancel_and_retry(tmp_path: Path) -> None:
+    store = RequestStore(connect(tmp_path / "b2.db"), requested_via="console")
+    client = TestClient(
+        create_app(store, bulk_resolve=lambda t: ResolvedBatch("PL", "paste", "", ["a", "b"]))
+    )
+    bid = client.post("/api/bulk", json={"text": "a\nb"}).json()["id"]
+    assert client.post(f"/api/batches/{bid}/pause", json={"paused": True}).json()["paused"] is True
+    assert client.post(f"/api/batches/{bid}/cancel").json()["cancelled"] is True
+    # cancelled queued request can be retried
+    rid = store.get_batch(bid)["tracks"][0]["id"]
+    assert client.post(f"/api/requests/{rid}/retry").status_code == 200
+    # 404s / 409s
+    assert client.post("/api/batches/nope/cancel").status_code == 404
+    assert client.get("/api/batches/nope").status_code == 404
+    assert client.post("/api/requests/nope/retry").status_code == 409
