@@ -127,6 +127,25 @@ def test_stats_empty_db_has_safe_zeroes(tmp_path: Path) -> None:
     assert s["wins_by_source"] == {}
 
 
+def test_enqueue_then_claim_runs_fifo_and_drains(tmp_path: Path) -> None:
+    store = _store(tmp_path, via="console")
+    a = store.enqueue("first")
+    store.enqueue("second")
+
+    queued = store.list_requests(status="queued")
+    assert len(queued) == 2 and queued[-1]["query"] == "first"
+    assert store.stats()["queued"] == 2
+
+    claimed = store.claim_next()
+    assert claimed == {"id": a, "query": "first"}  # oldest first
+    got = store.get_request(a)
+    assert got is not None and got["status"] == "downloading" and got["requested_via"] == "console"
+    assert store.stats()["queued"] == 1
+
+    store.claim_next()
+    assert store.claim_next() is None  # queue drained
+
+
 def test_finish_with_incomplete_report_is_noop(tmp_path: Path) -> None:
     store = _store(tmp_path)
     rid = store.open_request("t")

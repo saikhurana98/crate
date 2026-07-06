@@ -77,6 +77,25 @@ def test_records_failure_when_no_tier_wins(tmp_path: Path) -> None:
     assert len(spy.attempts) == 2 and all(not a[2] for a in spy.attempts)
 
 
+def test_request_id_attaches_to_existing_row_without_reopening(tmp_path: Path) -> None:
+    def qobuz(q: str, d: Path) -> DownloadOutcome:
+        return DownloadOutcome(Path("/x/a.flac"), 1, "qobuz", 2.0, q)
+
+    spy = SpyRecorder()
+    # the shim's queue worker claims a pre-created row and passes its id
+    result = run_cascade(
+        "q",
+        tmp_path,
+        [_tier("qobuz", Tier.ONE, qobuz, True)],
+        prober=lambda p: _flac(),
+        recorder=spy,
+        request_id="claimed-42",
+    )
+    assert result.winner is not None
+    assert spy.opened == []  # never opened a new request
+    assert spy.finished == ["claimed-42"]
+
+
 def test_no_recorder_is_a_clean_no_op(tmp_path: Path) -> None:
     def qobuz(q: str, d: Path) -> DownloadOutcome:
         return DownloadOutcome(Path("/x/a.flac"), 1, "qobuz", 2.0, q)

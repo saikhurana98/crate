@@ -6,6 +6,7 @@ export interface Stats {
   done: number;
   failed: number;
   in_flight: number;
+  queued: number;
   success_rate: number;
   lossless: number;
   lossless_rate: number;
@@ -92,8 +93,44 @@ export interface SourceUpdate {
   credentials?: Record<string, string>;
 }
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path, { headers: { Accept: "application/json" } });
+export interface SpotifyTrack {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  art: string | null;
+  duration_ms: number;
+  year: string;
+  url: string | null;
+  query: string; // ready-to-cascade free-text query
+}
+
+export interface Enqueued {
+  id: string;
+  query: string;
+  status: string;
+}
+
+export interface SpotifyStatus {
+  configured: boolean;
+  connected: boolean;
+}
+
+// now-playing / recently-played track (superset of SpotifyTrack)
+export interface PlayerTrack extends SpotifyTrack {
+  progress_ms?: number;
+  is_playing?: boolean;
+  played_at?: string | null;
+  in_library?: boolean;
+}
+
+export interface PlayerState {
+  now_playing: PlayerTrack | null;
+  recent: PlayerTrack[];
+}
+
+async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(path, { headers: { Accept: "application/json" }, signal });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
   return (await res.json()) as T;
 }
@@ -127,5 +164,11 @@ export const api = {
     send<Layout>("PUT", "/api/config", layout),
   putSource: (name: string, body: SourceUpdate) =>
     send<Source>("PUT", `/api/sources/${encodeURIComponent(name)}`, body),
+  search: (q: string, signal?: AbortSignal) =>
+    get<SpotifyTrack[]>(`/api/search?q=${encodeURIComponent(q)}&limit=20`, signal),
+  enqueue: (query: string) => send<Enqueued>("POST", "/api/download", { query }),
+  spotifyStatus: () => get<SpotifyStatus>("/api/spotify/status"),
+  spotifyPlayer: (signal?: AbortSignal) => get<PlayerState>("/api/spotify/player", signal),
+  spotifyLoginUrl: "/api/spotify/login",
   eventsUrl: "/api/events",
 };

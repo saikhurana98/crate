@@ -45,13 +45,20 @@ def run_cascade(
     *,
     prober: Prober,
     recorder: RequestRecorder | None = None,
+    request_id: str | None = None,
 ) -> CascadeResult:
     """Ask each tier in priority order; return the first verified winner.
 
     When a ``recorder`` is supplied, the request and its per-source attempt trail
     are persisted (opened before the first tier, finished/failed at the end) so
-    the management console can show live and historical downloads."""
-    rid = recorder.open_request(query) if recorder is not None else None
+    the management console can show live and historical downloads. Pass
+    ``request_id`` to attach to a row that already exists (e.g. a console
+    ``queued`` request the shim just claimed) instead of opening a new one."""
+    rid = (
+        request_id
+        if request_id is not None
+        else (recorder.open_request(query) if recorder is not None else None)
+    )
     attempts: list[CascadeAttempt] = []
     for tier in sorted(tiers, key=lambda t: t.tier.value):
         report, tier_attempts = tier.acquire(query, out_dir, prober=prober)

@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
+import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from lbmd.composition.catalog import (
@@ -35,6 +37,31 @@ from lbmd.infrastructure.sqlite.config_store import ConfigStore
 from lbmd.infrastructure.sqlite.store import RequestStore
 
 SourcesFn = Callable[[], list[dict[str, Any]]]
+SearchFn = Callable[[str, int], list[dict[str, Any]]]
+
+_SEARCH_TTL_S = 20.0
+_SEARCH_CACHE_MAX = 128
+_MAX_PENDING_STATES = 32  # cap the CSRF-state set; single-user tool, bounded churn
+
+
+class SpotifyPort(Protocol):
+    """Console-facing Spotify player integration (user-scoped OAuth)."""
+
+    def connected(self) -> bool:
+        """True once the operator has authorized (a refresh token is stored)."""
+        ...
+
+    def authorize_url(self, state: str) -> str:
+        """The Spotify consent URL to redirect the browser to on Connect."""
+        ...
+
+    def connect(self, code: str) -> None:
+        """Exchange the callback code for a refresh token and persist it."""
+        ...
+
+    def player(self) -> dict[str, Any]:
+        """``{now_playing, recent}`` — the operator's current + recent tracks."""
+        ...
 
 
 def create_app(
@@ -44,6 +71,8 @@ def create_app(
     static_dir: Path | None = None,
     sources: SourcesFn = source_status,
     config: ConfigStore | None = None,
+    search: SearchFn | None = None,
+    spotify: SpotifyPort | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     app = FastAPI(title="lbmd console", docs_url=None, redoc_url=None, openapi_url=None)
@@ -95,6 +124,35 @@ def create_app(
     def sources_list() -> list[dict[str, Any]]:
         return sources_view()
 
+    # short-TTL cache so debounced/repeated searches skip the Spotify round-trip
+    search_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+    @api.get("/search")
+    def search_tracks(
+        q: str = Query(min_length=1),
+        limit: int = Query(default=20, ge=1, le=50),
+    ) -> list[dict[str, Any]]:
+        if search is None:
+            raise HTTPException(status_code=503, detail="search not configured")
+        key = f"{limit}:{q.strip().lower()}"
+        now = time.monotonic()
+        hit = search_cache.get(key)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        results = search(q, limit)
+        if len(search_cache) >= _SEARCH_CACHE_MAX:
+            search_cache.pop(next(iter(search_cache)))
+        search_cache[key] = (now + _SEARCH_TTL_S, results)
+        return results
+
+    @api.post("/download")
+    def enqueue_download(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        query = str(body.get("query", "")).strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="query required")
+        rid = store.enqueue(query)
+        return {"id": rid, "query": query, "status": "queued"}
+
     @api.get("/config")
     def get_config() -> dict[str, Any]:
         cfg = need_config()
@@ -140,6 +198,48 @@ def create_app(
                 layout["disabled"].append(name)
             cfg.put_layout(validate_layout(layout))
         return next(s for s in sources_view() if s["name"] == name)
+
+    # --- Spotify "Listening" panel (user-scoped OAuth) ---
+    pending_states: set[str] = set()
+
+    @api.get("/spotify/status")
+    def spotify_status() -> dict[str, bool]:
+        return {
+            "configured": spotify is not None,
+            "connected": bool(spotify and spotify.connected()),
+        }
+
+    @api.get("/spotify/login")
+    def spotify_login() -> RedirectResponse:
+        if spotify is None:
+            raise HTTPException(status_code=503, detail="spotify not configured")
+        state = secrets.token_urlsafe(16)
+        if len(pending_states) < _MAX_PENDING_STATES:
+            pending_states.add(state)
+        return RedirectResponse(spotify.authorize_url(state), status_code=307)
+
+    @api.get("/spotify/callback")
+    def spotify_callback(
+        code: str | None = None, state: str | None = None, error: str | None = None
+    ) -> RedirectResponse:
+        if spotify is None:
+            raise HTTPException(status_code=503, detail="spotify not configured")
+        pending_states.discard(state or "")
+        if error or not code or state is None:
+            return RedirectResponse("/?spotify=error", status_code=303)
+        try:
+            spotify.connect(code)
+        except Exception:  # bad code / exchange failure -> surface in the UI, don't 500
+            return RedirectResponse("/?spotify=error", status_code=303)
+        return RedirectResponse("/?spotify=connected", status_code=303)
+
+    @api.get("/spotify/player")
+    def spotify_player() -> dict[str, Any]:
+        if spotify is None:
+            raise HTTPException(status_code=503, detail="spotify not configured")
+        if not spotify.connected():
+            raise HTTPException(status_code=409, detail="not connected")
+        return spotify.player()
 
     @api.get("/events")
     def events() -> StreamingResponse:
