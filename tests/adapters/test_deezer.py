@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from Crypto.Cipher import Blowfish
 
-from lbmd.adapters.sources.deezer import (
+from crate.adapters.sources.deezer import (
     DeezerTrack,
     blowfish_key,
     decrypt_track,

@@ -5,11 +5,11 @@ records every attempt, and finishes/fails exactly once — without any DB."""
 
 from pathlib import Path
 
-from lbmd.application.cascade import MuxStrategy, SourceEntry, TierMux, run_cascade
-from lbmd.application.download import DownloadReport
-from lbmd.domain.audio import AudioInfo
-from lbmd.domain.download import DownloadOutcome
-from lbmd.domain.tiers import SourceRef, Tier
+from crate.application.cascade import MuxStrategy, SourceEntry, TierMux, run_cascade
+from crate.application.download import DownloadReport
+from crate.domain.audio import AudioInfo
+from crate.domain.download import DownloadOutcome
+from crate.domain.tiers import SourceRef, Tier
 
 
 class SpyRecorder:

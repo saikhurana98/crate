@@ -4,7 +4,7 @@ import base64
 
 import pytest
 
-from lbmd.infrastructure.crypto import SecretBox
+from crate.infrastructure.crypto import SecretBox
 
 
 def test_encrypt_roundtrip() -> None:
@@ -34,7 +34,7 @@ def test_bad_key_length() -> None:
 
 
 def test_from_keyfile_uses_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("LBMD_CONFIG_KEY", base64.b64encode(bytes(range(32))).decode())
+    monkeypatch.setenv("CRATE_CONFIG_KEY", base64.b64encode(bytes(range(32))).decode())
     kf = tmp_path / "config.key"
     box = SecretBox.from_keyfile(kf)
     assert box.decrypt(box.encrypt("a")) == "a"
@@ -42,7 +42,7 @@ def test_from_keyfile_uses_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Non
 
 
 def test_from_keyfile_generates_and_reuses(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.delenv("LBMD_CONFIG_KEY", raising=False)
+    monkeypatch.delenv("CRATE_CONFIG_KEY", raising=False)
     kf = tmp_path / "config.key"
     b1 = SecretBox.from_keyfile(kf)
     assert kf.exists() and (kf.stat().st_mode & 0o777) == 0o600
@@ -51,6 +51,6 @@ def test_from_keyfile_generates_and_reuses(monkeypatch: pytest.MonkeyPatch, tmp_
 
 
 def test_from_keyfile_rejects_wrong_env_length(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("LBMD_CONFIG_KEY", base64.b64encode(b"short").decode())
+    monkeypatch.setenv("CRATE_CONFIG_KEY", base64.b64encode(b"short").decode())
     with pytest.raises(ValueError):
         SecretBox.from_keyfile(tmp_path / "config.key")

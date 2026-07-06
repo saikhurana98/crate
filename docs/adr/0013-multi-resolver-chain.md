@@ -35,7 +35,7 @@ We want to:
   - DJ edits, bootlegs, brand-new releases all flow through the system without forcing fabrication.
   - Display: when MBID is absent, the UI shows `[local]` next to the track instead of an MBID badge.
 - **Merge strategy**: first-success only in v1. The port also defines `merge-all` (run all in parallel, merge fields by resolver order) but no use case yet ships with it; held in reserve.
-- **Configuration** in `lbmd.config.json` under `resolvers.metadata` and `resolvers.coverArt` arrays — operator can reorder, drop entries, or add new ones (provided the adapter is registered in the composition root).
+- **Configuration** in `crate.config.json` under `resolvers.metadata` and `resolvers.coverArt` arrays — operator can reorder, drop entries, or add new ones (provided the adapter is registered in the composition root).
 
 ## Consequences
 

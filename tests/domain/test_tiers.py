@@ -7,7 +7,7 @@ an ordered list of race groups.
 
 import pytest
 
-from lbmd.domain.tiers import SourceRef, Tier, plan_cascade
+from crate.domain.tiers import SourceRef, Tier, plan_cascade
 
 
 def test_tier_values_are_priority_ordered() -> None:

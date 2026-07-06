@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from lbmd.adapters.sources.ytdlp import build_command, download, extract_path
+from crate.adapters.sources.ytdlp import build_command, download, extract_path
 
 
 def test_build_command_uses_ytsearch_for_free_text() -> None:

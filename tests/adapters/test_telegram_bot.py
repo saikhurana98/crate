@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from lbmd.adapters.sources.telegram_bot import (
+from crate.adapters.sources.telegram_bot import (
     TgAudio,
     is_lossless,
     parse_audio_candidates,

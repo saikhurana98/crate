@@ -18,7 +18,7 @@ This is a long-running daemon that talks to many third-party services (HTTP, Tel
 - **Language: TypeScript**, strict mode, with `strict: true`, `noUncheckedIndexedAccess: true`, `exactOptionalPropertyTypes: true`, `noImplicitOverride: true`.
 - **Runtime: Node.js LTS** (≥20). Node-native `fetch`, `ReadableStream`, `AbortController`, `Worker`, `fs/promises` cover everything we need.
 - **Package manager: pnpm** with workspaces. Strict by default (no phantom deps), fast installs, content-addressable store works well on NAS.
-- **No bundler for `@lbmd/core`** — ship it as TS sources compiled to ESM with `tsc`. Bundling matters for the browser-side debug UI; not for the server.
+- **No bundler for `@crate/core`** — ship it as TS sources compiled to ESM with `tsc`. Bundling matters for the browser-side debug UI; not for the server.
 
 ## Consequences
 

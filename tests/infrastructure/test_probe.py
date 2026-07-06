@@ -2,7 +2,7 @@
 
 import pytest
 
-from lbmd.infrastructure.audio.probe import parse_ffprobe
+from crate.infrastructure.audio.probe import parse_ffprobe
 
 OPUS_JSON = {
     "streams": [

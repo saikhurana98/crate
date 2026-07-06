@@ -20,21 +20,21 @@ The core *design* decisions (tiered cascade, verification, hexagonal boundaries,
 
 ### Stack
 
-- **Python ≥ 3.11**, `src/` layout, package `lbmd`.
+- **Python ≥ 3.11**, `src/` layout, package `crate`.
 - **uv** for env + dependency management (`uv sync`, `uv run`); `pyproject.toml` is the single manifest. Replaces pnpm.
-- **Typer** for the CLI. Entry point `lbmd` → `lbmd.cli.main:app`.
+- **Typer** for the CLI. Entry point `crate` → `crate.cli.main:app`.
 - **pytest** (+ `pytest-asyncio`, `pytest-cov`) for tests. **ruff** for lint + format. **mypy --strict** for types.
 - **asyncio + httpx** for the parallel intra-tier source races (replaces Node's `AbortSignal`/`Promise.race` with `asyncio` task cancellation).
 - **pydantic v2** for boundary validation and the slskd DTOs (replaces zod, [ADR-0007](0007-zod-runtime-validation.md)).
 
 ### Client = CLI (supersedes ADR-0009/0010/0011)
 
-- The interactive client is the `lbmd` CLI: `lbmd download <query|url>`, `lbmd version`, and `lbmd serve` (the Explo shim, below). No WebSocket protocol, no `contracts/ws-protocol.schema.json`, no debug UI, no monorepo.
+- The interactive client is the `crate` CLI: `crate download <query|url>`, `crate version`, and `crate serve` (the Explo shim, below). No WebSocket protocol, no `contracts/ws-protocol.schema.json`, no debug UI, no monorepo.
 - Progress is rendered directly in the terminal (rich/Typer), not streamed as opaque WS events. The opaque-vs-verbose idea from [ADR-0010](0010-opaque-progress-stats-for-nerds.md) survives only as a `--verbose` flag.
 
 ### Explo integration stays (amends ADR-0014)
 
-Explo talks HTTP REST, so the slskd-compatible shim is still required — it becomes a Python HTTP server (Starlette/FastAPI or stdlib) launched by `lbmd serve`, exposing the same slskd endpoint subset ([ADR-0014](0014-slskd-compat-shim.md)). The shim is the only network server lbmd runs; everything else is CLI.
+Explo talks HTTP REST, so the slskd-compatible shim is still required — it becomes a Python HTTP server (Starlette/FastAPI or stdlib) launched by `crate serve`, exposing the same slskd endpoint subset ([ADR-0014](0014-slskd-compat-shim.md)). The shim is the only network server crate runs; everything else is CLI.
 
 ### Errors: exceptions, not `Result` (supersedes ADR-0006)
 

@@ -1,7 +1,7 @@
-# lbmd image. Ships every headless-capable source, plus Monochrome (Amazon):
+# crate image. Ships every headless-capable source, plus Monochrome (Amazon):
 #   Tier 1 Qobuz · Monochrome · Tier 2 Deezer + Soulseek(via slskd) · Tier 3 yt-dlp
 # Monochrome needs a *headed* Chromium (Cloudflare Turnstile flags the headless
-# shell), so the runtime image bundles Playwright's Chromium + Xvfb and runs lbmd
+# shell), so the runtime image bundles Playwright's Chromium + Xvfb and runs crate
 # under a virtual display. Turnstile may still refuse a datacenter IP.
 
 FROM python:3.12-slim AS builder
@@ -51,19 +51,19 @@ RUN pip install --no-cache-dir /tmp/*.whl yt-dlp "playwright>=1.61.0" && rm -rf 
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
 
-# Built console UI, served by `lbmd console` (StaticFiles) at LBMD_CONSOLE_STATIC.
+# Built console UI, served by `crate console` (StaticFiles) at CRATE_CONSOLE_STATIC.
 COPY --from=ui /ui/dist /app/console
-ENV LBMD_CONSOLE_STATIC=/app/console
+ENV CRATE_CONSOLE_STATIC=/app/console
 
 # Container browser needs --no-sandbox (unprivileged user, no setuid sandbox).
-ENV LBMD_BROWSER_NO_SANDBOX=1
+ENV CRATE_BROWSER_NO_SANDBOX=1
 
 # non-root
-RUN useradd -m -u 1000 lbmd
-USER lbmd
+RUN useradd -m -u 1000 crate
+USER crate
 WORKDIR /downloads
 
 # tini as PID 1, then Xvfb (headed Chromium needs a display; -a auto-picks one).
 # xvfb-run as PID 1 wedges the server, so it must run beneath a real init.
-ENTRYPOINT ["tini", "--", "xvfb-run", "-a", "lbmd"]
+ENTRYPOINT ["tini", "--", "xvfb-run", "-a", "crate"]
 CMD ["--help"]

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lbmd.adapters.sources.soulseek import (
+from crate.adapters.sources.soulseek import (
     SlskFile,
     is_lossless,
     parse_responses,

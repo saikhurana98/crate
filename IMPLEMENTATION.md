@@ -53,7 +53,7 @@ All eight required. No bypass. `--no-verify` and admin-merge are disabled.
   - `cancellation.e2e.ts` — user cancel mid-rip aborts within 200 ms; group cancel preserves provisionals
   - `verification.e2e.ts` — fingerprint mismatch in live-set → reject; ≥ 0.95 → accept; ≥ 0.75 background → review-pending
   - `ws-protocol.e2e.ts` — subscribe/unsubscribe/verbose toggle + replay/backpressure
-- Live-source integration tests gated by `LBMD_TEST_LIVE_SOURCES=1`. CI runs only the fake-backed suite. Manual `LIVE` run required for source-adapter PRs before merge label is added.
+- Live-source integration tests gated by `CRATE_TEST_LIVE_SOURCES=1`. CI runs only the fake-backed suite. Manual `LIVE` run required for source-adapter PRs before merge label is added.
 
 ### Mutation testing (advisory, not gating in v1)
 - `stryker-mutator` runs nightly on `main`, posts a report. Goal: ≥ 70 % mutation score on `domain/` and `application/`. Below threshold → tracked in `WORK.md`.
@@ -136,7 +136,7 @@ The conductor is a single autonomous remote routine, scheduled to run continuous
 ### Worker prompt structure (template the conductor uses)
 
 ```
-You are a worker agent for the lbmd project. Your unit is <unit-name>.
+You are a worker agent for the crate project. Your unit is <unit-name>.
 
 Repo: https://github.com/saikhurana98/load-balanced-music-downloader
 Branch (create from latest main): agent/<phase>-<unit>
@@ -227,7 +227,7 @@ Critical path: 0 → 1A → 2 → (3 + 4 in parallel) → 5 → 7. With 5-way pa
 | **4F-verification** | 4 | `application/verify-track.ts`, `application/verification/decide.ts` + tests | 1A, 1B, 2 |
 | **4G-purge-daemon** | 4 | `application/purge-daemon.ts` + tests | 1A, 1B, 2 |
 | **4H-tier-cascade** | 4 | `application/download-cascade.ts`, tier eligibility (adds `tier` predicate; `SourceAdapter.capabilities.tier` flag owned by 1B) + tests | 4A, 4B, 4F |
-| **5-composition** | 5 | `composition/{container.ts, config.ts}`, `index.ts`, `config/lbmd.config.example.json` + container tests | all of 3, all of 4 |
+| **5-composition** | 5 | `composition/{container.ts, config.ts}`, `index.ts`, `config/crate.config.example.json` + container tests | all of 3, all of 4 |
 | **6A-debug-ui-shell** | 6 | `apps/debug-ui/src/{main.ts, ws-client.ts, app.tsx}` + tests | 1C |
 | **6B-debug-ui-components** | 6 | `apps/debug-ui/src/components/**`, styles + tests | 6A |
 | **7-integration** | 7 | `tests/integration/**`, `apps/debug-ui/tests/e2e.spec.ts` (adds `explo-slskd-shim.e2e.ts`, `tier-cascade.e2e.ts`) | 5, 6B |
@@ -242,7 +242,7 @@ Critical path: 0 → 1A → 2 → (3 + 4 in parallel) → 5 → 7. With 5-way pa
 5. **Tests are not optional.** A PR without tests fails the `test:unit` coverage gate automatically. Don't ship "TODO test" — block on it instead.
 6. **Conventional Commits, no force-push.** Fixes are new commits. The squash-merge consolidates them.
 7. **`BLOCKED:` is a respected signal.** A worker that posts `BLOCKED: <reason>` and exits is not punished — it triggers a human escalation. Better than a guess that auto-merges.
-8. **Secrets stay out of code.** All third-party credentials referenced via `process.env.LBMD_*` and documented in `SECRETS.md`. Worker creating a new secret-using adapter must update `SECRETS.md` in the same PR.
+8. **Secrets stay out of code.** All third-party credentials referenced via `process.env.CRATE_*` and documented in `SECRETS.md`. Worker creating a new secret-using adapter must update `SECRETS.md` in the same PR.
 
 ## 10. Failure modes and recovery
 

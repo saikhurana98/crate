@@ -11,7 +11,7 @@ Most clients of this service (the crowd-request mobile app, the DJ deck) want to
 - Client UIs become noisy (per-attempt timelines that no DJ wants to look at mid-set).
 - Telemetry surface and the public protocol surface become entangled.
 
-Meanwhile, a debug UI, a Prometheus exporter consumer, and the developer running `lbmd` locally absolutely **do** want the gritty details: which source won, how long each attempt took, why a candidate was rejected, race timelines. A single protocol must serve both audiences.
+Meanwhile, a debug UI, a Prometheus exporter consumer, and the developer running `crate` locally absolutely **do** want the gritty details: which source won, how long each attempt took, why a candidate was rejected, race timelines. A single protocol must serve both audiences.
 
 ## Decision
 

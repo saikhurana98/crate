@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from lbmd.adapters.sources.monochrome import (
+from crate.adapters.sources.monochrome import (
     MonoTrack,
     build_amz_params,
     monochrome_download,

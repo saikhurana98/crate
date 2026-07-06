@@ -37,7 +37,7 @@ export interface AcquireOpts {
 ```
 
 - **Implementation**: `infrastructure/browser/playwright-pool.ts`. One Playwright `BrowserContext` per profile (cookies, storage, perf reuse). `p-queue` per profile, default concurrency 2. Lease auto-released on `signal.abort()` or `maxLeaseMs` exceeded (whichever first). Periodic recycle of contexts above a memory threshold.
-- **Headless by default**. Override for visual debugging via `LBMD_BROWSER_HEADED=1`.
+- **Headless by default**. Override for visual debugging via `CRATE_BROWSER_HEADED=1`.
 - **Adapters declare their dependency** via `capabilities.requires.browser = true`. Composition root injects the pool only into adapters that need it. Pure-HTTP adapters (Squid mirror) do not see the pool.
 - **Profiles** are a finite enum, not free-form strings, so the composition root can pre-create contexts at boot and keep cold start out of the request path.
 - **Health**: pool exposes `inUse`, `available`, `restarts` counters via the metrics endpoint.

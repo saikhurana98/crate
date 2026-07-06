@@ -12,7 +12,7 @@ This file tracks decisions and features that were considered during the v1 archi
 
 - **Today**: single-process, optimistic concurrency. The DB row update is the source of truth for "who owns this job"; second daemon would race itself.
 - **Why deferred**: not needed for one NAS, one DJ rig. Adding it costs a switch from optimistic to pessimistic locking, lease columns on every row, and a heartbeat / lease-extension protocol.
-- **What's needed**: `claimed_by`, `claim_expires_at` columns on `jobs` and `job_groups`; lease-based UPDATE patterns; advisory NAS-level lock removal (currently single-instance enforced via `.lbmd/lock`); a story for split-brain.
+- **What's needed**: `claimed_by`, `claim_expires_at` columns on `jobs` and `job_groups`; lease-based UPDATE patterns; advisory NAS-level lock removal (currently single-instance enforced via `.crate/lock`); a story for split-brain.
 
 ## 3. HTTP companion endpoint for one-shot queries
 
@@ -62,11 +62,11 @@ This file tracks decisions and features that were considered during the v1 archi
 - **Why deferred**: first-success covers initial use cases; merge-all introduces conflict-resolution complexity without a clear win.
 - **What's needed**: per-field priority order, conflict logging, opt-in flag on `MetadataResolver` chain config.
 
-## 11. Native Explo `lbmd` download backend (Strategy B escape hatch)
+## 11. Native Explo `crate` download backend (Strategy B escape hatch)
 
-- **Today**: [ADR-0014](0014-slskd-compat-shim.md) integrates with Explo by emulating the slskd REST API (Strategy A). Explo sees a synthetic single-result "user" and never learns lbmd's richer job state.
-- **Why deferred**: the shim needs zero Explo fork and survives upstream updates. A native backend is only worth it if the shim proves too lossy (e.g. Explo drives slskd endpoints/fields the shim can't fake, or lbmd state that can't round-trip through the slskd DTO shape).
-- **What's needed**: fork Explo, add an `lbmd` entry to its Go `DOWNLOAD_SERVICES` set calling lbmd's WebSocket/HTTP API directly; a rebase strategy against upstream Explo; contract parity tests. Track shim/slskd version drift (`WORK.md`) to know when this trips.
+- **Today**: [ADR-0014](0014-slskd-compat-shim.md) integrates with Explo by emulating the slskd REST API (Strategy A). Explo sees a synthetic single-result "user" and never learns crate's richer job state.
+- **Why deferred**: the shim needs zero Explo fork and survives upstream updates. A native backend is only worth it if the shim proves too lossy (e.g. Explo drives slskd endpoints/fields the shim can't fake, or crate state that can't round-trip through the slskd DTO shape).
+- **What's needed**: fork Explo, add an `crate` entry to its Go `DOWNLOAD_SERVICES` set calling crate's WebSocket/HTTP API directly; a rebase strategy against upstream Explo; contract parity tests. Track shim/slskd version drift (`WORK.md`) to know when this trips.
 
 ## 12. slskd-shim fidelity gaps
 

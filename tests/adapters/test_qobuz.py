@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from lbmd.adapters.sources.qobuz import (
+from crate.adapters.sources.qobuz import (
     QobuzTrack,
     parse_search,
     qobuz_download,

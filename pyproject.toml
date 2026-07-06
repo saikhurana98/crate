@@ -1,5 +1,5 @@
 [project]
-name = "lbmd"
+name = "crate"
 version = "0.1.0"
 description = "Load-balanced music downloader — tiered FLAC acquisition CLI, Explo-compatible"
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-lbmd = "lbmd.cli.main:app"
+crate = "crate.cli.main:app"
 
 [dependency-groups]
 dev = [
@@ -33,7 +33,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lbmd"]
+packages = ["src/crate"]
 
 [tool.ruff]
 line-length = 100
@@ -51,32 +51,32 @@ max-args = 9
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # Enforce hexagonal layering: domain/ports must not reach outward. The ban is
 # global; per-file-ignores below lift it for the layers allowed to wire concretes.
-"lbmd.adapters".msg = "domain/ports must not import adapters (hexagonal layering)"
-"lbmd.infrastructure".msg = "domain/ports must not import infrastructure (hexagonal layering)"
+"crate.adapters".msg = "domain/ports must not import adapters (hexagonal layering)"
+"crate.infrastructure".msg = "domain/ports must not import infrastructure (hexagonal layering)"
 
 [tool.ruff.lint.per-file-ignores]
 # Only domain/ + ports/ are forbidden from importing outward. Application wires
 # concretes today (ports/composition refactor is deferred, ADR-0017).
-"src/lbmd/application/**" = ["TID251"]
-"src/lbmd/adapters/**" = ["TID251"]
+"src/crate/application/**" = ["TID251"]
+"src/crate/adapters/**" = ["TID251"]
 # FastAPI idioms: Depends/Body/Query in arg defaults (B008); route registration
 # in one factory is inherently long (PLR0915).
-"src/lbmd/adapters/inbound/ops_api.py" = ["TID251", "B008", "PLR0915"]
-"src/lbmd/infrastructure/**" = ["TID251"]
-"src/lbmd/composition/**" = ["TID251", "PLC0415"]
-"src/lbmd/cli/**" = ["TID251", "PLC0415"]
+"src/crate/adapters/inbound/ops_api.py" = ["TID251", "B008", "PLR0915"]
+"src/crate/infrastructure/**" = ["TID251"]
+"src/crate/composition/**" = ["TID251", "PLC0415"]
+"src/crate/cli/**" = ["TID251", "PLC0415"]
 # browser layer embeds JS strings (E501), checks HTTP status codes (PLR2004),
 # and lazy-imports playwright (PLC0415) to keep it an optional dependency.
-"src/lbmd/infrastructure/browser/**" = ["E501", "PLR2004", "PLC0415"]
+"src/crate/infrastructure/browser/**" = ["E501", "PLR2004", "PLC0415"]
 # telegram client lazy-imports telethon (optional dep) inside methods
-"src/lbmd/infrastructure/telegram/**" = ["PLC0415"]
+"src/crate/infrastructure/telegram/**" = ["PLC0415"]
 "tests/**" = ["TID251", "PLR2004", "E501", "PLC0415"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 mypy_path = "src"
-packages = ["lbmd"]
+packages = ["crate"]
 
 [[tool.mypy.overrides]]
 module = ["telethon.*", "Crypto.*"]
@@ -85,8 +85,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "--cov=lbmd --cov-report=term-missing --cov-fail-under=90 --strict-markers"
+addopts = "--cov=crate --cov-report=term-missing --cov-fail-under=90 --strict-markers"
 
 [tool.coverage.run]
 branch = true
-source = ["src/lbmd"]
+source = ["src/crate"]

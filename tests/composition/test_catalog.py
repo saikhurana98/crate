@@ -4,8 +4,8 @@ import copy
 
 import pytest
 
-from lbmd.composition import catalog
-from lbmd.composition.catalog import (
+from crate.composition import catalog
+from crate.composition.catalog import (
     KNOWN,
     LayoutError,
     default_layout,
@@ -39,30 +39,30 @@ def test_disabled_source_with_missing_credentials() -> None:
     assert qobuz["enabled"] is False
     assert qobuz["credentials"] == "missing"
     assert set(qobuz["missing_env"]) == {  # type: ignore[arg-type]
-        "LBMD_QOBUZ_APP_ID",
-        "LBMD_QOBUZ_APP_SECRET",
-        "LBMD_QOBUZ_TOKEN",
+        "CRATE_QOBUZ_APP_ID",
+        "CRATE_QOBUZ_APP_SECRET",
+        "CRATE_QOBUZ_TOKEN",
     }
 
 
 def test_enabled_with_full_credentials_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LBMD_QOBUZ", "1")
-    monkeypatch.setenv("LBMD_QOBUZ_APP_ID", "id")
-    monkeypatch.setenv("LBMD_QOBUZ_APP_SECRET", "secret")
-    monkeypatch.setenv("LBMD_QOBUZ_TOKEN", "tok")
+    monkeypatch.setenv("CRATE_QOBUZ", "1")
+    monkeypatch.setenv("CRATE_QOBUZ_APP_ID", "id")
+    monkeypatch.setenv("CRATE_QOBUZ_APP_SECRET", "secret")
+    monkeypatch.setenv("CRATE_QOBUZ_TOKEN", "tok")
     qobuz = _by_name(source_status(), "qobuz")
     assert qobuz["enabled"] is True and qobuz["credentials"] == "ok"
 
 
 def test_partial_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LBMD_QOBUZ_APP_ID", "id")  # only 1 of 3
+    monkeypatch.setenv("CRATE_QOBUZ_APP_ID", "id")  # only 1 of 3
     qobuz = _by_name(source_status(), "qobuz")
     assert qobuz["credentials"] == "partial"
-    assert qobuz["missing_env"] == ["LBMD_QOBUZ_APP_SECRET", "LBMD_QOBUZ_TOKEN"]
+    assert qobuz["missing_env"] == ["CRATE_QOBUZ_APP_SECRET", "CRATE_QOBUZ_TOKEN"]
 
 
 def test_status_never_leaks_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LBMD_DEEZER_ARL", "super-secret-arl-value")
+    monkeypatch.setenv("CRATE_DEEZER_ARL", "super-secret-arl-value")
     deezer = _by_name(source_status(), "deezer")
     assert "super-secret-arl-value" not in repr(deezer)
     assert deezer["credentials"] == "ok"
@@ -71,7 +71,7 @@ def test_status_never_leaks_values(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_monochrome_has_no_env_secret_but_toggles(monkeypatch: pytest.MonkeyPatch) -> None:
     mono = _by_name(source_status(), "monochrome")
     assert mono["enabled"] is False and mono["credentials"] == "none"
-    monkeypatch.setenv("LBMD_MONOCHROME", "yes")
+    monkeypatch.setenv("CRATE_MONOCHROME", "yes")
     assert _by_name(source_status(), "monochrome")["enabled"] is True
 
 

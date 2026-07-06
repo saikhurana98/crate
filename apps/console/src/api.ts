@@ -1,4 +1,4 @@
-// Typed client for the lbmd ops API. Same-origin in prod (Caddy injects the
+// Typed client for the crate ops API. Same-origin in prod (Caddy injects the
 // API key so the browser never holds it); dev proxies /api to :8788.
 
 export interface Stats {

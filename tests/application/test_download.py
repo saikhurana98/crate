@@ -6,9 +6,9 @@ or subprocess runs in unit tests.
 
 from pathlib import Path
 
-from lbmd.adapters.sources.ytdlp import DownloadOutcome
-from lbmd.application.download import acquire, acquire_many
-from lbmd.domain.audio import AudioInfo
+from crate.adapters.sources.ytdlp import DownloadOutcome
+from crate.application.download import acquire, acquire_many
+from crate.domain.audio import AudioInfo
 
 
 def _outcome(path: str) -> DownloadOutcome:

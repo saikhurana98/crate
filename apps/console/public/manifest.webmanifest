@@ -1,6 +1,6 @@
 {
-  "name": "lbmd console",
-  "short_name": "lbmd",
+  "name": "crate console",
+  "short_name": "crate",
   "description": "Load-balanced music downloader — cascade, live queue, history, Spotify.",
   "start_url": "/",
   "scope": "/",

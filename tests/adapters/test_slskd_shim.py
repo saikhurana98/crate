@@ -1,12 +1,12 @@
 """slskd-compatible shim (ADR-0014): Explo drives these endpoints thinking it's
-slskd; the shim runs the lbmd cascade instead and returns one synthetic result.
+slskd; the shim runs the crate cascade instead and returns one synthetic result.
 
 The cascade is injected as a ``download(query, out_dir) -> path`` callable, so the
 endpoint logic + transfer state machine are tested without network."""
 
 from pathlib import Path
 
-from lbmd.adapters.inbound.slskd_shim import ShimState
+from crate.adapters.inbound.slskd_shim import ShimState
 
 
 def _dl_ok(flac_bytes: bytes = b"fLaC\x00shim"):  # type: ignore[no-untyped-def]
@@ -28,13 +28,13 @@ def test_search_returns_id_and_completes() -> None:
     assert state["fileCount"] == 1
 
 
-def test_search_responses_advertise_one_flac_from_user_lbmd() -> None:
+def test_search_responses_advertise_one_flac_from_user_crate() -> None:
     shim = ShimState(download=_dl_ok(), downloads_dir=Path("/tmp"))
     sid = shim.start_search("Diljit Dealer")["id"]
     resp = shim.search_responses(sid)
     assert len(resp) == 1
     r = resp[0]
-    assert r["username"] == "lbmd"
+    assert r["username"] == "crate"
     assert r["hasFreeUploadSlot"] is True
     f = r["files"][0]
     assert f["filename"].endswith(".flac")
@@ -46,10 +46,10 @@ def test_enqueue_then_download_completes_and_writes_file(tmp_path: Path) -> None
     sid = shim.start_search("Diljit Dealer")["id"]
     fname = shim.search_responses(sid)[0]["files"][0]["filename"]
 
-    shim.enqueue("lbmd", [{"filename": fname, "size": 123}])
+    shim.enqueue("crate", [{"filename": fname, "size": 123}])
     shim.run_download(fname)  # synchronous for the test (enqueue spawns a thread)
 
-    transfers = shim.transfers("lbmd")
+    transfers = shim.transfers("crate")
     files = transfers["directories"][0]["files"]
     assert files[0]["state"] == "Completed, Succeeded"
     # file landed at downloads_dir/<advertised filename> for Explo to pick up
@@ -68,7 +68,7 @@ def test_run_download_no_move_when_produced_at_dest(tmp_path: Path) -> None:
     sid = shim.start_search("q")["id"]
     fname = shim.search_responses(sid)[0]["files"][0]["filename"]
     shim.run_download(fname)
-    assert shim.transfers("lbmd")["directories"][0]["files"][0]["state"] == "Completed, Succeeded"
+    assert shim.transfers("crate")["directories"][0]["files"][0]["state"] == "Completed, Succeeded"
 
 
 def test_download_failure_marks_errored(tmp_path: Path) -> None:
@@ -78,15 +78,15 @@ def test_download_failure_marks_errored(tmp_path: Path) -> None:
     shim = ShimState(download=boom, downloads_dir=tmp_path)
     sid = shim.start_search("Nonexistent Track")["id"]
     fname = shim.search_responses(sid)[0]["files"][0]["filename"]
-    shim.enqueue("lbmd", [{"filename": fname, "size": 1}])
+    shim.enqueue("crate", [{"filename": fname, "size": 1}])
     shim.run_download(fname)
-    files = shim.transfers("lbmd")["directories"][0]["files"]
+    files = shim.transfers("crate")["directories"][0]["files"]
     assert "Errored" in files[0]["state"]
 
 
 def test_server_module_imports() -> None:
     # the stdlib server wiring is I/O (pragma), but it must import cleanly
-    import lbmd.infrastructure.http_server.serve as srv
+    import crate.infrastructure.http_server.serve as srv
 
     assert hasattr(srv, "run_server")
 

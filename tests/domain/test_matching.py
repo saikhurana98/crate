@@ -1,6 +1,6 @@
 """Shared title-match guard."""
 
-from lbmd.domain.matching import norm_tokens, title_matches
+from crate.domain.matching import norm_tokens, title_matches
 
 
 def test_norm_tokens_drops_filler_and_short_words() -> None:

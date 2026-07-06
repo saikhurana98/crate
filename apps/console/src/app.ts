@@ -1,4 +1,4 @@
-// lbmd console — single-screen app (cascade map + listening/live/wins/history
+// crate console — single-screen app (cascade map + listening/live/wins/history
 // rail + detail drawer + source config panel). Ported from the v4 design, wired
 // to the real /api. No framework: one state object, reconciling re-render, event
 // delegation. See docs/console-ui-spec.md.
@@ -47,9 +47,9 @@ interface PanelDef {
 const PANELDEF: Record<string, PanelDef> = {
   qobuz: {
     creds: [
-      ["LBMD_QOBUZ_APP_ID", "App ID"],
-      ["LBMD_QOBUZ_APP_SECRET", "App Secret"],
-      ["LBMD_QOBUZ_TOKEN", "Token"],
+      ["CRATE_QOBUZ_APP_ID", "App ID"],
+      ["CRATE_QOBUZ_APP_SECRET", "App Secret"],
+      ["CRATE_QOBUZ_TOKEN", "Token"],
     ],
     settings: [],
     validate: true,
@@ -57,24 +57,24 @@ const PANELDEF: Record<string, PanelDef> = {
   monochrome: {
     creds: [],
     settings: [],
-    note: "Browser-based source — no credentials required. Enable it and lbmd drives a headless session.",
+    note: "Browser-based source — no credentials required. Enable it and crate drives a headless session.",
   },
-  deezer: { creds: [["LBMD_DEEZER_ARL", "ARL cookie"]], settings: [], validate: true },
+  deezer: { creds: [["CRATE_DEEZER_ARL", "ARL cookie"]], settings: [], validate: true },
   soulseek: {
     creds: [
-      ["LBMD_SLSKD_URL", "slskd URL"],
-      ["LBMD_SLSKD_API_KEY", "API key"],
-      ["LBMD_SLSKD_DOWNLOADS", "Downloads dir"],
+      ["CRATE_SLSKD_URL", "slskd URL"],
+      ["CRATE_SLSKD_API_KEY", "API key"],
+      ["CRATE_SLSKD_DOWNLOADS", "Downloads dir"],
     ],
     settings: [["min_bitrate_kbps", "Minimum bitrate (kbps)", "number", "256"]],
     validate: true,
   },
   telegram: {
     creds: [
-      ["LBMD_TG_API_ID", "API ID"],
-      ["LBMD_TG_API_HASH", "API hash"],
-      ["LBMD_TG_SESSION", "Session string"],
-      ["LBMD_TG_BOT", "Bot handle"],
+      ["CRATE_TG_API_ID", "API ID"],
+      ["CRATE_TG_API_HASH", "API hash"],
+      ["CRATE_TG_SESSION", "Session string"],
+      ["CRATE_TG_BOT", "Bot handle"],
     ],
     settings: [],
     validate: true,
@@ -926,7 +926,7 @@ function headerHtml(): string {
     <div style="max-width:1560px;margin:0 auto;padding:0 28px;display:flex;align-items:center;gap:16px">
       <div style="display:flex;align-items:center;gap:12px;padding:15px 0">
         <span style="width:10px;height:10px;border-radius:50%;background:#ff4c38"></span>
-        <span style="font:800 17px 'Doto';letter-spacing:.08em">lbmd</span>
+        <span style="font:800 17px 'Doto';letter-spacing:.08em">crate</span>
         <span style="font:500 11px 'JetBrains Mono';color:#5d6456;letter-spacing:.14em;text-transform:uppercase;margin-top:1px">console</span>
       </div>
       ${search}
@@ -1115,7 +1115,7 @@ function mHeaderHtml(): string {
   const live = !!state.stats;
   return `<header style="position:sticky;top:0;z-index:40;background:rgba(12,14,12,.88);backdrop-filter:blur(14px);border-bottom:1px solid #1d211c;padding:14px 18px;display:flex;align-items:center;gap:10px">
     <span style="width:9px;height:9px;border-radius:50%;background:#ff4c38;flex-shrink:0"></span>
-    <span style="font:800 16px 'Doto';letter-spacing:.08em">lbmd</span>
+    <span style="font:800 16px 'Doto';letter-spacing:.08em">crate</span>
     <span style="font:500 10px 'JetBrains Mono';color:#5d6456;letter-spacing:.14em;text-transform:uppercase;margin-top:1px">console</span>
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <div style="display:flex;align-items:center;gap:7px;padding:6px 11px;border-radius:20px;background:${bg};border:1px solid ${bd};transition:.2s">

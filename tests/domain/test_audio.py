@@ -1,6 +1,6 @@
 """Quality classification of a downloaded audio file (ADR-0005 domain side)."""
 
-from lbmd.domain.audio import AudioInfo, classify
+from crate.domain.audio import AudioInfo, classify
 
 
 def _info(**kw: object) -> AudioInfo:

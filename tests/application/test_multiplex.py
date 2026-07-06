@@ -2,10 +2,10 @@
 
 from pathlib import Path
 
-from lbmd.application.multiplex import MuxStrategy, SourceEntry, TierMux
-from lbmd.domain.audio import AudioInfo
-from lbmd.domain.download import DownloadOutcome
-from lbmd.domain.tiers import SourceRef, Tier
+from crate.application.multiplex import MuxStrategy, SourceEntry, TierMux
+from crate.domain.audio import AudioInfo
+from crate.domain.download import DownloadOutcome
+from crate.domain.tiers import SourceRef, Tier
 
 
 def _flac() -> AudioInfo:
