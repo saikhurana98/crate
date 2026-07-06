@@ -312,13 +312,20 @@ def create_app(
     return app
 
 
+def _live_frame(store: RequestStore) -> str:
+    payload = {
+        "stats": store.stats(),
+        "in_flight": store.list_requests(status="downloading", limit=100),
+    }
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 async def _event_stream(  # pragma: no cover - infinite streaming loop
     store: RequestStore, poll_interval: float
 ) -> AsyncIterator[str]:
     while True:
-        payload = {
-            "stats": store.stats(),
-            "in_flight": store.list_requests(status="downloading", limit=100),
-        }
-        yield f"data: {json.dumps(payload)}\n\n"
+        # run the (blocking) SQLite reads off the event loop, otherwise a slow
+        # read under heavy write load stalls the whole console API — SSE, polls
+        # and all — and the frontend appears frozen mid-download.
+        yield await asyncio.to_thread(_live_frame, store)
         await asyncio.sleep(poll_interval)
