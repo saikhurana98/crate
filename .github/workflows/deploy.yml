@@ -1,7 +1,9 @@
 name: deploy
 
-# Deploys to the self-hosted runner on music-stack: pulls the published image
-# and smoke-tests it. Runs after a successful release build, or on demand.
+# Deploys to the self-hosted runner on music-stack. Runs after a green release
+# (image published to GHCR) or on demand. Pulls the released image, recreates
+# the LIVE console + serve containers, health-checks the console, and rolls back
+# to the previous image if it does not come up.
 on:
   workflow_dispatch:
   workflow_run:
@@ -16,20 +18,64 @@ concurrency:
   group: deploy
   cancel-in-progress: false
 
+env:
+  # the LIVE stack — lbmd-console (:8788) + lbmd-serve run from here, NOT
+  # /opt/lbmd/docker-compose.yml (an orphan single-service file).
+  STACK: /opt/music-stack/docker-compose.yml
+  SERVICES: lbmd-console lbmd-serve
+  HEALTH_URL: http://127.0.0.1:8788/api/health
+
 jobs:
   deploy:
-    # only after a green release (or manual dispatch)
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # only after a green release on main, or a manual dispatch
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: [self-hosted, music-stack]
+    timeout-minutes: 15
     steps:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Pull image
-        run: docker compose -f /opt/lbmd/docker-compose.yml pull
+      - name: Snapshot current image (for rollback)
+        id: prev
+        run: |
+          cid=$(docker compose -f "$STACK" ps -q lbmd-console 2>/dev/null || true)
+          img=$(docker inspect "$cid" --format '{{.Image}}' 2>/dev/null || true)
+          echo "img=${img:-none}" >> "$GITHUB_OUTPUT"
+          echo "previous console image: ${img:-none}"
 
-      - name: Smoke test
-        run: docker compose -f /opt/lbmd/docker-compose.yml run --rm lbmd version
+      - name: Pull released image
+        run: docker compose -f "$STACK" pull $SERVICES
+
+      - name: Recreate services
+        # --force-recreate: the :latest tag is stable, so compose must be told to
+        # replace the running containers even though the tag string is unchanged.
+        # --no-deps: leave navidrome / explo alone.
+        run: docker compose -f "$STACK" up -d --force-recreate --no-deps $SERVICES
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo 000)
+            if [ "$code" = "200" ]; then echo "console healthy after ${i} attempt(s)"; exit 0; fi
+            echo "waiting for console health (got $code)…"; sleep 3
+          done
+          echo "::error::console did not return 200 from $HEALTH_URL after ~60s"
+          docker compose -f "$STACK" logs --tail=80 $SERVICES || true
+          exit 1
+
+      - name: Rollback on failure
+        if: failure() && steps.prev.outputs.img != 'none'
+        run: |
+          echo "::warning::deploy failed — rolling back to ${{ steps.prev.outputs.img }}"
+          docker tag "${{ steps.prev.outputs.img }}" ghcr.io/${{ github.repository_owner }}/lbmd:latest
+          docker compose -f "$STACK" up -d --force-recreate --no-deps $SERVICES
+
+      - name: Prune dangling images
+        if: success()
+        run: docker image prune -f
 
       - name: Logout
         if: always()
