@@ -107,6 +107,28 @@ The read-only Phase 1 was superseded by the v2 design build:
 Deferred: credential "Test/validate" button (stubbed in the UI), per-byte live
 progress.
 
+## Update (2026-07-04): search & download from the console
+
+The console can now originate downloads, not just observe them.
+
+- **Search** — `GET /api/search?q=` proxies the Spotify Web API
+  (`infrastructure/spotify/client.py`, client-credentials flow). The bearer token
+  is cached until ~30 s before expiry and the endpoint keeps a short-TTL
+  (20 s / 128-entry) result cache, so debounced/repeated queries skip the network;
+  the UI debounces 220 ms and aborts superseded requests (`AbortController`).
+  Spotify is **search-only** — never a download source. Absent creds
+  (`LBMD_SPOTIFY_CLIENT_ID/_SECRET`) => 503 and the UI hides search.
+- **Download** — `POST /api/download {query}` inserts a `queued` request row and
+  returns immediately (snappy). Downloading stays in one process: the `serve`
+  (shim) process — which owns the NAS mount and full source toolchain — runs a
+  background **queue worker** that atomically claims the oldest `queued` row
+  (`RequestStore.claim_next`, `queued → downloading`) and runs the cascade bound to
+  that existing row (`run_cascade(..., request_id=…)`, so no duplicate request).
+  Cross-process handoff is via the shared WAL DB, consistent with the config
+  hot-reload path — no cross-process bus.
+- The `requests.status` enum gains `queued`; `stats()` reports a `queued` count and
+  the History list shows a "Queued" state until the worker picks it up.
+
 ## References
 
 - ADR-0004 (SQLite, hand-rolled migrations) — schema intent; superseded on file

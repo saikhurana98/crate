@@ -38,6 +38,36 @@ class RequestStore:
             )
         return rid
 
+    # --- console queue (cross-process work items) ---
+    def enqueue(self, query: str) -> str:
+        """Record a console-requested download as ``queued``; the shim's queue
+        worker claims and runs it. Returns the new request id."""
+        rid = _new_id()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO requests(id, query, requested_via, status, created_at) "
+                "VALUES (?, ?, ?, 'queued', ?)",
+                (rid, query, self._via, now_iso()),
+            )
+        return rid
+
+    def claim_next(self) -> dict[str, Any] | None:
+        """Atomically claim the oldest ``queued`` request (-> ``downloading``).
+        Returns ``{"id", "query"}`` or ``None`` when the queue is empty."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, query FROM requests WHERE status='queued' ORDER BY created_at LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            cur = self._conn.execute(
+                "UPDATE requests SET status='downloading' WHERE id=? AND status='queued'",
+                (row["id"],),
+            )
+            if cur.rowcount != 1:  # lost a race (defensive; single claimer today)
+                return None
+            return {"id": row["id"], "query": row["query"]}
+
     def record_attempt(
         self, request_id: str, source: str, tier: int, ok: bool, detail: str
     ) -> None:
@@ -138,6 +168,7 @@ class RequestStore:
         done = scalar("SELECT COUNT(*) FROM requests WHERE status='done'")
         failed = scalar("SELECT COUNT(*) FROM requests WHERE status='failed'")
         in_flight = scalar("SELECT COUNT(*) FROM requests WHERE status='downloading'")
+        queued = scalar("SELECT COUNT(*) FROM requests WHERE status='queued'")
         lossless = scalar("SELECT COUNT(*) FROM downloads WHERE lossless=1")
         settled = done + failed
         wins_by_source = {
@@ -165,6 +196,7 @@ class RequestStore:
             "done": done,
             "failed": failed,
             "in_flight": in_flight,
+            "queued": queued,
             "success_rate": (done / settled) if settled else 0.0,
             "lossless": lossless,
             "lossless_rate": (lossless / done) if done else 0.0,

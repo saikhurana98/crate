@@ -86,9 +86,10 @@ def serve(  # pragma: no cover - network server loop
     """Run the slskd-compatible shim so Explo (SLSKD_URL) downloads via the tier
     cascade. Config: LBMD_SERVE_DOWNLOADS (output dir), LBMD_SERVE_API_KEY."""
     import os
+    import threading
 
     from lbmd.adapters.inbound.slskd_shim import ShimState
-    from lbmd.composition.sources import build_shim_download
+    from lbmd.composition.sources import build_queue_worker, build_shim_download
     from lbmd.infrastructure.http_server.serve import run_server
 
     downloads = Path(os.environ.get("LBMD_SERVE_DOWNLOADS", "downloads"))
@@ -96,8 +97,15 @@ def serve(  # pragma: no cover - network server loop
     shim = ShimState(
         build_shim_download(), downloads, api_key=os.environ.get("LBMD_SERVE_API_KEY") or None
     )
+    # Drain console-queued downloads in the background (this process owns the NAS
+    # mount + toolchain; the console only writes queue rows to the shared DB).
+    stop = threading.Event()
+    threading.Thread(target=build_queue_worker(), args=(stop,), daemon=True).start()
     typer.echo(f"lbmd slskd-shim listening on {host}:{port}  downloads -> {downloads}")
-    run_server(shim, host, port)
+    try:
+        run_server(shim, host, port)
+    finally:
+        stop.set()
 
 
 @app.command()
