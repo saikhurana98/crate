@@ -295,6 +295,19 @@ def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - 
     current_tiers = _tiers_provider(_config_store_if_enabled())
 
     def download(query: str, out_dir: Path) -> Path:
+        # de-dup: hand Explo the existing file if we already have this track.
+        existing = recorder.find_completed(query)
+        if existing and Path(str(existing["path"])).exists():
+            rid = recorder.open_request(query)
+            recorder.record_attempt(
+                rid,
+                str(existing.get("source_won") or "library"),
+                int(existing.get("tier_won") or 0),
+                True,
+                "already in library — reused existing file",
+            )
+            recorder.complete_as_duplicate(rid, existing)
+            return Path(str(existing["path"]))
         result = run_cascade(query, out_dir, current_tiers(), prober=probe, recorder=recorder)
         if result.winner is None or result.winner.outcome is None:
             raise RuntimeError(f"no source produced a file for {query!r}")
@@ -324,6 +337,20 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
                 stop.wait(poll)
                 continue
             try:
+                # de-dup: if this exact track was already downloaded and the file
+                # still exists, reuse it instead of downloading again. Big win for
+                # re-imported playlists.
+                existing = store.find_completed(claimed["query"])
+                if existing and Path(str(existing["path"])).exists():
+                    store.record_attempt(
+                        claimed["id"],
+                        str(existing.get("source_won") or "library"),
+                        int(existing.get("tier_won") or 0),
+                        True,
+                        "already in library — reused existing file",
+                    )
+                    store.complete_as_duplicate(claimed["id"], existing)
+                    continue
                 run_cascade(
                     claimed["query"],
                     out_dir,

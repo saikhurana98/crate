@@ -309,3 +309,44 @@ class RequestStore:
                 (request_id,),
             )
         return cur.rowcount == 1
+
+    # --- de-duplication (skip re-downloading a track already in the library) ---
+    def find_completed(self, query: str) -> dict[str, Any] | None:
+        """The most recent successful download of the same query, or ``None``.
+        Returns its winner (tier/source) + download row for reuse."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT r.tier_won, r.source_won, d.* FROM requests r "
+                "JOIN downloads d ON d.request_id = r.id "
+                "WHERE r.query = ? AND r.status = 'done' "
+                "ORDER BY r.finished_at DESC LIMIT 1",
+                (query,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def complete_as_duplicate(self, request_id: str, existing: dict[str, Any]) -> None:
+        """Resolve a request as done from an existing library file — no download.
+        Copies the prior download row (elapsed 0) and marks it done."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET status='done', tier_won=?, source_won=?, finished_at=? "
+                "WHERE id=?",
+                (existing.get("tier_won"), existing.get("source_won"), now_iso(), request_id),
+            )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO downloads(request_id, path, size_bytes, codec, bitrate, "
+                "bit_depth, sample_rate, duration_s, elapsed_s, lossless, quality_label) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                (
+                    request_id,
+                    existing["path"],
+                    existing["size_bytes"],
+                    existing["codec"],
+                    existing["bitrate"],
+                    existing["bit_depth"],
+                    existing["sample_rate"],
+                    existing["duration_s"],
+                    existing["lossless"],
+                    existing["quality_label"],
+                ),
+            )

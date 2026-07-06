@@ -110,3 +110,24 @@ def test_concurrent_reads_dont_corrupt_cursors(tmp_path: Path) -> None:
     for t in threads:
         t.join()
     assert errors == []
+
+
+def test_dedup_find_completed_and_reuse(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    rid = s.enqueue("Daft Punk Get Lucky")
+    s.claim_next()
+    s.finish_request(rid, _rep())
+
+    existing = s.find_completed("Daft Punk Get Lucky")
+    assert existing is not None
+    assert existing["source_won"] == "qobuz" and existing["tier_won"] == 1
+    assert existing["path"] == "/nas/x.flac"
+    assert s.find_completed("Some Other Track") is None
+
+    # a fresh request for the same track resolves as done from the existing file
+    rid2 = s.enqueue("Daft Punk Get Lucky")
+    s.complete_as_duplicate(rid2, existing)
+    d = s.get_request(rid2)
+    assert d is not None and d["status"] == "done"
+    assert d["download"]["path"] == "/nas/x.flac" and d["download"]["elapsed_s"] == 0
+    assert d["source_won"] == "qobuz"
