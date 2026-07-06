@@ -119,6 +119,8 @@ interface State {
   spotifyConfigured: boolean; // /api/spotify/status.configured (user-OAuth set up)
   spotifyConnected: boolean; // refresh token stored -> Listening panel is live
   player: PlayerState | null; // now-playing + recently-played
+  isMobile: boolean; // viewport <= 640px -> tabbed app layout
+  activeTab: "cascade" | "activity" | "tracks"; // mobile bottom-nav selection
 }
 
 const state: State = {
@@ -151,6 +153,8 @@ const state: State = {
   spotifyConfigured: false,
   spotifyConnected: false,
   player: null,
+  isMobile: typeof matchMedia !== "undefined" ? matchMedia("(max-width: 640px)").matches : false,
+  activeTab: "cascade",
 };
 
 const root = document.getElementById("app")!;
@@ -378,7 +382,7 @@ function statCardsHtml(): string {
         ["Avg time", s.avg_elapsed_s ? `${s.avg_elapsed_s.toFixed(1)}s` : "—", "per completed", false],
       ]
     : Array<Card>(6).fill(["—", "—", "", false]);
-  return `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px">${cards
+  return `<div style="display:grid;grid-template-columns:repeat(${state.isMobile ? 2 : 6},1fr);gap:${state.isMobile ? 10 : 12}px;margin-bottom:16px">${cards
     .map(([label, value, sub, light]) => {
       const bg = light ? "#dfe4d6" : "#111411";
       const bd = light ? "#dfe4d6" : "#22261f";
@@ -796,8 +800,7 @@ function drawerHtml(): string {
       ${state.showLogs ? `<div style="margin-top:8px;background:#090b09;border:1px solid #1d211c;border-radius:14px;padding:12px 14px;overflow-x:auto;animation:fadein .2s ease">${buildLogs(d)}</div>` : ""}
     </div>`;
   }
-  return `<div data-act="closeDetail" style="position:fixed;inset:0;background:rgba(5,7,5,.6);z-index:50;transition:opacity .28s;opacity:${open ? "1" : "0"};pointer-events:${open ? "auto" : "none"}"></div>
-    <aside style="position:fixed;top:0;right:0;bottom:0;width:min(470px,94vw);background:#111411;border-left:1px solid #22261f;z-index:51;transform:${open ? "translateX(0)" : "translateX(103%)"};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column">${inner}</aside>`;
+  return sheetChrome(inner, open, "closeDetail", 50, "min(470px,94vw)");
 }
 
 function panelHtml(): string {
@@ -862,8 +865,7 @@ function panelHtml(): string {
       ${def.validate ? `<button class="ghost" data-act="validatePanel" style="background:#181c17;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:600 13px 'Instrument Sans';padding:12px 16px;cursor:pointer">Test</button>` : ""}
     </div>`;
   }
-  return `<div data-act="closePanel" style="position:fixed;inset:0;background:rgba(5,7,5,.6);z-index:52;transition:opacity .28s;opacity:${open ? "1" : "0"};pointer-events:${open ? "auto" : "none"}"></div>
-    <aside style="position:fixed;top:0;right:0;bottom:0;width:min(440px,94vw);background:#111411;border-left:1px solid #22261f;z-index:53;transform:${open ? "translateX(0)" : "translateX(103%)"};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column">${inner}</aside>`;
+  return sheetChrome(inner, open, "closePanel", 52, "min(440px,94vw)");
 }
 
 function searchDropdownHtml(): string {
@@ -942,12 +944,228 @@ function headerHtml(): string {
   </header>`;
 }
 
-// Pure view: State -> HTML. The renderer reconciles it into the DOM (morph), so
-// this can run every tick without wiping the page.
-function view(): string {
-  if (state.error) {
-    return `<div style="max-width:600px;margin:80px auto;padding:24px;color:#ff4c38;font:500 14px 'Instrument Sans';text-align:center">Failed to load console: ${esc(state.error)}</div>`;
+// Responsive side-drawer (desktop) / bottom-sheet (mobile) chrome around inner.
+function sheetChrome(inner: string, open: boolean, closeAct: string, z: number, deskWidth: string): string {
+  const scrim = `<div data-act="${closeAct}" style="position:fixed;inset:0;background:rgba(5,7,5,.6);z-index:${z};transition:opacity .28s;opacity:${open ? "1" : "0"};pointer-events:${open ? "auto" : "none"}"></div>`;
+  if (state.isMobile) {
+    const handle = `<div style="display:flex;justify-content:center;padding:10px 0 2px;flex-shrink:0"><span style="width:36px;height:4px;border-radius:4px;background:#272c25"></span></div>`;
+    return `${scrim}<aside style="position:fixed;left:50%;bottom:0;width:100%;max-width:640px;max-height:88vh;background:#111411;border:1px solid #22261f;border-bottom:none;border-radius:22px 22px 0 0;z-index:${z + 1};transform:translateX(-50%) ${open ? "translateY(0)" : "translateY(101%)"};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:0 -24px 60px rgba(0,0,0,.55);display:flex;flex-direction:column">${open ? handle : ""}${inner}</aside>`;
   }
+  return `${scrim}<aside style="position:fixed;top:0;right:0;bottom:0;width:${deskWidth};background:#111411;border-left:1px solid #22261f;z-index:${z + 1};transform:${open ? "translateX(0)" : "translateX(103%)"};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column">${inner}</aside>`;
+}
+
+const LOCK_SVG = `<svg title="Pinned final fallback — locked" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>`;
+const gearBtn = (name: string): string =>
+  `<button class="gear" data-act="openPanel" data-source="${esc(name)}" title="Configure" style="background:none;border:none;cursor:pointer;color:#5d6456;padding:10px;margin:-8px -6px -8px 0;border-radius:10px;display:inline-flex;transition:color .15s,background .15s"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2"></path></svg></button>`;
+
+// ---------- mobile (tabbed app) builders ----------
+function mCardHtml(name: string, tierKey: string, index: number, active: boolean): string {
+  const meta = state.sources[name];
+  if (!meta) return "";
+  const cm = credMeta(meta.credentials);
+  const locked = name === "ytdlp";
+  const loss = meta.lossless;
+  const missing = meta.credentials === "missing";
+  const dragging = state.drag.source === name;
+  const shake = state.rejectShake === name ? "animation:shake .48s;" : "";
+  const accent = tierColor(Number(tierKey) || null);
+  const stub =
+    tierKey === "disabled"
+      ? ""
+      : `<span style="width:6px;height:6px;border-radius:50%;background:${active ? accent : "#272c25"};box-shadow:${active ? `0 0 8px ${accent}` : "none"};animation:${active ? "flowpulse 1s ease-in-out infinite" : "none"};flex-shrink:0"></span>`;
+  return `<div class="dcard" draggable="${!locked}" data-drag-card data-source="${esc(name)}" data-tier="${esc(tierKey)}" data-index="${index}" style="display:flex;align-items:center;gap:10px;background:#181c17;border:1px solid ${missing ? "rgba(255,76,56,.4)" : "#272c25"};border-radius:14px;padding:12px;opacity:${dragging ? ".4" : "1"};transition:border-color .15s;${shake}">
+    ${stub}
+    <span style="color:${locked ? "#22261f" : "#5d6456"};font:600 13px 'JetBrains Mono';letter-spacing:-2px;user-select:none">${locked ? "" : "⣿"}</span>
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;align-items:center;gap:7px"><span style="font:600 13px 'JetBrains Mono';color:#e9ede3">${esc(name)}</span><span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 7px;border-radius:10px;${badgeStyle(loss)}">${badgeText(loss)}</span></div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:5px"><span style="width:5px;height:5px;border-radius:50%;background:${cm.color};flex-shrink:0"></span><span style="font:500 10px 'JetBrains Mono';color:${cm.color}">${cm.text}</span>${missing ? `<span style="font:400 10px 'JetBrains Mono';color:#ff4c38">· unconfigured</span>` : ""}</div>
+    </div>
+    ${locked ? LOCK_SVG : gearBtn(name)}
+  </div>`;
+}
+
+function mTierHtml(t: TierCfg, showFall: boolean): string {
+  const key = String(t.tier);
+  const accent = tierColor(t.tier);
+  const over = state.drag.overTier === key && state.drag.source;
+  const isAll = t.strategy === "all";
+  const n = t.sources.length;
+  const activeIdx = isAll ? -1 : n > 0 ? state.tick % n : -1;
+  const nextName = !isAll && n > 1 ? t.sources[(activeIdx + 1) % n] : null;
+  const caption = isAll
+    ? n <= 1
+      ? "parallel · first verified file wins"
+      : `parallel · all ${n} at once, first wins`
+    : `uniform · rotating${nextName ? ` · next: ${nextName}` : ""}`;
+  const cells: string[] = [];
+  for (let i = 0; i <= n; i++) {
+    if (over && state.drag.overIndex === i)
+      cells.push(`<div style="height:52px;border:1px dashed #99a091;border-radius:14px;background:rgba(233,237,227,.04)"></div>`);
+    if (i < n) cells.push(mCardHtml(t.sources[i], key, i, isAll || i === activeIdx));
+  }
+  const seg = (strat: string, label: string, icon: string, on: boolean) =>
+    `<button data-act="strategy" data-tier="${key}" data-strategy="${strat}" style="flex:1;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.03em;padding:9px 8px;background:${on ? "#e9ede3" : "transparent"};color:${on ? "#14170f" : C.faint};transition:.15s">${icon}${label}</button>`;
+  return `<div style="position:relative">
+    <div style="display:flex;align-items:flex-start;margin-top:12px">
+      <span style="width:27px;display:flex;justify-content:center;flex-shrink:0;margin-top:12px;position:relative;z-index:1"><span style="width:27px;height:27px;border-radius:50%;background:#0c0e0c;border:1px solid ${accent};display:inline-flex;align-items:center;justify-content:center;font:800 11px 'Doto';color:${accent}">0${key}</span></span>
+      <span style="width:9px;height:1px;background:#2c332a;flex-shrink:0;margin-top:25px"></span>
+      <div data-drop-tier="${key}" style="flex:1;min-width:0;border:1px solid ${over ? "#99a091" : "#22261f"};border-radius:18px;background:${over ? "rgba(233,237,227,.03)" : "#0e100d"};padding:13px 13px 14px;transition:border-color .15s,background .15s">
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="font:600 13px 'Instrument Sans'">Tier ${key}</span>
+          <span style="font:500 10px 'JetBrains Mono';color:#5d6456">${n} ${n === 1 ? "source" : "sources"}</span>
+          <span title="dispatch" style="margin-left:auto;width:26px;height:26px;border-radius:50%;background:#0c0e0c;border:1px solid ${accent};display:inline-flex;align-items:center;justify-content:center;color:${accent};flex-shrink:0">${isAll ? iconParallel(13, 2) : iconUniform(12, 2.2)}</span>
+        </div>
+        <div style="display:flex;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;padding:2px;margin-top:11px">
+          ${seg("all", "parallel", iconParallel(11, 2.4), isAll)}${seg("uniform", "uniform", iconUniform(11, 2.4), !isAll)}
+        </div>
+        <div style="font:400 10px 'JetBrains Mono';color:#5d6456;margin-top:8px">${esc(caption)}</div>
+        <div style="display:flex;flex-direction:column;gap:9px;margin-top:11px">
+          ${cells.join("") || `<div style="padding:10px 2px;font:400 11px 'JetBrains Mono';color:#464d40">Drop sources here</div>`}
+        </div>
+      </div>
+    </div>
+    ${
+      showFall
+        ? `<div style="display:flex;align-items:center;gap:11px;margin-top:12px;position:relative">
+        <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="color:#464d40;font-size:9px;line-height:1;background:#0c0e0c;padding:3px 0">▼</span></span>
+        <span style="font:500 9.5px 'JetBrains Mono';letter-spacing:.05em;color:#5d6456">no verified file · falls through</span>
+      </div>`
+        : ""
+    }
+  </div>`;
+}
+
+function mCascadeTab(): string {
+  const tiers = [...(state.layout?.tiers ?? [])].sort((a, b) => a.tier - b.tier);
+  const tray = state.layout?.disabled ?? [];
+  const trayOver = state.drag.overTier === "disabled" && state.drag.source;
+  const trayCells: string[] = [];
+  for (let i = 0; i <= tray.length; i++) {
+    if (trayOver && state.drag.overIndex === i)
+      trayCells.push(`<div style="height:52px;border:1px dashed #99a091;border-radius:14px;background:rgba(233,237,227,.04)"></div>`);
+    if (i < tray.length) trayCells.push(mCardHtml(tray[i], "disabled", i, false));
+  }
+  return `<h1 style="margin:0;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Cascade</h1>
+    <p style="margin:5px 0 0;font:400 12.5px 'Instrument Sans';color:#99a091;line-height:1.5">Requests fall through tiers until a source produces a verified file.</p>
+    <div style="position:relative;margin-top:16px">
+      <span style="position:absolute;left:13px;top:14px;bottom:14px;width:1px;background:#2c332a"></span>
+      <div style="display:flex;align-items:center;gap:11px;position:relative">
+        <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="width:11px;height:11px;border-radius:50%;background:#ff4c38;border:4px solid #0c0e0c;box-sizing:content-box;animation:pulse 1.6s ease-in-out infinite"></span></span>
+        <span style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;background:#181c17;border:1px solid #272c25;font:600 11px 'JetBrains Mono';letter-spacing:.05em;color:#e9ede3">request in</span>
+      </div>
+      ${tiers.map((t, i) => mTierHtml(t, i < tiers.length - 1)).join("")}
+      <div style="display:flex;align-items:center;gap:11px;margin-top:12px;position:relative">
+        <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="width:19px;height:19px;border-radius:50%;background:#dfe4d6;display:inline-flex;align-items:center;justify-content:center;font:700 10px 'JetBrains Mono';color:#14170f;border:4px solid #0c0e0c;box-sizing:content-box">✓</span></span>
+        <span style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;background:#dfe4d6;font:600 11px 'JetBrains Mono';letter-spacing:.05em;color:#14170f">verified file → library</span>
+      </div>
+    </div>
+    <div data-drop-tier="disabled" style="margin-top:18px;border:1px dashed ${trayOver ? "#99a091" : "#22261f"};border-radius:18px;background:${trayOver ? "rgba(233,237,227,.03)" : "#0e100d"};padding:13px;transition:border-color .15s">
+      <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px"><span style="font:600 12px 'Instrument Sans';color:#99a091">Available / Disabled</span><span style="font:500 10px 'JetBrains Mono';color:#5d6456">${tray.length === 0 ? "empty" : tray.length + (tray.length === 1 ? " source" : " sources")}</span></div>
+      <div style="display:flex;flex-direction:column;gap:9px;min-height:44px">${trayCells.join("") || `<div style="padding:8px 2px;font:400 11px 'JetBrains Mono';color:#464d40">Every source is in a tier</div>`}</div>
+    </div>`;
+}
+
+function mTracksTab(): string {
+  const q = state.searchQuery.trim();
+  const searchBox = state.searchOff
+    ? ""
+    : `<div style="position:relative;display:flex;align-items:center">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:14px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+        <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks — queue a download…" style="width:100%;background:#111411;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 13px 'Instrument Sans';padding:11px 15px 11px 38px"/>
+      </div>${mSearchResults(q)}`;
+  return `<h1 style="margin:0 0 12px;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Tracks</h1>
+    ${searchBox}
+    <div style="margin-top:14px">${listeningHtml()}</div>`;
+}
+
+function mSearchResults(q: string): string {
+  const active = state.searchBusy || state.searchErr != null || q.length >= 2;
+  if (!active) return "";
+  let body = "";
+  if (state.searchErr) body = `<div style="padding:15px 16px;font:400 12px 'Instrument Sans';color:#ff6b58">Search error: ${esc(state.searchErr)}</div>`;
+  else if (state.searchBusy && !state.searchResults.length)
+    body = `<div style="display:flex;align-items:center;gap:10px;padding:15px 16px;font:400 12px 'Instrument Sans';color:#99a091"><span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>Searching…</div>`;
+  else if (!state.searchResults.length) body = `<div style="padding:16px;text-align:center;font:400 12px 'Instrument Sans';color:#5d6456">No tracks match.</div>`;
+  else
+    body = state.searchResults
+      .map((t) => {
+        const done = !!state.enqueued[t.id];
+        const meta = [t.album, t.year].filter(Boolean).join(" · ");
+        const art = t.art
+          ? `<img src="${esc(t.art)}" alt="" referrerpolicy="no-referrer" style="width:42px;height:42px;border-radius:10px;object-fit:cover;flex-shrink:0;background:#181c17"/>`
+          : `<span style="width:42px;height:42px;border-radius:10px;background:#181c17;border:1px solid #272c25;display:flex;align-items:center;justify-content:center;font:800 15px 'Doto';color:#99a091;flex-shrink:0">${esc((t.title || "?").charAt(0).toUpperCase())}</span>`;
+        const ctrl = done
+          ? `<span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:6px 10px;border-radius:14px;background:rgba(233,237,227,.09);flex-shrink:0">✓ queued</span>`
+          : `<button class="qbtn" data-act="enqueue" data-id="${esc(t.id)}" style="width:38px;height:38px;border-radius:50%;border:1px solid #272c25;background:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#99a091;flex-shrink:0;transition:border-color .15s,color .15s">${DL_ICON}</button>`;
+        return `<div style="display:flex;align-items:center;gap:11px;padding:11px 13px;border-top:1px solid #1a1e19">${art}
+          <div style="flex:1;min-width:0"><div style="font:600 13px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.title)}</div><div style="font:400 11px 'Instrument Sans';color:#99a091;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.artist)}</div>${meta ? `<div style="font:400 9.5px 'JetBrains Mono';color:#5d6456;margin-top:3px">${esc(meta)}</div>` : ""}</div>
+          ${ctrl}</div>`;
+      })
+      .join("");
+  return `<div style="background:#111411;border:1px solid #272c25;border-radius:16px;overflow:hidden;margin-top:10px;animation:fadein .15s ease">${body}</div>`;
+}
+
+function mHeaderHtml(): string {
+  const saveMap: Record<SaveState, [string, string, string, string, boolean]> = {
+    idle: ["saved", C.faint, "#131612", "#272c25", false],
+    saving: ["saving", "#e9ede3", "#181c17", "#39402f", true],
+    saved: ["saved ✓", "#e9ede3", "rgba(233,237,227,.09)", "#39402f", false],
+  };
+  const [txt, col, bg, bd, spin] = saveMap[state.saveState];
+  const live = !!state.stats;
+  return `<header style="position:sticky;top:0;z-index:40;background:rgba(12,14,12,.88);backdrop-filter:blur(14px);border-bottom:1px solid #1d211c;padding:14px 18px;display:flex;align-items:center;gap:10px">
+    <span style="width:9px;height:9px;border-radius:50%;background:#ff4c38;flex-shrink:0"></span>
+    <span style="font:800 16px 'Doto';letter-spacing:.08em">lbmd</span>
+    <span style="font:500 10px 'JetBrains Mono';color:#5d6456;letter-spacing:.14em;text-transform:uppercase;margin-top:1px">console</span>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <div style="display:flex;align-items:center;gap:7px;padding:6px 11px;border-radius:20px;background:${bg};border:1px solid ${bd};transition:.2s">
+        ${spin ? `<span style="width:10px;height:10px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>` : ""}
+        <span style="font:600 10px 'JetBrains Mono';color:${col}">${txt}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:7px;padding:6px 11px;background:#131612;border:1px solid #272c25;border-radius:20px"><span style="width:6px;height:6px;border-radius:50%;background:${live ? "#ff4c38" : C.faint};animation:pulse 2s ease-in-out infinite"></span><span style="font:500 10px 'JetBrains Mono';color:#99a091;letter-spacing:.06em">${live ? "live" : "…"}</span></div>
+    </div>
+  </header>`;
+}
+
+function mBottomNav(): string {
+  const tab = state.activeTab;
+  const cInk = (t: string) => (tab === t ? "#e9ede3" : "#5d6456");
+  const liveBadge = state.inflight.length > 0;
+  const btn = (t: string, label: string, icon: string, badge = false) =>
+    `<button data-tab="${t}" data-act="setTab" style="flex:1;background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0;color:${cInk(t)};transition:color .15s;position:relative">${icon}<span style="font:600 9.5px 'JetBrains Mono';letter-spacing:.08em">${label}</span>${badge && liveBadge ? `<span style="position:absolute;top:6px;left:calc(50% + 8px);width:7px;height:7px;border-radius:50%;background:#ff4c38;animation:pulse 1.6s ease-in-out infinite"></span>` : ""}</button>`;
+  const casc = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"></path><path d="M12 8l-6 5v8"></path><path d="M12 8l6 5v8"></path><path d="M12 8v13"></path></svg>`;
+  const act = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>`;
+  const trk = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle><path d="M11 18V5l10-2v13"></path></svg>`;
+  return `<nav style="position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:640px;z-index:45;background:rgba(12,14,12,.92);backdrop-filter:blur(14px);border-top:1px solid #1d211c;display:flex;padding:6px 8px calc(14px + env(safe-area-inset-bottom))">
+    ${btn("cascade", "CASCADE", casc)}${btn("activity", "ACTIVITY", act, true)}${btn("tracks", "TRACKS", trk)}
+  </nav>`;
+}
+
+function toastHtml(): string {
+  return state.toast
+    ? `<div style="position:fixed;bottom:${state.isMobile ? "84px" : "26px"};left:50%;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:10px;background:#dfe4d6;border-radius:14px;padding:12px 19px;box-shadow:0 12px 40px rgba(0,0,0,.5);animation:toastin .3s cubic-bezier(.3,.8,.3,1)"><span style="width:7px;height:7px;border-radius:50%;background:#14170f"></span><span style="font:600 12.5px 'JetBrains Mono';color:#14170f">${esc(state.toast)}</span></div>`
+    : "";
+}
+
+function viewMobile(): string {
+  let tab = "";
+  if (state.activeTab === "cascade") tab = mCascadeTab();
+  else if (state.activeTab === "activity")
+    tab = `<h1 style="margin:0 0 14px;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Activity</h1>
+      ${statCardsHtml()}
+      <div style="display:flex;flex-direction:column;gap:12px">${liveHtml()}${winsHtml()}${historyHtml()}</div>`;
+  else tab = mTracksTab();
+  return `<div style="max-width:640px;margin:0 auto;position:relative">
+    ${mHeaderHtml()}
+    <main style="padding:16px 16px calc(104px + env(safe-area-inset-bottom));animation:fadein .25s ease">${tab}</main>
+    ${mBottomNav()}
+    ${drawerHtml()}
+    ${panelHtml()}
+    ${toastHtml()}
+  </div>`;
+}
+
+function viewDesktop(): string {
   return `${headerHtml()}
     <main style="max-width:1560px;margin:0 auto;padding:22px 28px 72px;animation:fadein .25s ease">
       ${statCardsHtml()}
@@ -958,7 +1176,16 @@ function view(): string {
     </main>
     ${drawerHtml()}
     ${panelHtml()}
-    ${state.toast ? `<div style="position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:10px;background:#dfe4d6;border-radius:14px;padding:12px 19px;box-shadow:0 12px 40px rgba(0,0,0,.5);animation:toastin .3s cubic-bezier(.3,.8,.3,1)"><span style="width:7px;height:7px;border-radius:50%;background:#14170f"></span><span style="font:600 12.5px 'JetBrains Mono';color:#14170f">${esc(state.toast)}</span></div>` : ""}`;
+    ${toastHtml()}`;
+}
+
+// Pure view: State -> HTML. The renderer reconciles it into the DOM (morph), so
+// this can run every tick without wiping the page.
+function view(): string {
+  if (state.error) {
+    return `<div style="max-width:600px;margin:80px auto;padding:24px;color:#ff4c38;font:500 14px 'Instrument Sans';text-align:center">Failed to load console: ${esc(state.error)}</div>`;
+  }
+  return state.isMobile ? viewMobile() : viewDesktop();
 }
 
 // render() = schedule a batched, reconciling repaint (safe to call on every tick).
@@ -1056,6 +1283,10 @@ function bindEvents(): void {
     else if (act === "enqueue") {
       const t = findTrack(el.dataset.id!);
       if (t) void enqueueTrack(t);
+    } else if (act === "setTab") {
+      state.activeTab = (el.dataset.tab as State["activeTab"]) || "cascade";
+      window.scrollTo(0, 0);
+      render();
     } else if (act === "validatePanel") toast(`${state.panelSource} — validation not wired yet`);
   });
 
@@ -1204,8 +1435,21 @@ function flashOAuthResult(): void {
   history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : ""));
 }
 
+function watchViewport(): void {
+  if (typeof matchMedia === "undefined") return;
+  const mq = matchMedia("(max-width: 640px)");
+  const apply = () => {
+    if (state.isMobile !== mq.matches) {
+      state.isMobile = mq.matches;
+      render();
+    }
+  };
+  mq.addEventListener("change", apply);
+}
+
 async function boot(): Promise<void> {
   bindEvents(); // once
+  watchViewport(); // desktop <-> mobile layout switch
   flashOAuthResult();
   render(); // header/skeleton
   try {

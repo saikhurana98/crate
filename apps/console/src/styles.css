@@ -1,16 +1,20 @@
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{
   background:#0c0e0c;
   color:#e9ede3;
   font-family:'Instrument Sans',system-ui,-apple-system,sans-serif;
   -webkit-font-smoothing:antialiased;
   min-height:100vh;
+  /* app-like: no rubber-band/pull-to-refresh, no tap flash, no long-press select on chrome */
+  overscroll-behavior-y:none;
+  -webkit-tap-highlight-color:transparent;
 }
 ::selection{background:rgba(233,237,227,.2)}
-::-webkit-scrollbar{width:10px;height:10px}
-::-webkit-scrollbar-thumb{background:#272c25;border-radius:6px;border:2px solid #0c0e0c}
-::-webkit-scrollbar-thumb:hover{background:#39402f}
+/* no visible scrollbars anywhere (still scrollable) */
+*{scrollbar-width:none;-ms-overflow-style:none}
+::-webkit-scrollbar{width:0;height:0;display:none}
 input,select,button{font-family:inherit}
 input:focus,select:focus,button:focus-visible{outline:1.5px solid #e9ede3;outline-offset:1px}
 input::placeholder{color:#5d6456}
