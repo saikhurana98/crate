@@ -33,10 +33,11 @@ FROM python:3.12-slim
 LABEL org.opencontainers.image.source="https://github.com/saikhurana98/load-balanced-music-downloader"
 LABEL org.opencontainers.image.description="Load-balanced tiered FLAC music downloader"
 
-# ffmpeg: ffprobe (verification) + remux. xvfb: virtual display for the headed
-# Monochrome browser. mp4decrypt (copied below) decrypts Amazon's CENC stream.
+# ffmpeg: ffprobe (verification) + remux. xvfb + xauth: virtual display for the
+# headed Monochrome browser (xvfb-run needs xauth, which recommends-off omits).
+# mp4decrypt (copied below) decrypts Amazon's CENC stream.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg xvfb \
+    && apt-get install -y --no-install-recommends ffmpeg xvfb xauth \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=bento4 /b4/build/mp4decrypt /usr/local/bin/mp4decrypt

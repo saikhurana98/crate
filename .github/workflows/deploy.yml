@@ -57,12 +57,12 @@ jobs:
 
       - name: Health check
         run: |
-          for i in $(seq 1 20); do
+          for i in $(seq 1 40); do
             code=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null || echo 000)
             if [ "$code" = "200" ]; then echo "console healthy after ${i} attempt(s)"; exit 0; fi
             echo "waiting for console health (got $code)…"; sleep 3
           done
-          echo "::error::console did not return 200 from $HEALTH_URL after ~60s"
+          echo "::error::console did not return 200 from $HEALTH_URL after ~120s"
           docker compose -f "$STACK" logs --tail=80 $SERVICES || true
           exit 1
 
