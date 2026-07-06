@@ -268,9 +268,7 @@ class RequestStore:
 
     def get_batch(self, batch_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM batches WHERE id=?", (batch_id,)
-            ).fetchone()
+            row = self._conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
             if row is None:
                 return None
             out = dict(row)
