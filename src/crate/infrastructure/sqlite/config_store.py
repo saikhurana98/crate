@@ -25,8 +25,11 @@ class ConfigStore:
         self._lock = threading.Lock()
 
     # --- layout ---
+    # Reads take the lock too: the console shares this connection across uvicorn's
+    # threadpool, and concurrent cursors on one SQLite connection interleave.
     def get_layout(self) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT layout FROM app_config WHERE id=1").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT layout FROM app_config WHERE id=1").fetchone()
         return json.loads(row["layout"]) if row else None
 
     def seed_layout(self, layout: dict[str, Any]) -> None:
@@ -49,14 +52,16 @@ class ConfigStore:
             return int(row[0])
 
     def version(self) -> int:
-        row = self._conn.execute("SELECT version FROM app_config WHERE id=1").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT version FROM app_config WHERE id=1").fetchone()
         return int(row[0]) if row else 0
 
     # --- per-source settings ---
     def get_settings(self, name: str) -> dict[str, Any]:
-        row = self._conn.execute(
-            "SELECT settings FROM source_config WHERE name=?", (name,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT settings FROM source_config WHERE name=?", (name,)
+            ).fetchone()
         return json.loads(row["settings"]) if row else {}
 
     def put_settings(self, name: str, settings: dict[str, Any]) -> None:
@@ -80,13 +85,17 @@ class ConfigStore:
             )
 
     def secret_keys(self, name: str) -> set[str]:
-        return {
-            row["env_key"]
-            for row in self._conn.execute("SELECT env_key FROM source_secret WHERE name=?", (name,))
-        }
+        with self._lock:
+            return {
+                row["env_key"]
+                for row in self._conn.execute(
+                    "SELECT env_key FROM source_secret WHERE name=?", (name,)
+                )
+            }
 
     def get_secret(self, name: str, env_key: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT ciphertext FROM source_secret WHERE name=? AND env_key=?", (name, env_key)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT ciphertext FROM source_secret WHERE name=? AND env_key=?", (name, env_key)
+            ).fetchone()
         return self._box.decrypt(row["ciphertext"]) if row else None
