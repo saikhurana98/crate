@@ -32,6 +32,11 @@ export interface RequestRow {
   lossless: number | null;
   elapsed_s: number | null;
   batch_id?: string | null;
+  // structured track identity (Phase 1); null on legacy rows
+  artist?: string | null;
+  title?: string | null;
+  isrc?: string | null;
+  duration_s?: number | null;
 }
 
 export interface Attempt {
@@ -101,6 +106,8 @@ export interface SpotifyTrack {
   album: string;
   art: string | null;
   duration_ms: number;
+  duration_s: number | null; // rounded seconds for the cascade's duration match
+  isrc: string | null;
   year: string;
   url: string | null;
   query: string; // ready-to-cascade free-text query
@@ -110,6 +117,16 @@ export interface Enqueued {
   id: string;
   query: string;
   status: string;
+}
+
+// enqueue payload: a free-text query plus optional structured identity fields the
+// cascade matches on (ISRC short-circuit, duration prefilter).
+export interface EnqueuePayload {
+  query: string;
+  artist?: string | null;
+  title?: string | null;
+  isrc?: string | null;
+  duration_s?: number | null;
 }
 
 export interface SpotifyStatus {
@@ -206,7 +223,7 @@ export const api = {
     send<Source>("PUT", `/api/sources/${encodeURIComponent(name)}`, body),
   search: (q: string, signal?: AbortSignal) =>
     get<SpotifyTrack[]>(`/api/search?q=${encodeURIComponent(q)}&limit=20`, signal),
-  enqueue: (query: string) => send<Enqueued>("POST", "/api/download", { query }),
+  enqueue: (payload: EnqueuePayload) => send<Enqueued>("POST", "/api/download", payload),
   bulk: (text: string) => send<BulkResult>("POST", "/api/bulk", { text }),
   batches: () => get<Batch[]>("/api/batches"),
   batch: (id: string) => get<BatchDetail>(`/api/batches/${encodeURIComponent(id)}`),

@@ -107,6 +107,26 @@ def test_select_track_title_guard() -> None:
         select_track(tracks, "Completely Different Song")
 
 
+def _dz(id_: int, title: str, artist: str, duration_s: int, isrc: str | None) -> DeezerTrack:
+    return DeezerTrack(id_, title, artist, "", duration_s, isrc)
+
+
+def test_select_track_isrc_short_circuits() -> None:
+    tracks = [
+        _dz(1, "Levitating", "Cover Artist", 200, "GBWRONG00001"),  # wrong, first
+        _dz(2, "Levitating", "Dua Lipa", 203, "GBAHT2000123"),  # wanted
+    ]
+    assert select_track(tracks, "anything", isrc="GBAHT2000123").id == 2
+
+
+def test_select_track_prefilters_by_duration() -> None:
+    tracks = [
+        _dz(1, "Levitating", "Dua Lipa", 480, None),  # extended, off
+        _dz(2, "Levitating", "Dua Lipa", 203, None),  # wanted
+    ]
+    assert select_track(tracks, "Dua Lipa Levitating", want_duration_s=203).id == 2
+
+
 def test_deezer_download_resolves_and_decrypts(tmp_path: Path) -> None:
     key = blowfish_key(3135556)
     plain = b"fLaC" + bytes((i * 3) % 256 for i in range(2048 * 3))

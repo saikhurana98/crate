@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from crate.domain.download import DownloadOutcome
-from crate.domain.matching import title_matches
+from crate.domain.identity import TrackIdentity
+from crate.domain.matching import duration_prefilter, match_score, title_matches
 
 # request(query) -> list of reply "messages" (dicts with an optional "audio" + "ref")
 Request = Callable[[str], list[dict[str, Any]]]
@@ -67,28 +68,45 @@ def is_lossless(audio: TgAudio) -> bool:
     return ext in _LOSSLESS_EXT or any(tag in audio.mime.lower() for tag in _LOSSLESS_MIME)
 
 
-def select_audio(candidates: list[TgAudio], query: str) -> TgAudio:
-    """Keep title-matching candidates, then prefer lossless, higher bitrate, larger.
+def select_audio(
+    candidates: list[TgAudio], query: str, want: TrackIdentity | None = None
+) -> TgAudio:
+    """Keep title-matching candidates, then rank best-first.
 
-    Raises LookupError when nothing matches, so the cascade advances a tier.
+    When ``want`` is known the pool is duration-prefiltered and the ranking leads
+    with ``match_score`` of the filename against the query + artist tokens (so a
+    same-title file by the wrong artist loses), then prefers lossless, higher
+    bitrate, larger. Raises LookupError when nothing matches, so the cascade
+    advances a tier.
     """
     matching = [c for c in candidates if title_matches(Path(c.filename).stem, query)]
+    if want is not None:
+        matching = duration_prefilter(matching, want.duration_s, lambda c: c.duration_s)
     if not matching:
         raise LookupError("no title-matching Telegram audio")
-    return max(matching, key=lambda c: (is_lossless(c), c.bitrate_bps, c.size_bytes))
+    artist = want.artist if want and want.artist else ""
+    score_query = f"{query} {artist}".strip()
+
+    def score(c: TgAudio) -> float:
+        return match_score(Path(c.filename).stem, artist, score_query)
+
+    return max(matching, key=lambda c: (score(c), is_lossless(c), c.bitrate_bps, c.size_bytes))
 
 
 def telegram_download(
     query: str,
     out_dir: Path,
+    want: TrackIdentity | None = None,
     *,
     request: Request,
     download: Download,
     clock: Clock = time.monotonic,
 ) -> DownloadOutcome:
-    """Query the bot, pick the best matching audio, download it."""
+    """Query the bot, pick the best matching audio, download it.
+
+    ``want`` (when known) feeds the duration prefilter + artist-aware ranking."""
     start = clock()
-    chosen = select_audio(parse_audio_candidates(request(query)), query)
+    chosen = select_audio(parse_audio_candidates(request(query)), query, want)
     dest = out_dir / _UNSAFE.sub("_", chosen.filename)
     download(chosen.ref, dest)
     return DownloadOutcome(

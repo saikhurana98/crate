@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from crate.application.download import DownloadReport
+from crate.domain.identity import TrackIdentity
+from crate.domain.matching import norm_tokens
 from crate.infrastructure.sqlite.db import now_iso
 
 _STATS_TTL_S = 2.0  # console SSE polls stats every 2 s per client; cache the frame
@@ -24,6 +26,25 @@ _STATS_TTL_S = 2.0  # console SSE polls stats every 2 s per client; cache the fr
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+def _identity_cols(
+    identity: TrackIdentity | None,
+) -> tuple[str | None, str | None, str | None, int | None]:
+    """The four request identity columns (artist, title, isrc, duration_s)."""
+    if identity is None:
+        return None, None, None, None
+    return identity.artist, identity.title, identity.isrc, identity.duration_s
+
+
+def _row_identity(row: Any) -> TrackIdentity:
+    """Reconstruct a TrackIdentity from a row that selected the identity columns."""
+    return TrackIdentity(
+        artist=row["artist"],
+        title=row["title"],
+        isrc=row["isrc"],
+        duration_s=row["duration_s"],
+    )
 
 
 class RequestStore:
@@ -49,28 +70,36 @@ class RequestStore:
         self._stats_cache = None
 
     # --- RequestRecorder (writes) ---
-    def open_request(self, query: str) -> str:
+    def open_request(self, query: str, identity: TrackIdentity | None = None) -> str:
         rid = _new_id()
+        artist, title, isrc, duration_s = _identity_cols(identity)
         with self._lock:
             self._conn.execute(
-                "INSERT INTO requests(id, query, requested_via, status, created_at) "
-                "VALUES (?, ?, ?, 'downloading', ?)",
-                (rid, query, self._via, now_iso()),
+                "INSERT INTO requests"
+                "(id, query, requested_via, status, created_at, artist, title, isrc, duration_s) "
+                "VALUES (?, ?, ?, 'downloading', ?, ?, ?, ?, ?)",
+                (rid, query, self._via, now_iso(), artist, title, isrc, duration_s),
             )
             self._invalidate_stats()
         return rid
 
     # --- console queue (cross-process work items) ---
-    def enqueue(self, query: str, batch_id: str | None = None) -> str:
+    def enqueue(
+        self, query: str, batch_id: str | None = None, identity: TrackIdentity | None = None
+    ) -> str:
         """Record a console-requested download as ``queued``; the shim's queue
-        worker claims and runs it. ``batch_id`` groups it into a bulk batch.
+        worker claims and runs it. ``batch_id`` groups it into a bulk batch;
+        ``identity`` persists the structured artist/title/ISRC/duration columns.
         Returns the new request id."""
         rid = _new_id()
+        artist, title, isrc, duration_s = _identity_cols(identity)
         with self._lock:
             self._conn.execute(
-                "INSERT INTO requests(id, query, requested_via, status, created_at, batch_id) "
-                "VALUES (?, ?, ?, 'queued', ?, ?)",
-                (rid, query, self._via, now_iso(), batch_id),
+                "INSERT INTO requests"
+                "(id, query, requested_via, status, created_at, batch_id, "
+                "artist, title, isrc, duration_s) "
+                "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+                (rid, query, self._via, now_iso(), batch_id, artist, title, isrc, duration_s),
             )
             self._invalidate_stats()
         return rid
@@ -85,11 +114,12 @@ class RequestStore:
         """Atomically claim the oldest claimable ``queued`` request
         (-> ``downloading``), skipping paused/cancelled batches. Safe under
         concurrent claimers (the guarded UPDATE makes claiming exclusive).
-        Returns ``{"id", "query"}`` or ``None`` when nothing is claimable."""
+        Returns ``{"id", "query", "identity"}`` or ``None`` when nothing is
+        claimable; ``identity`` is the row's :class:`TrackIdentity`."""
         with self._lock:
             row = self._conn.execute(
-                f"SELECT id, query FROM requests WHERE {self._CLAIMABLE} "
-                "ORDER BY created_at LIMIT 1"
+                "SELECT id, query, artist, title, isrc, duration_s FROM requests "
+                f"WHERE {self._CLAIMABLE} ORDER BY created_at LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
@@ -100,7 +130,7 @@ class RequestStore:
             if cur.rowcount != 1:  # another worker claimed it first
                 return None
             self._invalidate_stats()  # a row moved queued -> downloading
-            return {"id": row["id"], "query": row["query"]}
+            return {"id": row["id"], "query": row["query"], "identity": _row_identity(row)}
 
     def record_attempt(
         self, request_id: str, source: str, tier: int, ok: bool, detail: str
@@ -365,18 +395,63 @@ class RequestStore:
         return cur.rowcount == 1
 
     # --- de-duplication (skip re-downloading a track already in the library) ---
-    def find_completed(self, query: str) -> dict[str, Any] | None:
-        """The most recent successful download of the same query, or ``None``.
-        Returns its winner (tier/source) + download row for reuse."""
+    _COMPLETED_SELECT = (
+        "SELECT r.tier_won, r.source_won, r.artist, r.title, r.isrc, d.* FROM requests r "
+        "JOIN downloads d ON d.request_id = r.id WHERE r.status = 'done'"
+    )
+
+    def find_completed(self, identity_or_query: TrackIdentity | str) -> dict[str, Any] | None:
+        """The most recent successful download matching ``identity_or_query``.
+
+        Matching order (first hit wins): exact ISRC, then normalized-token
+        equality on artist+title, then legacy exact-query text. Returns the
+        winner (tier/source) + download row, whatever its quality — the CALLER
+        decides whether to reuse (lossless only, per the upgrade path) or upgrade.
+        ``None`` when nothing completed matches."""
+        if isinstance(identity_or_query, str):
+            identity: TrackIdentity | None = None
+            query = identity_or_query
+        else:
+            identity = identity_or_query
+            query = identity.display()
         with self._lock:
-            row = self._conn.execute(
-                "SELECT r.tier_won, r.source_won, d.* FROM requests r "
-                "JOIN downloads d ON d.request_id = r.id "
-                "WHERE r.query = ? AND r.status = 'done' "
-                "ORDER BY r.finished_at DESC LIMIT 1",
-                (query,),
-            ).fetchone()
-        return dict(row) if row else None
+            if identity is not None and identity.isrc:
+                row = self._conn.execute(
+                    f"{self._COMPLETED_SELECT} AND r.isrc = ? ORDER BY r.finished_at DESC LIMIT 1",
+                    (identity.isrc,),
+                ).fetchone()
+                if row is not None:
+                    return dict(row)
+            if identity is not None and (identity.artist or identity.title):
+                row = self._token_match(identity)
+                if row is not None:
+                    return dict(row)
+            if query:
+                row = self._conn.execute(
+                    f"{self._COMPLETED_SELECT} AND r.query = ? ORDER BY r.finished_at DESC LIMIT 1",
+                    (query,),
+                ).fetchone()
+                if row is not None:
+                    return dict(row)
+        return None
+
+    def _token_match(self, identity: TrackIdentity) -> Any | None:
+        """Newest completed row whose artist+title normalize to the same tokens as
+        ``identity``. Called while holding ``self._lock``. Compares in Python (the
+        token normalizer is not expressible in SQL) over the completed rows that
+        carry structured artist/title, newest first."""
+        want = norm_tokens(identity.artist or "") + norm_tokens(identity.title or "")
+        if not want:
+            return None
+        rows = self._conn.execute(
+            f"{self._COMPLETED_SELECT} AND (r.artist IS NOT NULL OR r.title IS NOT NULL) "
+            "ORDER BY r.finished_at DESC"
+        )
+        for row in rows:
+            got = norm_tokens(row["artist"] or "") + norm_tokens(row["title"] or "")
+            if got == want:
+                return row
+        return None
 
     def complete_as_duplicate(self, request_id: str, existing: dict[str, Any]) -> None:
         """Resolve a request as done from an existing library file — no download.

@@ -10,6 +10,7 @@ from crate.adapters.inbound.ops_api import create_app
 from crate.application.download import DownloadReport
 from crate.domain.audio import AudioInfo, QualityVerdict
 from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity, from_query
 from crate.infrastructure.crypto import SecretBox
 from crate.infrastructure.sqlite.config_store import ConfigStore
 from crate.infrastructure.sqlite.db import connect
@@ -107,13 +108,54 @@ def test_download_enqueues_a_queued_request(tmp_path: Path) -> None:
     rid = r.json()["id"]
     queued = client.get("/api/requests", params={"status": "queued"}).json()
     assert [x["id"] for x in queued] == [rid]
-    assert store.claim_next() == {"id": rid, "query": "Daft Punk One More Time"}
+    claimed = store.claim_next()
+    assert claimed is not None
+    assert claimed["id"] == rid and claimed["query"] == "Daft Punk One More Time"
 
 
 def test_download_requires_nonempty_query(tmp_path: Path) -> None:
     client = TestClient(create_app(_seeded_store(tmp_path)))
     assert client.post("/api/download", json={"query": "   "}).status_code == 400
     assert client.post("/api/download", json={}).status_code == 400
+
+
+def test_download_threads_identity_from_payload(tmp_path: Path) -> None:
+    store = _seeded_store(tmp_path)
+    client = TestClient(create_app(store))
+    r = client.post(
+        "/api/download",
+        json={
+            "query": "Daft Punk Get Lucky",
+            "artist": "Daft Punk",
+            "title": "Get Lucky",
+            "isrc": "USQX91300108",
+            "duration_s": 248,
+        },
+    )
+    assert r.status_code == 200
+    claimed = store.claim_next()
+    assert claimed is not None
+    assert claimed["identity"] == TrackIdentity("Daft Punk", "Get Lucky", "USQX91300108", 248)
+
+
+def test_download_without_identity_fields_stays_plain_query(tmp_path: Path) -> None:
+    store = _seeded_store(tmp_path)
+    client = TestClient(create_app(store))
+    client.post("/api/download", json={"query": "just a query"})
+    claimed = store.claim_next()
+    assert claimed is not None and claimed["identity"] == TrackIdentity()
+
+
+def test_download_accepts_duration_alias_and_bad_duration(tmp_path: Path) -> None:
+    store = _seeded_store(tmp_path)
+    client = TestClient(create_app(store))
+    # "duration" alias works; a non-numeric duration is ignored, not an error
+    client.post("/api/download", json={"query": "q", "duration": 200})
+    client.post("/api/download", json={"query": "q2", "title": "T", "duration_s": "oops"})
+    first = store.claim_next()
+    second = store.claim_next()
+    assert first is not None and first["identity"].duration_s == 200
+    assert second is not None and second["identity"] == TrackIdentity(title="T")
 
 
 def test_api_key_enforced(tmp_path: Path) -> None:
@@ -285,13 +327,17 @@ def test_spotify_player_states(tmp_path: Path) -> None:
 from crate.application.bulk import ResolvedBatch  # noqa: E402
 
 
+def _ids(*queries: str) -> list[TrackIdentity]:
+    return [from_query(q) for q in queries]
+
+
 def _bulk_client(tmp_path: Path, resolver=None) -> TestClient:
     store = RequestStore(connect(tmp_path / "bulk.db"), requested_via="console")
     return TestClient(create_app(store, bulk_resolve=resolver))
 
 
 def test_bulk_creates_batch_and_enqueues(tmp_path: Path) -> None:
-    resolver = lambda text: ResolvedBatch("My PL", "paste", "", ["a x", "b y", "c z"])  # noqa: E731
+    resolver = lambda text: ResolvedBatch("My PL", "paste", "", _ids("a x", "b y", "c z"))  # noqa: E731
     client = _bulk_client(tmp_path, resolver)
     r = client.post("/api/bulk", json={"text": "a x\nb y\nc z"})
     assert r.status_code == 200
@@ -303,11 +349,25 @@ def test_bulk_creates_batch_and_enqueues(tmp_path: Path) -> None:
     assert len(detail["tracks"]) == 3
 
 
+def test_bulk_threads_identity_into_enqueued_rows(tmp_path: Path) -> None:
+    store = RequestStore(connect(tmp_path / "bulkid.db"), requested_via="console")
+    batch = ResolvedBatch(
+        "PL", "spotify", "sai", [TrackIdentity("Dua Lipa", "Levitating", "GBAHT2000123", 203)]
+    )
+    client = TestClient(create_app(store, bulk_resolve=lambda t: batch))
+    r = client.post("/api/bulk", json={"text": "https://open.spotify.com/playlist/x"})
+    assert r.status_code == 200 and r.json()["total"] == 1
+    claimed = store.claim_next()
+    assert claimed is not None
+    assert claimed["query"] == "Dua Lipa Levitating"  # display() as the free-text query
+    assert claimed["identity"] == TrackIdentity("Dua Lipa", "Levitating", "GBAHT2000123", 203)
+
+
 def test_bulk_error_mapping(tmp_path: Path) -> None:
     # no resolver -> 503
     assert _bulk_client(tmp_path).post("/api/bulk", json={"text": "x"}).status_code == 503
     # empty text -> 400
-    c = _bulk_client(tmp_path, lambda t: ResolvedBatch("n", "paste", "", ["a"]))
+    c = _bulk_client(tmp_path, lambda t: ResolvedBatch("n", "paste", "", _ids("a")))
     assert c.post("/api/bulk", json={"text": "  "}).status_code == 400
 
     def raise_lookup(_t: str) -> ResolvedBatch:
@@ -323,7 +383,7 @@ def test_bulk_error_mapping(tmp_path: Path) -> None:
 def test_batch_pause_cancel_and_retry(tmp_path: Path) -> None:
     store = RequestStore(connect(tmp_path / "b2.db"), requested_via="console")
     client = TestClient(
-        create_app(store, bulk_resolve=lambda t: ResolvedBatch("PL", "paste", "", ["a", "b"]))
+        create_app(store, bulk_resolve=lambda t: ResolvedBatch("PL", "paste", "", _ids("a", "b")))
     )
     bid = client.post("/api/bulk", json={"text": "a\nb"}).json()["id"]
     assert client.post(f"/api/batches/{bid}/pause", json={"paused": True}).json()["paused"] is True

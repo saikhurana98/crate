@@ -9,18 +9,21 @@ from crate.application.cascade import MuxStrategy, SourceEntry, TierMux, run_cas
 from crate.application.download import DownloadReport
 from crate.domain.audio import AudioInfo
 from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity
 from crate.domain.tiers import SourceRef, Tier
 
 
 class SpyRecorder:
     def __init__(self) -> None:
         self.opened: list[str] = []
+        self.identities: list[TrackIdentity | None] = []
         self.attempts: list[tuple[str, int, bool, str]] = []
         self.finished: list[str] = []
         self.failed: list[tuple[str, str]] = []
 
-    def open_request(self, query: str) -> str:
+    def open_request(self, query: str, identity: TrackIdentity | None = None) -> str:
         self.opened.append(query)
+        self.identities.append(identity)
         return f"rid-{len(self.opened)}"
 
     def record_attempt(
@@ -44,10 +47,10 @@ def _tier(name: str, tier: Tier, dl, lossless: bool) -> TierMux:  # type: ignore
 
 
 def test_records_open_attempts_and_finish_on_win(tmp_path: Path) -> None:
-    def mono(q: str, d: Path) -> DownloadOutcome:
+    def mono(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         raise RuntimeError("Turnstile JWT required")
 
-    def qobuz(q: str, d: Path) -> DownloadOutcome:
+    def qobuz(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         return DownloadOutcome(Path("/x/a.flac"), 1, "qobuz", 2.0, q)
 
     spy = SpyRecorder()
@@ -63,7 +66,7 @@ def test_records_open_attempts_and_finish_on_win(tmp_path: Path) -> None:
 
 
 def test_records_failure_when_no_tier_wins(tmp_path: Path) -> None:
-    def boom(q: str, d: Path) -> DownloadOutcome:
+    def boom(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         raise RuntimeError("down")
 
     spy = SpyRecorder()
@@ -78,7 +81,7 @@ def test_records_failure_when_no_tier_wins(tmp_path: Path) -> None:
 
 
 def test_request_id_attaches_to_existing_row_without_reopening(tmp_path: Path) -> None:
-    def qobuz(q: str, d: Path) -> DownloadOutcome:
+    def qobuz(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         return DownloadOutcome(Path("/x/a.flac"), 1, "qobuz", 2.0, q)
 
     spy = SpyRecorder()
@@ -97,7 +100,7 @@ def test_request_id_attaches_to_existing_row_without_reopening(tmp_path: Path) -
 
 
 def test_no_recorder_is_a_clean_no_op(tmp_path: Path) -> None:
-    def qobuz(q: str, d: Path) -> DownloadOutcome:
+    def qobuz(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         return DownloadOutcome(Path("/x/a.flac"), 1, "qobuz", 2.0, q)
 
     # recorder omitted -> existing behaviour, no crash

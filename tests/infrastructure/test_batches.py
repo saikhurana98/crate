@@ -66,7 +66,8 @@ def test_requeue_retries_failed(tmp_path: Path) -> None:
     s.claim_next()
     s.fail_request(rid, "no source")
     assert s.requeue(rid) is True
-    assert s.claim_next() == {"id": rid, "query": "x"}
+    claimed = s.claim_next()
+    assert claimed is not None and claimed["id"] == rid and claimed["query"] == "x"
     # a done/queued request is not retryable
     assert s.requeue(rid) is False
 

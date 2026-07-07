@@ -18,6 +18,7 @@ from crate.adapters.sources.soulseek import (
     select_file,
     soulseek_download,
 )
+from crate.domain.identity import TrackIdentity
 
 # slskd GET /api/v0/searches/{id}/responses shape
 RESPONSES = [
@@ -102,6 +103,49 @@ def test_select_honours_min_bitrate() -> None:
     ]
     with pytest.raises(LookupError):
         select_file(parse_responses(only_low), "Marjaani Pritam", min_bitrate_kbps=256)
+
+
+def test_rank_prefers_correct_artist_with_want_tokens() -> None:
+    # two same-title FLACs by different artists; the wanted artist wins on
+    # match_score even though both pass the title guard.
+    responses = [
+        {
+            "username": "p",
+            "hasFreeUploadSlot": True,
+            "uploadSpeed": 1,
+            "files": [
+                {"filename": "x\\Mammoth - ElCano.flac", "size": 1, "bitRate": 1411, "length": 200},
+                {
+                    "filename": "x\\Mammoth - Dimitri Vegas.flac",
+                    "size": 1,
+                    "bitRate": 1411,
+                    "length": 200,
+                },
+            ],
+        }
+    ]
+    want = TrackIdentity(artist="Dimitri Vegas", title="Mammoth", duration_s=200)
+    chosen = select_file(parse_responses(responses), "Dimitri Vegas Mammoth", want=want)
+    assert chosen.filename.endswith("Mammoth - Dimitri Vegas.flac")
+
+
+def test_rank_prefilters_by_duration_when_want_known() -> None:
+    responses = [
+        {
+            "username": "p",
+            "hasFreeUploadSlot": True,
+            "uploadSpeed": 1,
+            "files": [
+                {"filename": "x\\Blinding Lights.flac", "size": 1, "bitRate": 1411, "length": 480},
+                {"filename": "x\\Blinding Lights.mp3", "size": 1, "bitRate": 320, "length": 200},
+            ],
+        }
+    ]
+    # the FLAC would normally win, but it's off-duration (480s) and dropped; the
+    # near-duration mp3 survives.
+    want = TrackIdentity(title="Blinding Lights", duration_s=200)
+    chosen = select_file(parse_responses(responses), "Blinding Lights", want=want)
+    assert chosen.filename.endswith("Blinding Lights.mp3")
 
 
 def test_download_selects_and_returns_local_path(tmp_path: Path) -> None:

@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Any
 
 from crate.domain.download import DownloadOutcome
-from crate.domain.matching import match_score, title_matches
+from crate.domain.identity import TrackIdentity
+from crate.domain.matching import duration_prefilter, match_score, title_matches
 
 DEFAULT_TIDAL_BASE = "https://api.monochrome.tf"
 DEFAULT_AMZ_BASE = "https://amz.geeked.wtf"
@@ -99,15 +100,19 @@ def pick_best(tracks: list[MonoTrack]) -> MonoTrack:
     return tracks[0]
 
 
-def select_by_title(tracks: list[MonoTrack], query: str) -> MonoTrack:
+def select_by_title(
+    tracks: list[MonoTrack], query: str, want_duration_s: int | None = None
+) -> MonoTrack:
     """Keep results whose title matches the query, then pick the best.
 
-    Ranks by title+artist relevance to the query first (so a same-title song by
-    a different artist isn't chosen over the requested one), with hi-res as the
-    tiebreak. Raises LookupError when nothing matches, so the cascade advances to
-    the next tier rather than accepting a wrong-song FLAC.
+    Candidates are prefiltered by ``want_duration_s`` (when known), then ranked by
+    title+artist relevance to the query (so a same-title song by a different
+    artist isn't chosen over the requested one), with hi-res as the tiebreak.
+    Raises LookupError when nothing matches, so the cascade advances to the next
+    tier rather than accepting a wrong-song FLAC.
     """
-    matching = [t for t in tracks if title_matches(t.title, query)]
+    pool = duration_prefilter(tracks, want_duration_s, lambda t: t.duration_s)
+    matching = [t for t in pool if title_matches(t.title, query)]
     if not matching:
         raise LookupError("no title-matching Monochrome result")
     return max(matching, key=lambda t: (match_score(t.title, t.artist, query), t.hires))
@@ -181,6 +186,7 @@ def read_kid(path: Path) -> str:
 def monochrome_download(
     query: str,
     out_dir: Path,
+    want: TrackIdentity | None = None,
     *,
     search_json: SearchJson,
     amz_fetch: AmzFetch,
@@ -194,12 +200,14 @@ def monochrome_download(
     ``query`` drives the TIDAL search (title + artist gives better recall);
     ``match_title`` (if given) is what the title guard compares against, so an
     artist token in the query can't false-positive a wrong single-word title.
+    ``want.duration_s`` (when known) prefilters the candidates.
 
     The encrypted fMP4 streams to disk (``fetch``); the KID is read from a small
     head window (``read_kid``) rather than the whole file.
     """
     start = clock()
-    track = select_by_title(parse_search(search_json(query)), match_title or query)
+    want_duration = want.duration_s if want else None
+    track = select_by_title(parse_search(search_json(query)), match_title or query, want_duration)
     stream = parse_amz_stream(amz_fetch(build_amz_params(track)))
 
     stem = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]")

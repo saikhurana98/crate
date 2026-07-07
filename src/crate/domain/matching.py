@@ -9,6 +9,38 @@ Pure, dependency-free.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from typing import TypeVar
+
+# Drop a candidate whose runtime is off the wanted duration by more than this
+# (shared tolerance for the source-side prefilter and the post-download check).
+DURATION_TOLERANCE_S = 7
+
+_T = TypeVar("_T")
+
+
+def duration_prefilter(
+    candidates: list[_T],
+    want_duration_s: int | None,
+    of: Callable[[_T], int | None],
+    tolerance_s: int = DURATION_TOLERANCE_S,
+) -> list[_T]:
+    """Keep only candidates within ``tolerance_s`` of ``want_duration_s``.
+
+    ``of`` extracts a candidate's duration (``None`` when unknown → the candidate
+    is never dropped, since we can't compare). If the wanted duration is unknown,
+    or the filter would empty the pool, the original list is returned unchanged —
+    a wrong-duration candidate beats no candidate (same rule Phase 0 gave yt-dlp).
+    """
+    if want_duration_s is None:
+        return candidates
+    near = [
+        c
+        for c in candidates
+        if of(c) is None or abs(int(of(c)) - want_duration_s) <= tolerance_s  # type: ignore[arg-type]
+    ]
+    return near or candidates
+
 
 # tokens that carry no identity — ignored when comparing a title to the query
 _FILLER = frozenset(

@@ -14,6 +14,7 @@ _SEARCH_PAYLOAD: dict[str, Any] = {
                 "id": "t1",
                 "name": "Get Lucky",
                 "duration_ms": 248_000,
+                "external_ids": {"isrc": "USQX91300108"},
                 "artists": [{"name": "Daft Punk"}, {"name": "Pharrell Williams"}],
                 "album": {
                     "name": "Random Access Memories",
@@ -74,6 +75,25 @@ def test_search_normalises_track() -> None:
     assert track["query"] == "Daft Punk, Pharrell Williams Get Lucky"
     # smallest cover >= 64px chosen for a snappy thumbnail
     assert track["art"] == "tiny"
+    # Phase 1: ISRC + rounded duration parsed for the cascade's identity match
+    assert track["isrc"] == "USQX91300108"
+    assert track["duration_s"] == 248
+
+
+def test_search_isrc_and_duration_default_to_none_when_absent() -> None:
+    payload: dict[str, Any] = {
+        "tracks": {"items": [{"id": "x", "name": "N", "artists": [], "duration_ms": 0}]}
+    }
+
+    def post_form(url: str, data: dict[str, str], headers: dict[str, str]) -> Any:
+        return {"access_token": "t", "expires_in": 3600}
+
+    def get_json(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        return payload
+
+    client = SpotifyClient("i", "s", post_form=post_form, get_json=get_json)
+    [track] = client.search("x")
+    assert track["isrc"] is None and track["duration_s"] is None
 
 
 def test_token_is_cached_across_searches() -> None:
@@ -219,7 +239,14 @@ def test_playlist_resolves_tracks_with_pagination() -> None:
         "owner": {"display_name": "sai"},
         "tracks": {
             "items": [
-                {"track": {"name": "One", "artists": [{"name": "A"}]}},
+                {
+                    "track": {
+                        "name": "One",
+                        "artists": [{"name": "A"}],
+                        "duration_ms": 210_000,
+                        "external_ids": {"isrc": "US1234567890"},
+                    }
+                },
                 {"track": None},  # skipped
             ],
             "next": "https://api.spotify.com/v1/playlists/x/tracks?offset=100",
@@ -242,4 +269,13 @@ def test_playlist_resolves_tracks_with_pagination() -> None:
 
     pl = _oauth_client(post=post, get=get).playlist("https://open.spotify.com/playlist/abc123?si=z")
     assert pl["name"] == "Focus" and pl["owner"] == "sai"
-    assert pl["tracks"] == ["A One", "B, C Two"]  # artist-first, second-page followed
+    # tracks are structured identity dicts (artist-first query, ISRC + duration)
+    assert [t["query"] for t in pl["tracks"]] == ["A One", "B, C Two"]  # second page followed
+    assert pl["tracks"][0] == {
+        "query": "A One",
+        "artist": "A",
+        "title": "One",
+        "isrc": "US1234567890",
+        "duration_s": 210,
+    }
+    assert pl["tracks"][1]["isrc"] is None and pl["tracks"][1]["duration_s"] is None

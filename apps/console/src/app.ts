@@ -211,6 +211,14 @@ function findTrack(id: string): SpotifyTrack | PlayerTrack | undefined {
     state.player?.recent.find((t) => t.id === id)
   );
 }
+// Prefer the structured identity ("Artist — Title") for a request row; fall back
+// to the raw query when the new columns are absent (legacy rows).
+function rowLabel(r: RequestRow): string {
+  const artist = (r.artist ?? "").trim();
+  const title = (r.title ?? "").trim();
+  if (title) return artist ? `${artist} — ${title}` : title;
+  return r.query;
+}
 
 // ---------- data ----------
 async function loadStatic(): Promise<void> {
@@ -354,7 +362,14 @@ async function enqueueTrack(track: SpotifyTrack): Promise<void> {
   state.enqueued[track.id] = true;
   render();
   try {
-    await api.enqueue(track.query);
+    // thread the structured identity so the cascade can match on ISRC/duration
+    await api.enqueue({
+      query: track.query,
+      artist: track.artist || null,
+      title: track.title || null,
+      isrc: track.isrc ?? null,
+      duration_s: track.duration_s ?? null,
+    });
     toast(`Queued: ${track.title}`);
     void loadHistory().then(render); // surface the new queued row immediately
   } catch (err) {
@@ -696,7 +711,7 @@ function liveHtml(): string {
             : `<span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0"></span>`;
           return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #1a1e19">
         ${spinner}
-        <span style="flex:1;min-width:0;font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.query)}</span>
+        <span style="flex:1;min-width:0;font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(rowLabel(d))}</span>
         <span style="font:500 10px 'JetBrains Mono';color:#99a091;padding:2px 8px;background:#181c17;border-radius:10px">${esc(d.requested_via)}</span>
         <span style="font:700 13px 'Doto';color:#e9ede3">${el}</span>
       </div>`;
@@ -752,7 +767,7 @@ function historyHtml(): string {
           return `<div class="hrow" data-act="openDetail" data-id="${esc(r.id)}" style="display:flex;align-items:center;gap:10px;padding:10px 17px;border-top:1px solid #1a1e19;cursor:pointer;transition:background .12s">
         <span title="${esc(sm.label)}" style="width:6px;height:6px;border-radius:50%;background:${sm.color};flex-shrink:0;${pulse}"></span>
         <div style="flex:1;min-width:0">
-          <div style="font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.query)}</div>
+          <div style="font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(rowLabel(r))}</div>
           <div style="font:400 10px 'JetBrains Mono';color:#5d6456;margin-top:2px">${esc(quality)} · ${bytes(r.size_bytes)}</div>
         </div>
         <span style="font:500 10px 'JetBrains Mono';color:${wonColor};flex-shrink:0">${esc(won)}</span>
