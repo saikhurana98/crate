@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from crate.domain.download import DownloadOutcome
-from crate.domain.matching import norm_tokens, title_matches
+from crate.domain.identity import TrackIdentity
+from crate.domain.matching import duration_prefilter, match_score, norm_tokens, title_matches
 
 Search = Callable[[str], list[dict[str, Any]]]  # query -> slskd response items
 Download = Callable[["SlskFile", Path], Path]  # chosen file + out dir -> local path
@@ -69,8 +70,18 @@ def is_lossless(file: SlskFile) -> bool:
     return Path(_basename(file.filename)).suffix.lower() in _LOSSLESS_EXT
 
 
-def rank_files(candidates: list[SlskFile], query: str, min_bitrate_kbps: int = 0) -> list[SlskFile]:
-    """Title-matching candidates above the bitrate floor, best first: prefer
+def rank_files(
+    candidates: list[SlskFile],
+    query: str,
+    min_bitrate_kbps: int = 0,
+    want: TrackIdentity | None = None,
+) -> list[SlskFile]:
+    """Title-matching candidates above the bitrate floor, best first.
+
+    When ``want`` is known the pool is first duration-prefiltered (by the peer's
+    reported ``length_s``), and the ranking leads with ``match_score`` of the
+    filename against the query + artist tokens — so a same-title file by the wrong
+    artist loses to the requested one. Remaining tiebreaks (unchanged): prefer
     lossless, a free upload slot, higher bitrate, faster peer."""
     floor = min_bitrate_kbps * 1000
     matching = [
@@ -78,16 +89,29 @@ def rank_files(candidates: list[SlskFile], query: str, min_bitrate_kbps: int = 0
         for c in candidates
         if c.bitrate_bps >= floor and title_matches(Path(_basename(c.filename)).stem, query)
     ]
+    if want is not None:
+        matching = duration_prefilter(matching, want.duration_s, lambda c: c.length_s)
+    artist = want.artist if want and want.artist else ""
+    score_query = f"{query} {artist}".strip()
+
+    def score(c: SlskFile) -> float:
+        return match_score(Path(_basename(c.filename)).stem, artist, score_query)
+
     return sorted(
         matching,
-        key=lambda c: (is_lossless(c), c.free_slot, c.bitrate_bps, c.upload_speed),
+        key=lambda c: (score(c), is_lossless(c), c.free_slot, c.bitrate_bps, c.upload_speed),
         reverse=True,
     )
 
 
-def select_file(candidates: list[SlskFile], query: str, min_bitrate_kbps: int = 0) -> SlskFile:
+def select_file(
+    candidates: list[SlskFile],
+    query: str,
+    min_bitrate_kbps: int = 0,
+    want: TrackIdentity | None = None,
+) -> SlskFile:
     """Best single title-matching file. Raises LookupError when none match."""
-    ranked = rank_files(candidates, query, min_bitrate_kbps)
+    ranked = rank_files(candidates, query, min_bitrate_kbps, want)
     if not ranked:
         raise LookupError("no title-matching Soulseek file")
     return ranked[0]
@@ -116,6 +140,7 @@ def search_variants(query: str) -> list[str]:
 def soulseek_download(
     query: str,
     out_dir: Path,
+    want: TrackIdentity | None = None,
     *,
     search: Search,
     download: Download,
@@ -125,11 +150,13 @@ def soulseek_download(
 ) -> DownloadOutcome:
     """Search Soulseek (retrying reduced queries), then try downloading from the
     best-ranked peers in turn — P2P transfers stall or get refused, so fall to
-    the next peer rather than failing the whole source."""
+    the next peer rather than failing the whole source.
+
+    ``want`` (when known) feeds the duration prefilter + artist-aware ranking."""
     start = clock()
     ranked: list[SlskFile] = []
     for variant in search_variants(query):
-        ranked = rank_files(parse_responses(search(variant)), query, min_bitrate_kbps)
+        ranked = rank_files(parse_responses(search(variant)), query, min_bitrate_kbps, want)
         if ranked:
             break
     if not ranked:

@@ -10,6 +10,7 @@ from pathlib import Path
 from crate.application.download import DownloadReport
 from crate.domain.audio import AudioInfo, QualityVerdict
 from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity
 from crate.infrastructure.sqlite.db import connect, migrate
 from crate.infrastructure.sqlite.store import RequestStore
 
@@ -156,7 +157,9 @@ def test_enqueue_then_claim_runs_fifo_and_drains(tmp_path: Path) -> None:
     assert store.stats()["queued"] == 2
 
     claimed = store.claim_next()
-    assert claimed == {"id": a, "query": "first"}  # oldest first
+    assert claimed is not None
+    assert claimed["id"] == a and claimed["query"] == "first"  # oldest first
+    assert claimed["identity"] == TrackIdentity()  # no structured fields on this row
     got = store.get_request(a)
     assert got is not None and got["status"] == "downloading" and got["requested_via"] == "console"
     assert store.stats()["queued"] == 1
@@ -181,8 +184,9 @@ def test_reap_orphans_requeues_stuck_downloads(tmp_path: Path) -> None:
 
     assert store.stats()["queued"] == 2 and store.stats()["in_flight"] == 0
     # they are claimable again, oldest first, and finished rows are untouched
-    assert store.claim_next() == {"id": a, "query": "first"}
-    assert store.claim_next() == {"id": b, "query": "second"}
+    first, second = store.claim_next(), store.claim_next()
+    assert first is not None and first["id"] == a and first["query"] == "first"
+    assert second is not None and second["id"] == b and second["query"] == "second"
     assert store.get_request(done) is not None and store.get_request(done)["status"] == "done"
 
 
@@ -341,3 +345,142 @@ def test_migration_004_creates_perf_indexes(tmp_path: Path) -> None:
         "idx_attempts_source_ok",
         "idx_batches_flags",
     } <= indexes
+
+
+# --- track identity (Phase 1) ---
+
+
+def _report_for(
+    query: str, path: str, *, source: str = "qobuz", tier: int = 1, lossless: bool = True
+) -> DownloadReport:
+    outcome = DownloadOutcome(Path(path), tier, source, 4.2, query)
+    info = AudioInfo("flac", "flac", 96000, 2, 24, 1_800_000, 248.0, 94_000_000)
+    label = "lossless 24-bit / 96 kHz flac" if lossless else "lossy opus 160 kbps / 48 kHz"
+    return DownloadReport(query, outcome, info, QualityVerdict(label, lossless), None)
+
+
+def test_migration_005_adds_identity_columns_and_isrc_index(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "crate.db")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(requests)")}
+    assert {"artist", "title", "isrc", "duration_s"} <= cols
+    indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert "idx_requests_isrc" in indexes
+    # partial index — only rows with a non-null ISRC are indexed
+    plan = " | ".join(
+        row["detail"]
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM requests WHERE isrc = ?", ("US1",)
+        )
+    )
+    assert "idx_requests_isrc" in plan
+
+
+def test_enqueue_persists_identity_and_claim_next_returns_it(tmp_path: Path) -> None:
+    store = _store(tmp_path, via="console")
+    ident = TrackIdentity("Daft Punk", "Get Lucky", "USQX91300108", 248)
+    rid = store.enqueue("Daft Punk Get Lucky", identity=ident)
+    claimed = store.claim_next()
+    assert claimed is not None and claimed["id"] == rid
+    assert claimed["identity"] == ident
+
+
+def test_open_request_persists_identity(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    ident = TrackIdentity("Burial", "Archangel", None, 240)
+    rid = store.open_request("Burial Archangel", ident)
+    got = store.get_request(rid)
+    assert got is not None
+    assert got["artist"] == "Burial" and got["title"] == "Archangel"
+    assert got["isrc"] is None and got["duration_s"] == 240
+
+
+def test_find_completed_matches_by_isrc_first(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    # a completed download carrying an ISRC, queried under a totally different text
+    rid = store.open_request("some text", TrackIdentity("A", "Song", "USABC1234567", 200))
+    store.finish_request(rid, _report_for("some text", "/nas/song.flac"))
+
+    hit = store.find_completed(
+        TrackIdentity(artist="Different", title="Words", isrc="USABC1234567")
+    )
+    assert hit is not None and hit["isrc"] == "USABC1234567"
+    assert hit["lossless"] == 1
+
+
+def test_find_completed_matches_by_normalized_tokens(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = store.open_request("q", TrackIdentity("The Weeknd", "Blinding Lights", None, 200))
+    store.finish_request(rid, _report_for("q", "/nas/bl.flac"))
+
+    # different casing / filler tokens, no ISRC -> token equality still matches
+    hit = store.find_completed(TrackIdentity(artist="the WEEKND", title="Blinding Lights"))
+    assert hit is not None and hit["title"] == "Blinding Lights"
+
+
+def test_find_completed_falls_back_to_exact_query_for_plain_string(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = store.open_request("Exact Query Text")
+    store.finish_request(rid, _report_for("Exact Query Text", "/nas/x.flac"))
+    assert store.find_completed("Exact Query Text") is not None
+    assert store.find_completed("unrelated") is None
+
+
+def test_find_completed_returns_lossy_row_for_caller_to_decide(tmp_path: Path) -> None:
+    # find_completed returns any completed match regardless of quality; the reuse
+    # vs upgrade decision is the caller's (the de-dup use-case).
+    store = _store(tmp_path)
+    rid = store.open_request("q", TrackIdentity("A", "Lossy Song", "USLOSSY000001", 200))
+    store.finish_request(rid, _report_for("q", "/nas/lossy.opus", lossless=False))
+    hit = store.find_completed(TrackIdentity(isrc="USLOSSY000001"))
+    assert hit is not None and hit["lossless"] == 0
+
+
+def test_find_completed_no_match_returns_none(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = store.open_request("q", TrackIdentity("Real Artist", "Real Title", "USREAL000001", 200))
+    store.finish_request(rid, _report_for("q", "/nas/r.flac"))
+    # ISRC + tokens + query all miss -> None
+    miss = store.find_completed(
+        TrackIdentity(artist="Nobody", title="Nothing", isrc="USNONE000000")
+    )
+    assert miss is None
+
+
+def test_find_completed_isrc_only_miss_has_empty_query_and_returns_none(tmp_path: Path) -> None:
+    # identity with ONLY an ISRC (display() is empty): a missed ISRC skips the
+    # (empty) query fallback entirely and returns None.
+    store = _store(tmp_path)
+    rid = store.open_request("q", TrackIdentity("A", "B", "USREAL000001", 200))
+    store.finish_request(rid, _report_for("q", "/nas/r.flac"))
+    assert store.find_completed(TrackIdentity(isrc="USNONE000000")) is None
+
+
+def test_find_completed_token_match_ignores_rows_without_structure(tmp_path: Path) -> None:
+    # a completed row with NO artist/title (legacy plain query) must not be a
+    # false token match for a structured identity that normalizes to real tokens.
+    store = _store(tmp_path)
+    rid = store.open_request("plain legacy query")  # no identity
+    store.finish_request(rid, _report_for("plain legacy query", "/nas/legacy.flac"))
+    assert store.find_completed(TrackIdentity(artist="A", title="B")) is None
+
+
+def test_find_completed_all_filler_tokens_skips_token_match(tmp_path: Path) -> None:
+    # artist/title present but normalize to no significant tokens (all filler) ->
+    # token match short-circuits to None, query fallback still applies.
+    store = _store(tmp_path)
+    rid = store.open_request("the a")  # display() of the identity below
+    store.finish_request(rid, _report_for("the a", "/nas/f.flac"))
+    ident = TrackIdentity(artist="the", title="a")  # norm_tokens -> [] for both
+    hit = store.find_completed(ident)
+    assert hit is not None and hit["path"] == "/nas/f.flac"  # matched via query fallback
+
+
+def test_find_completed_isrc_then_falls_back_to_query(tmp_path: Path) -> None:
+    # identity carries an ISRC that doesn't match, but its display() query does.
+    store = _store(tmp_path)
+    rid = store.open_request("Dua Lipa Levitating")  # legacy row keyed on query only
+    store.finish_request(rid, _report_for("Dua Lipa Levitating", "/nas/lev.flac"))
+    ident = TrackIdentity(artist="Dua Lipa", title="Levitating", isrc="USNOMATCH0001")
+    # no ISRC hit, no token hit (stored row has no artist/title) -> query fallback
+    hit = store.find_completed(ident)
+    assert hit is not None and hit["path"] == "/nas/lev.flac"

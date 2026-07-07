@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from crate.domain.download import DownloadOutcome
-from crate.domain.matching import match_score, title_matches
+from crate.domain.identity import TrackIdentity
+from crate.domain.matching import duration_prefilter, match_score, title_matches
 
 Search = Callable[[str], Any]  # query -> Qobuz search JSON
 GetFileUrl = Callable[[int], str]  # track id -> signed direct FLAC url
@@ -74,17 +75,26 @@ def parse_search(data: dict[str, Any]) -> list[QobuzTrack]:
     return tracks
 
 
-def select_track(tracks: list[QobuzTrack], query: str, isrc: str | None = None) -> QobuzTrack:
+def select_track(
+    tracks: list[QobuzTrack],
+    query: str,
+    isrc: str | None = None,
+    want_duration_s: int | None = None,
+) -> QobuzTrack:
     """Prefer an exact ISRC match; else the best title+artist match.
 
-    Among title-matching results, pick the one whose artist best matches the
-    query too — so a requested song isn't swapped for an unrelated track that
-    merely shares the title."""
+    An exact ISRC short-circuits everything (it uniquely identifies the recording,
+    so a slightly-off search duration must not veto it). Otherwise, candidates are
+    prefiltered by ``want_duration_s`` (when known) and, among the title-matching
+    survivors, the one whose artist best matches the query is picked — so a
+    requested song isn't swapped for an unrelated track that merely shares the
+    title."""
     if isrc:
         for track in tracks:
             if track.isrc and track.isrc.upper() == isrc.upper():
                 return track
-    matching = [t for t in tracks if title_matches(t.title, query)]
+    pool = duration_prefilter(tracks, want_duration_s, lambda t: t.duration_s)
+    matching = [t for t in pool if title_matches(t.title, query)]
     if not matching:
         raise LookupError("no title-matching Qobuz track")
     return max(matching, key=lambda t: match_score(t.title, t.artist, query))
@@ -93,6 +103,7 @@ def select_track(tracks: list[QobuzTrack], query: str, isrc: str | None = None) 
 def qobuz_download(
     query: str,
     out_dir: Path,
+    want: TrackIdentity | None = None,
     *,
     search: Search,
     get_file_url: GetFileUrl,
@@ -102,10 +113,14 @@ def qobuz_download(
 ) -> DownloadOutcome:
     """Search Qobuz, resolve the signed FLAC url, stream it to disk (already FLAC).
 
-    Streams to a ``.part`` sidecar and renames on success, so an interrupted
-    download never leaves a half file that a later probe would treat as real."""
+    ``want`` (when known) supplies the ISRC for an exact short-circuit and the
+    duration for the candidate prefilter. Streams to a ``.part`` sidecar and
+    renames on success, so an interrupted download never leaves a half file that a
+    later probe would treat as real."""
     start = clock()
-    track = select_track(parse_search(search(query)), query, isrc)
+    want_isrc = isrc or (want.isrc if want else None)
+    want_duration = want.duration_s if want else None
+    track = select_track(parse_search(search(query)), query, want_isrc, want_duration)
 
     name = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]") + ".flac"
     dest = out_dir / name

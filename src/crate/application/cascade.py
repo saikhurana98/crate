@@ -21,6 +21,7 @@ from crate.application.multiplex import (
     TierMux,
 )
 from crate.application.recording import RequestRecorder
+from crate.domain.identity import TrackIdentity
 
 __all__ = [
     "CascadeAttempt",
@@ -48,6 +49,7 @@ def run_cascade(
     recorder: RequestRecorder | None = None,
     request_id: str | None = None,
     finalizer: Finalizer | None = None,
+    want: TrackIdentity | None = None,
 ) -> CascadeResult:
     """Ask each tier in priority order; return the first verified winner.
 
@@ -57,17 +59,21 @@ def run_cascade(
     ``request_id`` to attach to a row that already exists (e.g. a console
     ``queued`` request the shim just claimed) instead of opening a new one.
 
+    ``want`` (when known) carries the structured track identity — artist/title,
+    ISRC, duration — down to every source so they can match precisely, and drives
+    the post-download duration sanity check in :meth:`TierMux.acquire`.
+
     When a ``finalizer`` is supplied, the winning file is organized + tagged and
     moved into the music library the moment it verifies (per track, not per
     batch); the recorder then stores the final library path."""
     rid = (
         request_id
         if request_id is not None
-        else (recorder.open_request(query) if recorder is not None else None)
+        else (recorder.open_request(query, want) if recorder is not None else None)
     )
     attempts: list[CascadeAttempt] = []
     for tier in sorted(tiers, key=lambda t: t.tier.value):
-        report, tier_attempts = tier.acquire(query, out_dir, prober=prober)
+        report, tier_attempts = tier.acquire(query, out_dir, prober=prober, want=want)
         attempts.extend(tier_attempts)
         if recorder is not None and rid is not None:
             for a in tier_attempts:

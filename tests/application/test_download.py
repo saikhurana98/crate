@@ -9,6 +9,7 @@ from pathlib import Path
 from crate.adapters.sources.ytdlp import DownloadOutcome
 from crate.application.download import acquire, acquire_many
 from crate.domain.audio import AudioInfo
+from crate.domain.identity import TrackIdentity
 
 
 def _outcome(path: str) -> DownloadOutcome:
@@ -23,7 +24,7 @@ def test_acquire_success_attaches_probe_and_verdict() -> None:
     report = acquire(
         "Diljit Dealer",
         Path("/out"),
-        downloader=lambda q, d: _outcome("/out/Dealer.opus"),
+        downloader=lambda q, d, w: _outcome("/out/Dealer.opus"),
         prober=lambda p: _info("opus"),
     )
     assert report.ok
@@ -35,7 +36,7 @@ def test_acquire_success_attaches_probe_and_verdict() -> None:
 
 
 def test_acquire_captures_download_failure() -> None:
-    def boom(q: str, d: Path) -> DownloadOutcome:
+    def boom(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         raise RuntimeError("yt-dlp failed (1): not found")
 
     report = acquire("nonexistent", Path("/out"), downloader=boom, prober=lambda p: _info())
@@ -48,7 +49,7 @@ def test_acquire_captures_download_failure() -> None:
 def test_acquire_many_preserves_order_and_mixes_outcomes() -> None:
     queries = ["good", "bad"]
 
-    def dl(q: str, d: Path) -> DownloadOutcome:
+    def dl(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         if q == "bad":
             raise RuntimeError("boom")
         return _outcome("/out/good.opus")

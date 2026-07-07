@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity
 from crate.domain.matching import match_score, title_matches
 
 __all__ = [
@@ -197,6 +198,7 @@ def _fallback_download(
 def download(
     query: str,
     out_dir: Path,
+    want: TrackIdentity | None = None,
     *,
     runner: Runner = _default_runner,
     clock: Clock = time.monotonic,
@@ -208,8 +210,14 @@ def download(
     candidate, then downloads it by id. If the *search* step fails (nonzero exit
     or no parseable candidates), falls back to the single-shot ``ytsearch1:``
     download so Tier 3 never goes dark. A URL query skips search entirely.
+
+    ``want.duration_s`` (when known) feeds the scored candidate selection so a
+    same-title clip of the wrong length is dropped; an explicit
+    ``expected_duration_s`` still wins if passed directly.
     """
     start = clock()
+    if expected_duration_s is None and want is not None:
+        expected_duration_s = want.duration_s
 
     if query.startswith(("http://", "https://")):
         return _fallback_download(query, out_dir, runner=runner, clock=clock, start=start)

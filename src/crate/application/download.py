@@ -14,9 +14,10 @@ from pathlib import Path
 from crate.adapters.sources import ytdlp
 from crate.adapters.sources.ytdlp import DownloadOutcome
 from crate.domain.audio import AudioInfo, QualityVerdict, classify
+from crate.domain.identity import TrackIdentity
 from crate.infrastructure.audio import probe as probe_mod
 
-Downloader = Callable[[str, Path], DownloadOutcome]
+Downloader = Callable[[str, Path, "TrackIdentity | None"], DownloadOutcome]
 Prober = Callable[[Path], AudioInfo]
 
 
@@ -39,11 +40,12 @@ def acquire(
     *,
     downloader: Downloader = ytdlp.download,
     prober: Prober = probe_mod.probe,
+    want: TrackIdentity | None = None,
 ) -> DownloadReport:
     """Download one query, probe the file, classify quality. Never raises —
     failures are captured on the report."""
     try:
-        outcome = downloader(query, out_dir)
+        outcome = downloader(query, out_dir, want)
         info = prober(outcome.path)
         return DownloadReport(query, outcome, info, classify(info), None)
     except Exception as exc:  # boundary: surface any failure as data

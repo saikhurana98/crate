@@ -11,8 +11,8 @@ plus a strategy for how a request fans out across them:
                 the rest of the rotation only if the chosen source fails.
 
 A source module is anything satisfying :class:`SourceEntry` (a name+tier handle
-plus a ``download(query, out_dir)`` callable), so modules are swappable and the
-tiers/cascade never depend on a concrete adapter.
+plus a ``download(query, out_dir, want)`` callable), so modules are swappable and
+the tiers/cascade never depend on a concrete adapter.
 """
 
 from __future__ import annotations
@@ -25,10 +25,16 @@ from pathlib import Path
 from crate.application.download import DownloadReport
 from crate.domain.audio import AudioInfo, classify
 from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity
 from crate.domain.tiers import SourceRef, Tier
 
-Downloader = Callable[[str, Path], DownloadOutcome]
+# A source module: (free-text query, out dir, optional structured identity).
+Downloader = Callable[[str, Path, "TrackIdentity | None"], DownloadOutcome]
 Prober = Callable[[Path], AudioInfo]
+
+# Post-download duration sanity: reject a file whose measured runtime is off the
+# wanted duration by more than this (mirrors the source-side prefilter tolerance).
+_DURATION_TOLERANCE_S = 7
 
 
 class MuxStrategy(Enum):
@@ -70,18 +76,42 @@ class TierMux:
         return list(self.sources)
 
     def acquire(
-        self, query: str, out_dir: Path, *, prober: Prober
+        self,
+        query: str,
+        out_dir: Path,
+        *,
+        prober: Prober,
+        want: TrackIdentity | None = None,
     ) -> tuple[DownloadReport | None, list[CascadeAttempt]]:
-        """Fan out across the pool per strategy; return the first verified file."""
+        """Fan out across the pool per strategy; return the first verified file.
+
+        ``want`` (when known) is threaded into each source so it can match on
+        ISRC/duration, and drives a post-download duration sanity check: a file
+        whose measured runtime deviates from ``want.duration_s`` by more than the
+        tolerance is a failed attempt and the cascade advances."""
         attempts: list[CascadeAttempt] = []
         for source in self._ordered():
             try:
-                outcome = source.download(query, out_dir)
+                outcome = source.download(query, out_dir, want)
                 info = prober(outcome.path)
                 verdict = classify(info)
             except Exception as exc:  # boundary: a source failure is a skipped attempt
                 attempts.append(CascadeAttempt(source.ref.name, int(self.tier), False, str(exc)))
                 continue
+
+            if want is not None and want.duration_s is not None:
+                delta = abs(info.duration_s - want.duration_s)
+                if delta > _DURATION_TOLERANCE_S:
+                    attempts.append(
+                        CascadeAttempt(
+                            source.ref.name,
+                            int(self.tier),
+                            False,
+                            f"duration mismatch: got {info.duration_s:.0f}s, "
+                            f"want {want.duration_s}s",
+                        )
+                    )
+                    continue
 
             if source.expected_lossless and not verdict.lossless:
                 attempts.append(

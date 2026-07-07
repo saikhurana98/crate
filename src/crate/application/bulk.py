@@ -16,7 +16,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-# ref/url -> {"name": str, "owner": str, "tracks": [query]}
+from crate.domain.identity import TrackIdentity, from_query
+
+# ref/url -> {"name", "owner", "tracks": [str | {"query"|"artist"|"title"|...}]}
 PlaylistResolver = Callable[[str], dict[str, Any]]
 
 
@@ -25,7 +27,25 @@ class ResolvedBatch:
     name: str
     origin: str  # spotify | youtube | paste
     owner: str
-    tracks: list[str]
+    tracks: list[TrackIdentity]
+
+
+def _as_identity(track: Any) -> TrackIdentity:
+    """Normalize a resolver track (rich dict or bare query string) to an identity.
+
+    A dict carries whatever the resolver knew (artist/title/isrc/duration_s), with
+    a best-effort ``from_query`` fill-in for artist/title when only a query string
+    is present; a bare string is parsed with ``from_query``."""
+    if isinstance(track, str):
+        return from_query(track)
+    query = str(track.get("query") or "").strip()
+    base = from_query(query) if query else TrackIdentity()
+    return TrackIdentity(
+        artist=track.get("artist") or base.artist,
+        title=track.get("title") or base.title,
+        isrc=track.get("isrc"),
+        duration_s=track.get("duration_s"),
+    )
 
 
 def _is_spotify_playlist(text: str) -> bool:
@@ -53,7 +73,7 @@ def resolve_bulk(
         if spotify_playlist is None:
             raise LookupError("Spotify is not configured — cannot resolve a Spotify playlist")
         pl = spotify_playlist(stripped)
-        tracks = list(pl.get("tracks") or [])
+        tracks = [_as_identity(t) for t in (pl.get("tracks") or [])]
         if not tracks:
             raise ValueError("playlist resolved to no tracks")
         return ResolvedBatch(
@@ -64,14 +84,14 @@ def resolve_bulk(
         if youtube_playlist is None:
             raise LookupError("YouTube playlist resolver is unavailable")
         pl = youtube_playlist(stripped)
-        tracks = list(pl.get("tracks") or [])
+        tracks = [_as_identity(t) for t in (pl.get("tracks") or [])]
         if not tracks:
             raise ValueError("playlist resolved to no tracks")
         return ResolvedBatch(str(pl.get("name") or "YouTube playlist"), "youtube", "", tracks)
 
-    # pasted list — one query per non-empty line
+    # pasted list — one identity per non-empty line (title-only, best-effort split)
     lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
     if not lines:
         raise ValueError("nothing to enqueue")
     name = lines[0] if len(lines) == 1 else f"Pasted list · {len(lines)} tracks"
-    return ResolvedBatch(name, "paste", "", lines)
+    return ResolvedBatch(name, "paste", "", [from_query(ln) for ln in lines])

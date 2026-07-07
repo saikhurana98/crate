@@ -17,6 +17,7 @@ from crate.adapters.sources.telegram_bot import (
     select_audio,
     telegram_download,
 )
+from crate.domain.identity import TrackIdentity
 
 
 def _msg(name: str, mime: str, size: int, dur: int, bitrate: int, ref: str) -> dict:  # type: ignore[type-arg]
@@ -69,6 +70,27 @@ def test_select_title_guard_rejects_wrong_song() -> None:
 def test_select_raises_when_no_audio() -> None:
     with pytest.raises(LookupError):
         select_audio([], "anything")
+
+
+def test_select_prefers_correct_artist_with_want_tokens() -> None:
+    # two same-title FLACs by different artists; the wanted artist wins on score.
+    msgs = [
+        _msg("Mammoth - ElCano.flac", "audio/flac", 1, 200, 1411000, "w"),
+        _msg("Mammoth - Dimitri Vegas.flac", "audio/flac", 1, 200, 1411000, "r"),
+    ]
+    want = TrackIdentity(artist="Dimitri Vegas", title="Mammoth", duration_s=200)
+    chosen = select_audio(parse_audio_candidates(msgs), "Dimitri Vegas Mammoth", want=want)
+    assert chosen.ref == "r"
+
+
+def test_select_prefilters_by_duration() -> None:
+    msgs = [
+        _msg("Blinding Lights.flac", "audio/flac", 1, 480, 1411000, "long"),  # off-duration
+        _msg("Blinding Lights.mp3", "audio/mpeg", 1, 200, 320000, "right"),  # near-duration
+    ]
+    want = TrackIdentity(title="Blinding Lights", duration_s=200)
+    chosen = select_audio(parse_audio_candidates(msgs), "Blinding Lights", want=want)
+    assert chosen.ref == "right"
 
 
 def test_download_picks_and_writes(tmp_path: Path) -> None:

@@ -34,6 +34,7 @@ from crate.composition.catalog import (
     source_status,
     validate_layout,
 )
+from crate.domain.identity import TrackIdentity
 from crate.infrastructure.sqlite.config_store import ConfigStore
 from crate.infrastructure.sqlite.store import RequestStore
 
@@ -153,7 +154,7 @@ def create_app(
         query = str(body.get("query", "")).strip()
         if not query:
             raise HTTPException(status_code=400, detail="query required")
-        rid = store.enqueue(query)
+        rid = store.enqueue(query, identity=_identity_from_body(body))
         return {"id": rid, "query": query, "status": "queued"}
 
     # --- bulk downloads (batches) ---
@@ -173,8 +174,8 @@ def create_app(
         except Exception as exc:  # resolver/network failure
             raise HTTPException(status_code=502, detail=f"could not resolve: {exc}") from exc
         bid = store.create_batch(batch.name, batch.origin, batch.owner, len(batch.tracks))
-        for query in batch.tracks:
-            store.enqueue(query, batch_id=bid)
+        for track in batch.tracks:
+            store.enqueue(track.display(), batch_id=bid, identity=track)
         return {"id": bid, "name": batch.name, "origin": batch.origin, "total": len(batch.tracks)}
 
     @api.get("/batches")
@@ -310,6 +311,34 @@ def create_app(
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")
     return app
+
+
+def _identity_from_body(body: dict[str, Any]) -> TrackIdentity | None:
+    """Build a :class:`TrackIdentity` from optional enqueue-payload fields.
+
+    The console's search-result enqueue POSTs ``isrc``/``duration_s``/``artist``/
+    ``title`` alongside ``query``; all are optional. When none are present the
+    request stays a plain free-text query (``None``)."""
+    artist = _clean(body.get("artist"))
+    title = _clean(body.get("title"))
+    isrc = _clean(body.get("isrc"))
+    duration = body.get("duration_s")
+    if duration is None:
+        duration = body.get("duration")
+    try:
+        duration_s = int(duration) if duration is not None else None
+    except (TypeError, ValueError):
+        duration_s = None
+    if not any((artist, title, isrc, duration_s)):
+        return None
+    return TrackIdentity(artist=artist, title=title, isrc=isrc, duration_s=duration_s)
+
+
+def _clean(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _live_frame(store: RequestStore) -> str:

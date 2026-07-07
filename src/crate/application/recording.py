@@ -13,13 +13,17 @@ from __future__ import annotations
 from typing import Protocol
 
 from crate.application.download import DownloadReport
+from crate.domain.identity import TrackIdentity
 
 
 class RequestRecorder(Protocol):
     """Sink for the cascade lifecycle. All methods are best-effort side effects."""
 
-    def open_request(self, query: str) -> str:
-        """Open a request row (status ``downloading``); return its id."""
+    def open_request(self, query: str, identity: TrackIdentity | None = None) -> str:
+        """Open a request row (status ``downloading``); return its id.
+
+        ``identity`` (when known) persists the structured artist/title/ISRC/
+        duration columns alongside the free-text ``query``."""
         ...
 
     def record_attempt(

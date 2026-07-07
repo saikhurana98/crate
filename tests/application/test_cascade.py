@@ -5,6 +5,7 @@ from pathlib import Path
 from crate.application.cascade import MuxStrategy, SourceEntry, TierMux, run_cascade
 from crate.domain.audio import AudioInfo
 from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity
 from crate.domain.tiers import SourceRef, Tier
 
 
@@ -23,11 +24,11 @@ def _tier(name: str, tier: Tier, dl, lossless: bool) -> TierMux:  # type: ignore
 def test_tier1_wins_and_lower_tiers_not_touched(tmp_path: Path) -> None:
     called: list[str] = []
 
-    def mono(q: str, d: Path) -> DownloadOutcome:
+    def mono(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         called.append("mono")
         return DownloadOutcome(Path("/x/a.flac"), 1, "monochrome", 1.0, q)
 
-    def ytdlp(q: str, d: Path) -> DownloadOutcome:
+    def ytdlp(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         called.append("ytdlp")
         return DownloadOutcome(Path("/x/a.opus"), 3, "ytdlp", 1.0, q)
 
@@ -40,10 +41,10 @@ def test_tier1_wins_and_lower_tiers_not_touched(tmp_path: Path) -> None:
 
 
 def test_falls_through_tiers_skipping_absent_tier2(tmp_path: Path) -> None:
-    def mono(q: str, d: Path) -> DownloadOutcome:
+    def mono(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         raise RuntimeError("Turnstile JWT required")
 
-    def ytdlp(q: str, d: Path) -> DownloadOutcome:
+    def ytdlp(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         return DownloadOutcome(Path("/x/a.opus"), 3, "ytdlp", 1.0, q)
 
     # no Tier-2 pool registered -> cascade goes Tier 1 -> Tier 3
@@ -55,10 +56,10 @@ def test_falls_through_tiers_skipping_absent_tier2(tmp_path: Path) -> None:
 
 
 def test_tiers_evaluated_in_priority_order_regardless_of_input_order(tmp_path: Path) -> None:
-    def t3(q: str, d: Path) -> DownloadOutcome:
+    def t3(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         return DownloadOutcome(Path("/x/a.opus"), 3, "ytdlp", 1.0, q)
 
-    def t1(q: str, d: Path) -> DownloadOutcome:
+    def t1(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         return DownloadOutcome(Path("/x/a.flac"), 1, "monochrome", 1.0, q)
 
     # pass tiers out of order; cascade must still try Tier 1 first
@@ -72,7 +73,7 @@ def test_finalizer_applied_to_winner_before_recording(tmp_path: Path) -> None:
 
     moved: list[Path] = []
 
-    def t1(q: str, d: Path) -> DownloadOutcome:
+    def t1(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         return DownloadOutcome(Path("/staging/a.flac"), 1, "qobuz", 1.0, q)
 
     def finalizer(report):  # type: ignore[no-untyped-def]
@@ -91,7 +92,7 @@ def test_finalizer_applied_to_winner_before_recording(tmp_path: Path) -> None:
 
 
 def test_no_winner_when_all_tiers_fail(tmp_path: Path) -> None:
-    def boom(q: str, d: Path) -> DownloadOutcome:
+    def boom(q: str, d: Path, w: TrackIdentity | None = None) -> DownloadOutcome:
         raise RuntimeError("down")
 
     tiers = [_tier("monochrome", Tier.ONE, boom, True), _tier("ytdlp", Tier.THREE, boom, False)]

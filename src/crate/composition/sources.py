@@ -28,6 +28,7 @@ from crate.adapters.sources import ytdlp
 from crate.adapters.sources.monochrome import DEFAULT_TIDAL_BASE, monochrome_download
 from crate.application.cascade import MuxStrategy, SourceEntry, TierMux
 from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity
 from crate.domain.tiers import SourceRef, Tier
 from crate.infrastructure import http
 from crate.infrastructure.audio.decrypt import mp4decrypt_cenc
@@ -52,10 +53,11 @@ def _qobuz_source() -> SourceEntry:  # pragma: no cover - IO wiring
         os.environ["CRATE_QOBUZ_TOKEN"],
     )
 
-    def qobuz(query: str, out_dir: Path) -> DownloadOutcome:
+    def qobuz(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return qobuz_download(
             query,
             out_dir,
+            want,
             search=client.search,
             get_file_url=client.get_file_url,
             fetch=client.fetch,
@@ -75,10 +77,11 @@ def _monochrome_source() -> SourceEntry:  # pragma: no cover - IO wiring
     def fetch(url: str, dest: Path) -> None:
         http.stream_to(url, dest)  # discard the bytes-written count
 
-    def monochrome(query: str, out_dir: Path) -> DownloadOutcome:
+    def monochrome(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return monochrome_download(
             query,
             out_dir,
+            want,
             search_json=search_json,
             amz_fetch=session.fetch_amz,
             fetch=fetch,
@@ -99,8 +102,10 @@ def _telegram_source() -> SourceEntry:  # pragma: no cover - IO wiring
         bot=os.environ["CRATE_TG_BOT"],
     )
 
-    def telegram(query: str, out_dir: Path) -> DownloadOutcome:
-        return telegram_download(query, out_dir, request=client.request, download=client.download)
+    def telegram(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return telegram_download(
+            query, out_dir, want, request=client.request, download=client.download
+        )
 
     # accepts whatever the bot serves (prefers lossless in selection)
     return SourceEntry(SourceRef("telegram", Tier.TWO), telegram, expected_lossless=False)
@@ -112,10 +117,11 @@ def _deezer_source() -> SourceEntry:  # pragma: no cover - IO wiring
 
     client = DeezerClient(os.environ["CRATE_DEEZER_ARL"])
 
-    def deezer(query: str, out_dir: Path) -> DownloadOutcome:
+    def deezer(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return deezer_download(
             query,
             out_dir,
+            want,
             search=client.search,
             resolve_url=client.resolve_url,
             fetch=client.fetch,
@@ -137,10 +143,11 @@ def _soulseek_source() -> SourceEntry:  # pragma: no cover - IO wiring
     )
     min_kbps = int(os.environ.get("CRATE_SLSKD_MIN_BITRATE", "0"))
 
-    def soulseek(query: str, out_dir: Path) -> DownloadOutcome:
+    def soulseek(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return soulseek_download(
             query,
             out_dir,
+            want,
             search=client.search,
             download=client.download,
             min_bitrate_kbps=min_kbps,
@@ -300,39 +307,76 @@ def build_finalizer() -> Any:  # pragma: no cover - IO wiring
     return make_finalizer(Path(root), read_tags=read_tags, write_tags=write_tags)
 
 
+def _bound_run(prober: Any, finalizer: Any) -> Callable[..., Any]:  # pragma: no cover - IO wiring
+    """A ``run(query, out_dir, tiers, *, request_id, recorder, want, finalizer)``
+    with ``prober`` and the default ``finalizer`` pre-bound — the shape the de-dup
+    use-case injects. Callers override ``finalizer=None`` for the in-place upgrade
+    cascade (the winner replaces the existing library file, not a fresh path)."""
+    from crate.application.cascade import run_cascade
+
+    def run(
+        query: str,
+        out_dir: Path,
+        tiers: Any,
+        *,
+        request_id: str | None = None,
+        recorder: Any = None,
+        want: Any = None,
+        finalizer: Any = finalizer,
+    ) -> Any:
+        return run_cascade(
+            query,
+            out_dir,
+            tiers,
+            prober=prober,
+            recorder=recorder,
+            request_id=request_id,
+            finalizer=finalizer,
+            want=want,
+        )
+
+    return run
+
+
+def _atomic_replace() -> Callable[[Path, Path], None]:  # pragma: no cover - IO wiring
+    """Move a produced file over an existing library path (upgrade in place)."""
+    from crate.application.librarian import _atomic_move
+
+    return _atomic_move
+
+
 def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - IO wiring
     """A ``download(query, out_dir) -> path`` that runs the full cascade — used by
     the slskd shim (`crate serve`) so Explo pulls through the tiered stack. Records
-    every request to the console DB. With a library root set, each winner is
-    finalized into the library as it completes and the returned path is the final
-    library location."""
-    from crate.application.cascade import run_cascade
+    every request to the console DB, de-dups on identity (reusing lossless files
+    and upgrading lossy ones), and — with a library root set — finalizes each
+    winner into the library, returning the final location.
+
+    The shim only knows the advertised free-text query, so identity is parsed
+    best-effort from it (``Artist - Title`` -> artist/title)."""
+    from crate.application.dedup import resolve_request
+    from crate.domain.identity import from_query
     from crate.infrastructure.audio.probe import probe
 
     recorder = build_recorder("explo")
     current_tiers = _tiers_provider(_config_store_if_enabled())
-    finalizer = build_finalizer()
+    run = _bound_run(probe, build_finalizer())
+    replace = _atomic_replace()
 
     def download(query: str, out_dir: Path) -> Path:
-        # de-dup: hand Explo the existing file if we already have this track.
-        existing = recorder.find_completed(query)
-        if existing and Path(str(existing["path"])).exists():
-            rid = recorder.open_request(query)
-            recorder.record_attempt(
-                rid,
-                str(existing.get("source_won") or "library"),
-                int(existing.get("tier_won") or 0),
-                True,
-                "already in library — reused existing file",
-            )
-            recorder.complete_as_duplicate(rid, existing)
-            return Path(str(existing["path"]))
-        result = run_cascade(
-            query, out_dir, current_tiers(), prober=probe, recorder=recorder, finalizer=finalizer
+        identity = from_query(query)
+        rid = recorder.open_request(query, identity)
+        return resolve_request(
+            query,
+            out_dir,
+            rid,
+            identity=identity,
+            tiers=current_tiers(),
+            recorder=recorder,
+            run=run,
+            exists=lambda p: p.exists(),
+            replace=replace,
         )
-        if result.winner is None or result.winner.outcome is None:
-            raise RuntimeError(f"no source produced a file for {query!r}")
-        return result.winner.outcome.path
 
     return download
 
@@ -347,13 +391,15 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
     """A loop that drains console-queued requests through the cascade. Runs in
     the `serve` process (which owns the NAS mount + full source toolchain), so
     console downloads share the same downloader as Explo. Attaches to each
-    pre-created ``queued`` row rather than opening a new request."""
-    from crate.application.cascade import run_cascade
+    pre-created ``queued`` row rather than opening a new request, and de-dups on
+    the row's stored identity (reuse a lossless copy; upgrade a lossy one)."""
+    from crate.application.dedup import resolve_request
     from crate.infrastructure.audio.probe import probe
 
     store = build_recorder("console")
     current_tiers = _tiers_provider(_config_store_if_enabled())
-    finalizer = build_finalizer()
+    run = _bound_run(probe, build_finalizer())
+    replace = _atomic_replace()
     out_dir = Path(os.environ.get("CRATE_SERVE_DOWNLOADS", "downloads"))
     poll = float(os.environ.get("CRATE_QUEUE_POLL", "2.0"))
 
@@ -365,28 +411,16 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
                 stop.wait(poll)
                 continue
             try:
-                # de-dup: if this exact track was already downloaded and the file
-                # still exists, reuse it instead of downloading again. Big win for
-                # re-imported playlists.
-                existing = store.find_completed(claimed["query"])
-                if existing and Path(str(existing["path"])).exists():
-                    store.record_attempt(
-                        claimed["id"],
-                        str(existing.get("source_won") or "library"),
-                        int(existing.get("tier_won") or 0),
-                        True,
-                        "already in library — reused existing file",
-                    )
-                    store.complete_as_duplicate(claimed["id"], existing)
-                    continue
-                run_cascade(
+                resolve_request(
                     claimed["query"],
                     out_dir,
-                    current_tiers(),
-                    prober=probe,
+                    claimed["id"],
+                    identity=claimed["identity"],
+                    tiers=current_tiers(),
                     recorder=store,
-                    request_id=claimed["id"],
-                    finalizer=finalizer,
+                    run=run,
+                    exists=lambda p: p.exists(),
+                    replace=replace,
                 )
             except Exception as exc:  # never let one bad request kill the loop
                 store.fail_request(claimed["id"], f"queue worker error: {exc}")

@@ -7,6 +7,7 @@ endpoint logic + transfer state machine are tested without network."""
 from pathlib import Path
 
 from crate.adapters.inbound.slskd_shim import ShimState
+from crate.domain.identity import TrackIdentity, from_query
 
 
 def _dl_ok(flac_bytes: bytes = b"fLaC\x00shim"):  # type: ignore[no-untyped-def]
@@ -82,6 +83,43 @@ def test_download_failure_marks_errored(tmp_path: Path) -> None:
     shim.run_download(fname)
     files = shim.transfers("crate")["directories"][0]["files"]
     assert "Errored" in files[0]["state"]
+
+
+def test_download_receives_search_text_for_best_effort_identity(tmp_path: Path) -> None:
+    # The shim advertises the search text and hands it to the download callable;
+    # the composition closure parses a best-effort identity from it via from_query.
+    seen: list[str] = []
+
+    def download(query: str, out_dir: Path) -> Path:
+        seen.append(query)
+        p = out_dir / "out.flac"
+        p.write_bytes(b"fLaC\x00x")
+        return p
+
+    shim = ShimState(download=download, downloads_dir=tmp_path)
+    sid = shim.start_search("Daft Punk - Get Lucky")["id"]
+    fname = shim.search_responses(sid)[0]["files"][0]["filename"]
+    shim.run_download(fname)
+    assert seen == ["Daft Punk - Get Lucky"]
+    # the "Artist - Title" shape parses into a structured identity
+    assert from_query(seen[0]) == TrackIdentity(artist="Daft Punk", title="Get Lucky")
+
+
+def test_run_download_uses_filename_stem_when_search_text_unknown(tmp_path: Path) -> None:
+    # If the transfer arrives without a prior search (no _file_query entry), the
+    # query defaults to the filename stem — still a valid from_query input.
+    seen: list[str] = []
+
+    def download(query: str, out_dir: Path) -> Path:
+        seen.append(query)
+        p = out_dir / "out.flac"
+        p.write_bytes(b"fLaC\x00x")
+        return p
+
+    shim = ShimState(download=download, downloads_dir=tmp_path)
+    shim.run_download("Burial - Archangel.flac")
+    assert seen == ["Burial - Archangel"]  # ".flac" stem
+    assert from_query(seen[0]) == TrackIdentity(artist="Burial", title="Archangel")
 
 
 def test_server_module_imports() -> None:

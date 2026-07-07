@@ -1,6 +1,39 @@
 """Shared title-match guard."""
 
-from crate.domain.matching import match_score, norm_tokens, title_matches
+from crate.domain.matching import (
+    DURATION_TOLERANCE_S,
+    duration_prefilter,
+    match_score,
+    norm_tokens,
+    title_matches,
+)
+
+
+def test_duration_prefilter_drops_out_of_tolerance_candidates() -> None:
+    cands = [("a", 200), ("b", 250), ("c", 203)]
+    kept = duration_prefilter(cands, 202, lambda c: c[1])
+    assert kept == [("a", 200), ("c", 203)]  # 250 is off by 48 -> dropped
+
+
+def test_duration_prefilter_keeps_pool_when_it_would_empty() -> None:
+    cands = [("a", 480), ("b", 500)]
+    # nothing near 200 -> keep all (a wrong duration beats no result)
+    assert duration_prefilter(cands, 200, lambda c: c[1]) == cands
+
+
+def test_duration_prefilter_noop_when_want_unknown() -> None:
+    cands = [("a", 480)]
+    assert duration_prefilter(cands, None, lambda c: c[1]) is cands
+
+
+def test_duration_prefilter_keeps_unknown_duration_candidates() -> None:
+    cands = [("a", None), ("b", 480)]
+    # unknown-duration candidate is never dropped; the off-duration one is
+    assert duration_prefilter(cands, 200, lambda c: c[1]) == [("a", None)]
+
+
+def test_duration_tolerance_default_is_seven() -> None:
+    assert DURATION_TOLERANCE_S == 7
 
 
 def test_norm_tokens_drops_filler_and_short_words() -> None:

@@ -52,13 +52,18 @@ def _track(item: dict[str, Any]) -> dict[str, Any]:
     artists = ", ".join(a["name"] for a in item.get("artists", []) if a.get("name"))
     album = item.get("album") or {}
     title = item.get("name", "")
+    duration_ms = int(item.get("duration_ms") or 0)
+    isrc = (item.get("external_ids") or {}).get("isrc")
     return {
         "id": item.get("id", ""),
         "title": title,
         "artist": artists,
         "album": album.get("name", ""),
         "art": _best_art(album.get("images", [])),
-        "duration_ms": int(item.get("duration_ms") or 0),
+        "duration_ms": duration_ms,
+        # rounded seconds for the cascade's duration match; None when unknown
+        "duration_s": round(duration_ms / 1000) if duration_ms else None,
+        "isrc": str(isrc) if isrc else None,
         "year": str(album.get("release_date") or "")[:4],
         "url": (item.get("external_urls") or {}).get("spotify"),
         # ready-to-cascade free-text query (artist first disambiguates covers)
@@ -108,20 +113,26 @@ class SpotifyClient:
 
     def playlist(self, ref: str, max_tracks: int = 500) -> dict[str, Any]:
         """Resolve a playlist (id, URL, or spotify: URI) to
-        ``{name, owner, tracks: [free-text query]}`` via client-credentials
-        (public playlists). Follows pagination up to ``max_tracks``."""
+        ``{name, owner, tracks: [track]}`` via client-credentials (public
+        playlists). Each track is a dict with ``query`` (artist-first free text)
+        plus the structured identity fields (``artist``, ``title``, ``isrc``,
+        ``duration_s``) so bulk imports match on ISRC/duration too. Follows
+        pagination up to ``max_tracks``."""
         m = _PLAYLIST_ID.search(ref)
         pid = m.group(1) if m else ref.strip()
         headers = {"Authorization": f"Bearer {self._bearer()}"}
         data = self._get_json(
             f"{PLAYLIST_URL}{pid}",
-            {"fields": "name,owner(display_name),tracks(items(track(name,artists(name))),next)"},
+            {
+                "fields": "name,owner(display_name),tracks(items(track(name,artists(name),"
+                "duration_ms,external_ids)),next)"
+            },
             headers,
         )
         name = str((data or {}).get("name") or "Playlist")
         owner = str(((data or {}).get("owner") or {}).get("display_name") or "")
         tracks_obj = (data or {}).get("tracks") or {}
-        queries: list[str] = []
+        tracks: list[dict[str, Any]] = []
 
         def collect(items: list[dict[str, Any]]) -> None:
             for entry in items or []:
@@ -130,15 +141,25 @@ class SpotifyClient:
                 if not title:
                     continue
                 artists = ", ".join(a["name"] for a in track.get("artists", []) if a.get("name"))
-                queries.append(f"{artists} {title}".strip())
+                duration_ms = int(track.get("duration_ms") or 0)
+                isrc = (track.get("external_ids") or {}).get("isrc")
+                tracks.append(
+                    {
+                        "query": f"{artists} {title}".strip(),
+                        "artist": artists or None,
+                        "title": str(title),
+                        "isrc": str(isrc) if isrc else None,
+                        "duration_s": round(duration_ms / 1000) if duration_ms else None,
+                    }
+                )
 
         collect(tracks_obj.get("items") or [])
         nxt = tracks_obj.get("next")
-        while nxt and len(queries) < max_tracks:
+        while nxt and len(tracks) < max_tracks:
             page = self._get_json(str(nxt), {}, headers)
             collect((page or {}).get("items") or [])
             nxt = (page or {}).get("next")
-        return {"name": name, "owner": owner, "tracks": queries[:max_tracks]}
+        return {"name": name, "owner": owner, "tracks": tracks[:max_tracks]}
 
     # --- user-scoped OAuth (authorization-code flow, for the Listening panel) ---
     def _basic(self) -> str:
