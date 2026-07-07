@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from crate.domain.download import DownloadOutcome
-from crate.domain.matching import title_matches
+from crate.domain.matching import match_score, title_matches
 
 DEFAULT_TIDAL_BASE = "https://api.monochrome.tf"
 DEFAULT_AMZ_BASE = "https://amz.geeked.wtf"
@@ -98,15 +98,17 @@ def pick_best(tracks: list[MonoTrack]) -> MonoTrack:
 
 
 def select_by_title(tracks: list[MonoTrack], query: str) -> MonoTrack:
-    """Keep only results whose title matches the query, then pick the best.
+    """Keep results whose title matches the query, then pick the best.
 
-    Raises LookupError when nothing matches, so the cascade advances to the next
-    tier rather than accepting a wrong-song FLAC.
+    Ranks by title+artist relevance to the query first (so a same-title song by
+    a different artist isn't chosen over the requested one), with hi-res as the
+    tiebreak. Raises LookupError when nothing matches, so the cascade advances to
+    the next tier rather than accepting a wrong-song FLAC.
     """
     matching = [t for t in tracks if title_matches(t.title, query)]
     if not matching:
         raise LookupError("no title-matching Monochrome result")
-    return pick_best(matching)
+    return max(matching, key=lambda t: (match_score(t.title, t.artist, query), t.hires))
 
 
 def build_amz_params(track: MonoTrack) -> dict[str, Any]:

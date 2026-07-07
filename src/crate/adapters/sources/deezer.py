@@ -22,7 +22,7 @@ from typing import Any
 from Crypto.Cipher import Blowfish
 
 from crate.domain.download import DownloadOutcome
-from crate.domain.matching import title_matches
+from crate.domain.matching import match_score, title_matches
 
 _SECRET = b"g4el58wc0zvf9na1"  # Deezer's fixed key-derivation secret
 _IV = bytes(range(8))  # 00 01 02 03 04 05 06 07
@@ -83,15 +83,16 @@ def parse_search(data: dict[str, Any]) -> list[DeezerTrack]:
 
 
 def select_track(tracks: list[DeezerTrack], query: str, isrc: str | None = None) -> DeezerTrack:
-    """Prefer an exact ISRC match; else the first title-matching result."""
+    """Prefer an exact ISRC match; else the best title+artist match (so a
+    same-title song by a different artist isn't picked over the requested one)."""
     if isrc:
         for track in tracks:
             if track.isrc and track.isrc.upper() == isrc.upper():
                 return track
-    for track in tracks:
-        if title_matches(track.title, query):
-            return track
-    raise LookupError("no title-matching Deezer track")
+    matching = [t for t in tracks if title_matches(t.title, query)]
+    if not matching:
+        raise LookupError("no title-matching Deezer track")
+    return max(matching, key=lambda t: match_score(t.title, t.artist, query))
 
 
 def deezer_download(

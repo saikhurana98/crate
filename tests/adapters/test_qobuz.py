@@ -74,6 +74,21 @@ def test_select_track_prefers_isrc_then_title() -> None:
         select_track(tracks, "Totally Unrelated Track")
 
 
+def _mono(id_: int, title: str, artist: str) -> QobuzTrack:
+    return QobuzTrack(id_, title, artist, "", None, 24, 44.1, None)
+
+
+def test_select_track_uses_artist_to_break_same_title_tie() -> None:
+    # Regression: two songs titled "Mammoth" — the wrong artist appeared first.
+    # Selection must pick the one whose ARTIST also matches the query.
+    tracks = [
+        _mono(1, "Mammoth", "ElCano"),  # unrelated same-title song, listed first
+        _mono(2, "Mammoth", "Dimitri Vegas & Like Mike, MOGUAI"),  # the requested one
+    ]
+    got = select_track(tracks, "Dimitri Vegas, MOGUAI, Like Mike Mammoth")
+    assert got.id == 2 and got.artist.startswith("Dimitri Vegas")
+
+
 def test_qobuz_download_writes_flac_tier1(tmp_path: Path) -> None:
     calls: dict[str, object] = {}
 
