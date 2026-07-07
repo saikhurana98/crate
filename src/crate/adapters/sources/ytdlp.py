@@ -27,7 +27,7 @@ from pathlib import Path
 
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
-from crate.domain.matching import match_score, title_matches
+from crate.domain.matching import artist_matches, match_score, title_matches
 
 __all__ = [
     "DownloadOutcome",
@@ -52,6 +52,11 @@ _DOWNLOAD_TIMEOUT_S = 600.0
 _SEARCH_N = 5
 # Accept a candidate only if its runtime is within this of the expected one.
 _DURATION_TOLERANCE_S = 7
+# Artist gate threshold for the channel (see select_candidate): a tiny positive
+# value so the gate rejects a channel ONLY when it shares zero tokens with the
+# wanted artist — a YouTube channel is a label/"- Topic"/aggregator, not a clean
+# artist string, so anything stricter would wrongly kill legit Tier-3 placeholders.
+_CHANNEL_ARTIST_THRESHOLD = 1e-9
 # Tab-separated --print fields: id, title, channel, duration.
 _CANDIDATE_FIELDS = 4
 
@@ -100,6 +105,7 @@ def select_candidate(
     cands: list[YtCandidate],
     query: str,
     expected_duration_s: int | None = None,
+    want_artist: str | None = None,
 ) -> YtCandidate:
     """Pick the best title-matching candidate.
 
@@ -109,10 +115,26 @@ def select_candidate(
     result). Ranks the survivors by :func:`match_score` (title + channel overlap
     with the query) and returns the top one. Raises ``LookupError`` when nothing
     title-matches.
+
+    Artist gate (deliberately weaker than the FLAC tiers): when ``want_artist`` is
+    known, a candidate whose ``channel`` shares *zero* tokens with the wanted artist
+    is dropped — but if that would empty the pool we keep every title-match instead.
+    A YouTube channel is a label / "<Artist> - Topic" / aggregator, not a clean
+    artist tag, so a hard gate would kill legitimate Tier-3 lossy placeholders; this
+    only sheds obviously-unrelated channels when a real one is available.
     """
     matching = [c for c in cands if title_matches(c.title, query)]
     if not matching:
         raise LookupError(f"no title-matching yt-dlp candidate for {query!r}")
+
+    if want_artist:
+        on_artist = [
+            c
+            for c in matching
+            if artist_matches(c.channel, want_artist, threshold=_CHANNEL_ARTIST_THRESHOLD)
+        ]
+        if on_artist:  # keep all title-matches if the artist gate empties the pool
+            matching = on_artist
 
     pool = matching
     if expected_duration_s is not None:
@@ -229,7 +251,8 @@ def download(
     if not candidates:
         return _fallback_download(query, out_dir, runner=runner, clock=clock, start=start)
 
-    chosen = select_candidate(candidates, query, expected_duration_s)
+    want_artist = want.artist if want else None
+    chosen = select_candidate(candidates, query, expected_duration_s, want_artist)
 
     dl_cmd = build_command(f"https://www.youtube.com/watch?v={chosen.id}", out_dir)
     result = _run(runner, dl_cmd, _DOWNLOAD_TIMEOUT_S)

@@ -132,6 +132,24 @@ def test_select_track_uses_artist_to_break_same_title_tie() -> None:
     assert got.id == 2 and got.artist.startswith("Dimitri Vegas")
 
 
+def test_select_track_artist_gate_drops_wrong_artist_same_title() -> None:
+    # Only candidate is a same-title track by a different artist -> gate empties the
+    # pool -> LookupError so the cascade advances (ISRC unknown here, as on the
+    # sources that can't match by ISRC).
+    tracks = [_dur(1, "Hai Mera Dil Tu", "Alka Yagnik", 209, None)]
+    with pytest.raises(LookupError, match="no title-matching"):
+        select_track(tracks, "Alfaaz Hai Mera Dil", want_duration_s=210, want_artist="Alfaaz")
+
+
+def test_select_track_artist_gate_keeps_correct_artist() -> None:
+    tracks = [
+        _dur(1, "Hai Mera Dil Tu", "Alka Yagnik", 209, None),
+        _dur(2, "Hai Mera Dil", "Alfaaz", 210, None),
+    ]
+    got = select_track(tracks, "Alfaaz Hai Mera Dil", want_duration_s=210, want_artist="Alfaaz")
+    assert got.id == 2
+
+
 def test_qobuz_download_writes_flac_tier1(tmp_path: Path) -> None:
     calls: dict[str, object] = {}
 

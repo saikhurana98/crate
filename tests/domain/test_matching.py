@@ -2,6 +2,7 @@
 
 from crate.domain.matching import (
     DURATION_TOLERANCE_S,
+    artist_matches,
     duration_prefilter,
     match_score,
     norm_tokens,
@@ -65,3 +66,43 @@ def test_match_score_title_still_dominates() -> None:
     q = "Pritam Marjaani"
     # right title beats a wrong title even if the wrong one shares an artist token
     assert match_score("Marjaani", "Pritam", q) > match_score("Channa Mereya", "Pritam", q)
+
+
+def test_artist_matches_rejects_unrelated_artist() -> None:
+    # the real incident: a request for "Alfaaz" must not accept an "Alka Yagnik" track
+    assert artist_matches("Alka Yagnik", "Alfaaz") is False
+
+
+def test_artist_matches_single_artist_inside_multi_artist_candidate() -> None:
+    # a single requested artist fully present in a multi-artist credit passes
+    assert artist_matches("Alfaaz, Yo Yo Honey Singh", "Alfaaz") is True
+
+
+def test_artist_matches_collaborator_of_multi_artist_request() -> None:
+    # a collaborator of a multi-artist request passes (smaller set fully inside)
+    assert artist_matches("Yo Yo Honey Singh", "Alfaaz, Yo Yo Honey Singh") is True
+
+
+def test_artist_matches_exact_is_true() -> None:
+    assert artist_matches("Alfaaz", "Alfaaz") is True
+
+
+def test_artist_matches_empty_want_is_true() -> None:
+    # never gate on missing data
+    assert artist_matches("Alka Yagnik", "") is True
+
+
+def test_artist_matches_empty_candidate_is_true() -> None:
+    assert artist_matches("", "Alfaaz") is True
+
+
+def test_artist_matches_partial_overlap_at_threshold() -> None:
+    # one of two requested tokens present -> 0.5 overlap -> passes default 0.5
+    assert artist_matches("Arijit Sharma", "Arijit Singh") is True
+
+
+def test_artist_matches_zero_overlap_lenient_threshold() -> None:
+    # the ytdlp channel gate uses a tiny threshold: any shared token passes,
+    # only a completely-disjoint channel is rejected
+    assert artist_matches("Alfaaz Official", "Alfaaz", threshold=1e-9) is True
+    assert artist_matches("SonyMusic", "Alfaaz", threshold=1e-9) is False

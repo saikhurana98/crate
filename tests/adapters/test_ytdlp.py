@@ -119,6 +119,25 @@ def test_select_keeps_all_when_duration_filter_empties_pool() -> None:
     assert chosen.id in {"a", "b"}
 
 
+def test_select_channel_gate_drops_zero_overlap_channel_when_real_one_exists() -> None:
+    # Lenient artist gate: an obviously-unrelated channel is shed only because a
+    # channel that shares an artist token is also available.
+    cands = [
+        YtCandidate("wrong", "Alfaaz Hai Mera Dil", "RandomAggregator", 210),
+        YtCandidate("right", "Alfaaz Hai Mera Dil", "Alfaaz - Topic", 210),
+    ]
+    chosen = select_candidate(cands, "Alfaaz Hai Mera Dil", want_artist="Alfaaz")
+    assert chosen.id == "right"
+
+
+def test_select_channel_gate_keeps_pool_when_gate_would_empty_it() -> None:
+    # A YouTube channel is a label/aggregator, not an artist: if NO channel shares
+    # a token with the wanted artist, keep every title-match (don't kill Tier 3).
+    cands = [YtCandidate("only", "Alfaaz Hai Mera Dil", "SomeLabelVEVO", 210)]
+    chosen = select_candidate(cands, "Alfaaz Hai Mera Dil", want_artist="Alfaaz")
+    assert chosen.id == "only"
+
+
 def test_select_raises_lookuperror_when_nothing_title_matches() -> None:
     cands = [YtCandidate("x", "Totally Unrelated Track", "Nobody", 200)]
     with pytest.raises(LookupError, match="no title-matching"):

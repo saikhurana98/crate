@@ -106,17 +106,19 @@ def test_select_honours_min_bitrate() -> None:
 
 
 def test_rank_prefers_correct_artist_with_want_tokens() -> None:
-    # two same-title FLACs by different artists; the wanted artist wins on
-    # match_score even though both pass the title guard.
+    # two same-title FLACs by different artists (Artist - Title filenames); the
+    # wanted artist wins on match_score even though both pass the title guard.
+    # ElCano shares an artist token with neither the query nor "Dimitri Vegas", so
+    # it is also dropped by the artist gate before scoring.
     responses = [
         {
             "username": "p",
             "hasFreeUploadSlot": True,
             "uploadSpeed": 1,
             "files": [
-                {"filename": "x\\Mammoth - ElCano.flac", "size": 1, "bitRate": 1411, "length": 200},
+                {"filename": "x\\ElCano - Mammoth.flac", "size": 1, "bitRate": 1411, "length": 200},
                 {
-                    "filename": "x\\Mammoth - Dimitri Vegas.flac",
+                    "filename": "x\\Dimitri Vegas - Mammoth.flac",
                     "size": 1,
                     "bitRate": 1411,
                     "length": 200,
@@ -126,7 +128,54 @@ def test_rank_prefers_correct_artist_with_want_tokens() -> None:
     ]
     want = TrackIdentity(artist="Dimitri Vegas", title="Mammoth", duration_s=200)
     chosen = select_file(parse_responses(responses), "Dimitri Vegas Mammoth", want=want)
-    assert chosen.filename.endswith("Mammoth - Dimitri Vegas.flac")
+    assert chosen.filename.endswith("Dimitri Vegas - Mammoth.flac")
+
+
+def test_select_file_artist_gate_empties_pool_raises() -> None:
+    # Alfaaz -> Alka regression: the only title+duration match is by the wrong
+    # artist (filename "Alka Yagnik - Hai Mera Dil Tu"); the artist gate drops it
+    # so the source fails and the cascade advances.
+    responses = [
+        {
+            "username": "p",
+            "hasFreeUploadSlot": True,
+            "uploadSpeed": 1,
+            "files": [
+                {
+                    "filename": "x\\Alka Yagnik - Hai Mera Dil Tu.flac",
+                    "size": 1,
+                    "bitRate": 1411,
+                    "length": 209,
+                }
+            ],
+        }
+    ]
+    want = TrackIdentity(artist="Alfaaz", title="Hai Mera Dil", duration_s=210)
+    with pytest.raises(LookupError, match="no title-matching"):
+        select_file(parse_responses(responses), "Alfaaz Hai Mera Dil", want=want)
+
+
+def test_select_file_no_separator_uses_full_stem_as_artist() -> None:
+    # filename with no " - " separator -> whole stem is the candidate artist; here
+    # the stem contains the wanted artist token so the gate passes.
+    responses = [
+        {
+            "username": "p",
+            "hasFreeUploadSlot": True,
+            "uploadSpeed": 1,
+            "files": [
+                {
+                    "filename": "x\\Alfaaz Hai Mera Dil.flac",
+                    "size": 1,
+                    "bitRate": 1411,
+                    "length": 210,
+                }
+            ],
+        }
+    ]
+    want = TrackIdentity(artist="Alfaaz", title="Hai Mera Dil", duration_s=210)
+    chosen = select_file(parse_responses(responses), "Alfaaz Hai Mera Dil", want=want)
+    assert chosen.filename.endswith("Alfaaz Hai Mera Dil.flac")
 
 
 def test_rank_prefilters_by_duration_when_want_known() -> None:

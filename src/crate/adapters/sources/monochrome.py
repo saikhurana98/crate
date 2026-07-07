@@ -27,7 +27,7 @@ from typing import Any
 
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
-from crate.domain.matching import duration_prefilter, match_score, title_matches
+from crate.domain.matching import artist_matches, duration_prefilter, match_score, title_matches
 
 DEFAULT_TIDAL_BASE = "https://api.monochrome.tf"
 DEFAULT_AMZ_BASE = "https://amz.geeked.wtf"
@@ -101,21 +101,29 @@ def pick_best(tracks: list[MonoTrack]) -> MonoTrack:
 
 
 def select_by_title(
-    tracks: list[MonoTrack], query: str, want_duration_s: int | None = None
+    tracks: list[MonoTrack],
+    query: str,
+    want_duration_s: int | None = None,
+    want_artist: str | None = None,
 ) -> MonoTrack:
     """Keep results whose title matches the query, then pick the best.
 
-    Candidates are prefiltered by ``want_duration_s`` (when known), then ranked by
-    title+artist relevance to the query (so a same-title song by a different
-    artist isn't chosen over the requested one), with hi-res as the tiebreak.
-    Raises LookupError when nothing matches, so the cascade advances to the next
-    tier rather than accepting a wrong-song FLAC.
+    Candidates pass a title gate, then (when ``want_artist`` is known) an artist
+    gate that drops a same-title song by a different artist — the fix for the real
+    incident where Alfaaz — "Hai Mera Dil" landed Alka Yagnik — "Hai Mera Dil Tu"
+    whose title matched and whose duration coincidentally lined up (monochrome can't
+    match by ISRC). Survivors are prefiltered by ``want_duration_s`` (when known),
+    then ranked by title+artist relevance with hi-res as the tiebreak. Raises
+    LookupError when nothing matches, so the cascade advances to the next tier
+    rather than accepting a wrong-song FLAC.
     """
-    pool = duration_prefilter(tracks, want_duration_s, lambda t: t.duration_s)
-    matching = [t for t in pool if title_matches(t.title, query)]
+    matching = [t for t in tracks if title_matches(t.title, query)]
+    if want_artist:
+        matching = [t for t in matching if artist_matches(t.artist, want_artist)]
     if not matching:
         raise LookupError("no title-matching Monochrome result")
-    return max(matching, key=lambda t: (match_score(t.title, t.artist, query), t.hires))
+    pool = duration_prefilter(matching, want_duration_s, lambda t: t.duration_s)
+    return max(pool, key=lambda t: (match_score(t.title, t.artist, query), t.hires))
 
 
 def build_amz_params(track: MonoTrack) -> dict[str, Any]:
@@ -207,7 +215,10 @@ def monochrome_download(
     """
     start = clock()
     want_duration = want.duration_s if want else None
-    track = select_by_title(parse_search(search_json(query)), match_title or query, want_duration)
+    want_artist = want.artist if want else None
+    track = select_by_title(
+        parse_search(search_json(query)), match_title or query, want_duration, want_artist
+    )
     stream = parse_amz_stream(amz_fetch(build_amz_params(track)))
 
     stem = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]")

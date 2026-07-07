@@ -21,7 +21,7 @@ from typing import Any
 
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
-from crate.domain.matching import duration_prefilter, match_score, title_matches
+from crate.domain.matching import artist_matches, duration_prefilter, match_score, title_matches
 
 # request(query) -> list of reply "messages" (dicts with an optional "audio" + "ref")
 Request = Callable[[str], list[dict[str, Any]]]
@@ -68,23 +68,36 @@ def is_lossless(audio: TgAudio) -> bool:
     return ext in _LOSSLESS_EXT or any(tag in audio.mime.lower() for tag in _LOSSLESS_MIME)
 
 
+def _candidate_artist(filename: str) -> str:
+    """Best-effort artist from a bot's audio filename: the part left of ' - ' in an
+    'Artist - Title' stem, or the whole stem when there's no separator."""
+    stem = Path(filename).stem
+    left, sep, _ = stem.partition(" - ")
+    return left.strip() if sep else stem.strip()
+
+
 def select_audio(
     candidates: list[TgAudio], query: str, want: TrackIdentity | None = None
 ) -> TgAudio:
     """Keep title-matching candidates, then rank best-first.
 
-    When ``want`` is known the pool is duration-prefiltered and the ranking leads
-    with ``match_score`` of the filename against the query + artist tokens (so a
+    When ``want.artist`` is known a wrong-artist file is gated out (its artist is
+    derived best-effort from the filename), so a same-title file by a different
+    artist can't survive on a coincidentally matching duration. When ``want`` is
+    known the pool is then duration-prefiltered and the ranking leads with
+    ``match_score`` of the filename against the query + artist tokens (so a
     same-title file by the wrong artist loses), then prefers lossless, higher
     bitrate, larger. Raises LookupError when nothing matches, so the cascade
     advances a tier.
     """
     matching = [c for c in candidates if title_matches(Path(c.filename).stem, query)]
+    artist = want.artist if want and want.artist else ""
+    if artist:
+        matching = [c for c in matching if artist_matches(_candidate_artist(c.filename), artist)]
     if want is not None:
         matching = duration_prefilter(matching, want.duration_s, lambda c: c.duration_s)
     if not matching:
         raise LookupError("no title-matching Telegram audio")
-    artist = want.artist if want and want.artist else ""
     score_query = f"{query} {artist}".strip()
 
     def score(c: TgAudio) -> float:
