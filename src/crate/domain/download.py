@@ -17,3 +17,11 @@ class DownloadOutcome:
     source: str
     elapsed_s: float
     query: str
+    # Metadata the source knew at download time (structured sources like Qobuz /
+    # Deezer / Monochrome fill these). Used by the librarian to tag + file the
+    # track; ``None`` means "unknown" — fall back to the file's own tags.
+    artist: str | None = None
+    album: str | None = None
+    title: str | None = None
+    track_no: int | None = None
+    disc_no: int | None = None

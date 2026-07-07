@@ -105,5 +105,12 @@ def qobuz_download(
     dest = out_dir / name
     dest.write_bytes(content)
     return DownloadOutcome(
-        path=dest, tier=1, source="qobuz", elapsed_s=clock() - start, query=query
+        path=dest,
+        tier=1,
+        source="qobuz",
+        elapsed_s=clock() - start,
+        query=query,
+        title=track.title,
+        artist=track.artist,
+        album=track.album or None,
     )

@@ -67,10 +67,50 @@ def _noop(p: Path, t: TrackTags) -> None:
     return None
 
 
-def _report(path: Path, query: str = "KK Yaaron") -> DownloadReport:
-    outcome = DownloadOutcome(path, 1, "qobuz", 3.0, query)
+def _report(path: Path, query: str = "KK Yaaron", **meta: object) -> DownloadReport:
+    outcome = DownloadOutcome(path, 1, "qobuz", 3.0, query, **meta)  # type: ignore[arg-type]
     info = AudioInfo("flac", "flac", 48000, 2, 24, 1_800_000, 110.0, 25_000_000)
     return DownloadReport(query, outcome, info, QualityVerdict("lossless", True), None)
+
+
+def test_source_metadata_wins_over_file_tags(tmp_path: Path) -> None:
+    src = _staged(tmp_path)
+    lib = tmp_path / "library"
+    written: list[TrackTags] = []
+    # source says one thing, the (stale) file tags say another → source wins,
+    # and the merged tags are written back onto the file.
+    dest = finalize(
+        src,
+        lib,
+        source=TrackTags(artist="Daft Punk", album="Discovery", title="Aerodynamic"),
+        read_tags=_reader(TrackTags(artist="WRONG", album="WRONG", title="WRONG")),
+        write_tags=lambda p, t: written.append(t),
+    )
+    assert dest == lib / "Daft Punk" / "Discovery" / "Aerodynamic.flac"
+    assert written[0].artist == "Daft Punk" and written[0].album == "Discovery"
+
+
+def test_file_tags_fill_gaps_the_source_left(tmp_path: Path) -> None:
+    src = _staged(tmp_path)
+    lib = tmp_path / "library"
+    # source knew title only (e.g. Soulseek); the file carries artist/album/track#.
+    dest = finalize(
+        src,
+        lib,
+        source=TrackTags(title="Song"),
+        read_tags=_reader(TrackTags(artist="A", album="B", track_no=5)),
+        write_tags=_noop,
+    )
+    assert dest == lib / "A" / "B" / "05 Song.flac"
+
+
+def test_make_finalizer_uses_outcome_metadata(tmp_path: Path) -> None:
+    src = _staged(tmp_path)
+    lib = tmp_path / "library"
+    fin = make_finalizer(lib, read_tags=_reader(TrackTags()), write_tags=_noop)  # untagged file
+    out = fin(_report(src, artist="Coldplay", album="Parachutes", title="Yellow", track_no=6))
+    assert out.outcome is not None
+    assert out.outcome.path == lib / "Coldplay" / "Parachutes" / "06 Yellow.flac"
 
 
 def test_make_finalizer_rewrites_report_path(tmp_path: Path) -> None:

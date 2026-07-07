@@ -114,5 +114,12 @@ def deezer_download(
     dest = out_dir / name
     dest.write_bytes(flac)
     return DownloadOutcome(
-        path=dest, tier=2, source="deezer", elapsed_s=clock() - start, query=query
+        path=dest,
+        tier=2,
+        source="deezer",
+        elapsed_s=clock() - start,
+        query=query,
+        title=track.title,
+        artist=track.artist,
+        album=track.album or None,
     )
