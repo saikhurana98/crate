@@ -181,5 +181,12 @@ def monochrome_download(
     finally:
         enc.unlink(missing_ok=True)
     return DownloadOutcome(
-        path=flac, tier=1, source="monochrome", elapsed_s=clock() - start, query=query
+        path=flac,
+        tier=1,
+        source="monochrome",
+        elapsed_s=clock() - start,
+        query=query,
+        title=track.title,
+        artist=track.artist,
+        album=track.album or None,
     )

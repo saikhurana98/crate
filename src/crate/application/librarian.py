@@ -29,12 +29,31 @@ TagWriter = Callable[[Path, TrackTags], None]
 Finalizer = Callable[[DownloadReport], DownloadReport]
 
 
-def _fill(tags: TrackTags, fallback_title: str) -> TrackTags:
-    """Ensure at least a title so a placement never collapses to one file.
-    Artist/album stay ``None`` (→ ``Unknown …``) when the source didn't tag."""
-    if tags.title and tags.title.strip():
-        return tags
-    return dataclasses.replace(tags, title=fallback_title.strip() or "Untitled")
+def _clean(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _merge(source: TrackTags, file: TrackTags, fallback_title: str) -> TrackTags:
+    """Combine what the source told us with the file's own tags. The source wins
+    field-by-field (it's authoritative — the file is often untagged); the file
+    fills any gaps; title falls back to the request query so a placement never
+    collapses to one ``Untitled`` file."""
+
+    def pick(a: str | None, b: str | None) -> str | None:
+        return _clean(a) or _clean(b)
+
+    title = pick(source.title, file.title) or (fallback_title.strip() or "Untitled")
+    return TrackTags(
+        artist=pick(source.artist, file.artist),
+        album=pick(source.album, file.album),
+        title=title,
+        album_artist=pick(source.album_artist, file.album_artist),
+        track_no=source.track_no or file.track_no,
+        disc_no=source.disc_no or file.disc_no,
+    )
 
 
 def _dedupe(dest: Path, source: Path) -> Path:
@@ -68,10 +87,15 @@ def finalize(
     *,
     read_tags: TagReader,
     write_tags: TagWriter,
+    source: TrackTags | None = None,
     fallback_title: str = "",
 ) -> Path:
-    """Tag + organize + move ``produced`` into the library; return its new path."""
-    tags = _fill(read_tags(produced), fallback_title or produced.stem)
+    """Tag + organize + move ``produced`` into the library; return its new path.
+
+    ``source`` is the metadata the download source already knew (authoritative);
+    it is merged over the file's own tags, and the result is written back so the
+    library file is properly tagged for Navidrome."""
+    tags = _merge(source or TrackTags(), read_tags(produced), fallback_title or produced.stem)
     write_tags(produced, tags)
     dest = _dedupe(root / library_relpath(tags, produced.suffix), produced)
     _atomic_move(produced, dest)
@@ -84,15 +108,24 @@ def make_finalizer(root: Path, *, read_tags: TagReader, write_tags: TagWriter) -
     library location. Reports without a produced file pass through untouched."""
 
     def run(report: DownloadReport) -> DownloadReport:
-        if report.outcome is None:
+        outcome = report.outcome
+        if outcome is None:
             return report
+        source = TrackTags(
+            artist=outcome.artist,
+            album=outcome.album,
+            title=outcome.title,
+            track_no=outcome.track_no,
+            disc_no=outcome.disc_no,
+        )
         final = finalize(
-            report.outcome.path,
+            outcome.path,
             root,
             read_tags=read_tags,
             write_tags=write_tags,
+            source=source,
             fallback_title=report.query,
         )
-        return dataclasses.replace(report, outcome=dataclasses.replace(report.outcome, path=final))
+        return dataclasses.replace(report, outcome=dataclasses.replace(outcome, path=final))
 
     return run
