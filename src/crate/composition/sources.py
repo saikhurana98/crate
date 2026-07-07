@@ -316,6 +316,12 @@ def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - 
     return download
 
 
+def reap_orphans() -> int:  # pragma: no cover - IO wiring
+    """Requeue downloads a previous ``serve`` process left ``downloading`` when it
+    died. Run once at startup before the workers spawn (crash/restart recovery)."""
+    return int(build_recorder("serve").reap_orphans())
+
+
 def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cover - IO wiring
     """A loop that drains console-queued requests through the cascade. Runs in
     the `serve` process (which owns the NAS mount + full source toolchain), so

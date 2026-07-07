@@ -89,11 +89,18 @@ def serve(  # pragma: no cover - network server loop
     import threading
 
     from crate.adapters.inbound.slskd_shim import ShimState
-    from crate.composition.sources import build_queue_worker, build_shim_download
+    from crate.composition.sources import build_queue_worker, build_shim_download, reap_orphans
     from crate.infrastructure.http_server.serve import run_server
 
     downloads = Path(os.environ.get("CRATE_SERVE_DOWNLOADS", "downloads"))
     downloads.mkdir(parents=True, exist_ok=True)
+    # Crash recovery: requeue anything a previous serve left mid-flight before the
+    # workers start, else those rows hang 'downloading' forever (claim_next only
+    # picks 'queued'). Only meaningful with a console DB (CRATE_DB).
+    if os.environ.get("CRATE_DB"):
+        reaped = reap_orphans()
+        if reaped:
+            typer.echo(f"reaped {reaped} orphaned download(s) from a previous run -> requeued")
     shim = ShimState(
         build_shim_download(), downloads, api_key=os.environ.get("CRATE_SERVE_API_KEY") or None
     )

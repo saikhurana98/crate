@@ -300,6 +300,20 @@ class RequestStore:
             )
         return cur.rowcount == 1
 
+    def reap_orphans(self) -> int:
+        """Recover rows a dead process left mid-flight: reset every
+        ``downloading`` request back to ``queued`` so the queue workers re-claim
+        it. Called once at ``serve`` startup, before any worker starts — the
+        serve process owns the only writer, so any ``downloading`` row at that
+        point is definitionally orphaned (its worker died on a crash/restart).
+        Without this, ``claim_next`` (which only picks ``queued``) never touches
+        them and they hang forever. Returns the number requeued."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='queued', finished_at=NULL WHERE status='downloading'"
+            )
+        return cur.rowcount
+
     def requeue(self, request_id: str) -> bool:
         """Retry a failed (or cancelled) request: reset it to ``queued``."""
         with self._lock:

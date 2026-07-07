@@ -146,6 +146,34 @@ def test_enqueue_then_claim_runs_fifo_and_drains(tmp_path: Path) -> None:
     assert store.claim_next() is None  # queue drained
 
 
+def test_reap_orphans_requeues_stuck_downloads(tmp_path: Path) -> None:
+    # Simulate a process that died mid-flight: rows left 'downloading'. A fresh
+    # serve must requeue them so the workers re-claim (else they hang forever).
+    store = _store(tmp_path, via="console")
+    a = store.enqueue("first")
+    b = store.enqueue("second")
+    store.claim_next()  # a -> downloading
+    store.claim_next()  # b -> downloading
+    done = store.open_request("already-done")
+    store.finish_request(done, _report())
+    assert store.stats()["in_flight"] == 2 and store.stats()["queued"] == 0
+
+    assert store.reap_orphans() == 2  # both downloading rows requeued
+
+    assert store.stats()["queued"] == 2 and store.stats()["in_flight"] == 0
+    # they are claimable again, oldest first, and finished rows are untouched
+    assert store.claim_next() == {"id": a, "query": "first"}
+    assert store.claim_next() == {"id": b, "query": "second"}
+    assert store.get_request(done) is not None and store.get_request(done)["status"] == "done"
+
+
+def test_reap_orphans_noop_when_nothing_in_flight(tmp_path: Path) -> None:
+    store = _store(tmp_path, via="console")
+    store.enqueue("queued-not-touched")
+    assert store.reap_orphans() == 0
+    assert store.stats()["queued"] == 1
+
+
 def test_finish_with_incomplete_report_is_noop(tmp_path: Path) -> None:
     store = _store(tmp_path)
     rid = store.open_request("t")
