@@ -127,6 +127,23 @@ def test_select_track_prefilters_by_duration() -> None:
     assert select_track(tracks, "Dua Lipa Levitating", want_duration_s=203).id == 2
 
 
+def test_select_track_artist_gate_drops_wrong_artist_same_title() -> None:
+    # same-title track by a different artist with a coincidentally-matching duration
+    # is gated out -> LookupError so the cascade advances.
+    tracks = [_dz(1, "Hai Mera Dil Tu", "Alka Yagnik", 209, None)]
+    with pytest.raises(LookupError, match="no title-matching"):
+        select_track(tracks, "Alfaaz Hai Mera Dil", want_duration_s=210, want_artist="Alfaaz")
+
+
+def test_select_track_artist_gate_keeps_correct_artist() -> None:
+    tracks = [
+        _dz(1, "Hai Mera Dil Tu", "Alka Yagnik", 209, None),
+        _dz(2, "Hai Mera Dil", "Alfaaz", 210, None),
+    ]
+    got = select_track(tracks, "Alfaaz Hai Mera Dil", want_duration_s=210, want_artist="Alfaaz")
+    assert got.id == 2
+
+
 def test_deezer_download_resolves_and_decrypts(tmp_path: Path) -> None:
     key = blowfish_key(3135556)
     plain = b"fLaC" + bytes((i * 3) % 256 for i in range(2048 * 3))

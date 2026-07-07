@@ -118,6 +118,38 @@ def test_select_by_title_raises_when_no_title_match() -> None:
         select_by_title(tracks, "Marjaani Pritam")
 
 
+def _mt_artist(title: str, artist: str, duration_s: int) -> MonoTrack:
+    return MonoTrack(1, title, artist, "Al", duration_s, hires=True)
+
+
+def test_select_by_title_gates_wrong_artist_same_title_and_duration() -> None:
+    # The real prod incident: request Alfaaz - "Hai Mera Dil" (210s). Monochrome
+    # can't match by ISRC, and the only title-match is Alka Yagnik's "Hai Mera Dil
+    # Tu" whose 209s coincidentally passes the duration prefilter. The artist gate
+    # must drop it so the source fails and the cascade advances.
+    tracks = [_mt_artist("Hai Mera Dil Tu", "Alka Yagnik", 209)]
+    with pytest.raises(LookupError, match="no title-matching"):
+        select_by_title(tracks, "Alfaaz Hai Mera Dil", want_duration_s=210, want_artist="Alfaaz")
+
+
+def test_select_by_title_keeps_correct_artist_over_wrong_artist() -> None:
+    # correct-artist track survives the gate; wrong-artist same-title is dropped
+    tracks = [
+        _mt_artist("Hai Mera Dil Tu", "Alka Yagnik", 209),
+        _mt_artist("Hai Mera Dil", "Alfaaz", 210),
+    ]
+    chosen = select_by_title(
+        tracks, "Alfaaz Hai Mera Dil", want_duration_s=210, want_artist="Alfaaz"
+    )
+    assert chosen.artist == "Alfaaz"
+
+
+def test_select_by_title_unchanged_when_no_want_artist() -> None:
+    # want_artist absent -> gate is a no-op, prior title+duration behavior stands
+    tracks = [_mt_artist("Hai Mera Dil Tu", "Alka Yagnik", 209)]
+    assert select_by_title(tracks, "Alfaaz Hai Mera Dil").artist == "Alka Yagnik"
+
+
 def test_build_amz_params_from_track() -> None:
     track = pick_best(parse_search(SEARCH_RESPONSE))
     params = build_amz_params(track)

@@ -84,6 +84,39 @@ def title_matches(title: str, query: str, threshold: float = 0.6) -> bool:
     return _overlap(title, set(norm_tokens(query))) >= threshold
 
 
+def artist_matches(candidate_artist: str, want_artist: str, threshold: float = 0.5) -> bool:
+    """True if the candidate's artist plausibly matches the requested artist.
+
+    Guards against a same-title track by a *different* artist slipping through on
+    sources that can't match by ISRC (monochrome/soulseek/telegram/ytdlp). The real
+    incident: a request for Alfaaz — "Hai Mera Dil" landed Alka Yagnik — "Hai Mera
+    Dil Tu", whose title matched and whose duration coincidentally lined up.
+
+    Both names are tokenized via :func:`norm_tokens`; the check is the fraction of
+    the **smaller** token set that appears in the other. Using the smaller set makes
+    it symmetric and lenient about extra collaborators: a single requested artist
+    fully inside a multi-artist candidate passes ("Alfaaz" inside "Alfaaz, Yo Yo
+    Honey Singh"), and a collaborator of a multi-artist request passes too. It's
+    deliberately lenient (default 0.5) so alias/label-credit differences aren't
+    falsely rejected — its job is only to reject a *completely* unrelated artist
+    ("Alfaaz" vs "Alka Yagnik" → 0 overlap → False).
+
+    An empty ``want_artist`` OR empty candidate tokens returns True — never gate on
+    missing data.
+    """
+    want_tokens = set(norm_tokens(want_artist))
+    cand_tokens = set(norm_tokens(candidate_artist))
+    if not want_tokens or not cand_tokens:
+        return True
+    smaller, larger = (
+        (want_tokens, cand_tokens)
+        if len(want_tokens) <= len(cand_tokens)
+        else (cand_tokens, want_tokens)
+    )
+    overlap = sum(1 for t in smaller if t in larger) / len(smaller)
+    return overlap >= threshold
+
+
 def match_score(title: str, artist: str, query: str) -> float:
     """Relevance of a candidate to the query: title overlap + artist overlap.
 

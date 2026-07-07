@@ -73,13 +73,33 @@ def test_select_raises_when_no_audio() -> None:
 
 
 def test_select_prefers_correct_artist_with_want_tokens() -> None:
-    # two same-title FLACs by different artists; the wanted artist wins on score.
+    # two same-title FLACs by different artists (Artist - Title filenames); the
+    # wanted artist wins on score and the unrelated ElCano is dropped by the gate.
     msgs = [
-        _msg("Mammoth - ElCano.flac", "audio/flac", 1, 200, 1411000, "w"),
-        _msg("Mammoth - Dimitri Vegas.flac", "audio/flac", 1, 200, 1411000, "r"),
+        _msg("ElCano - Mammoth.flac", "audio/flac", 1, 200, 1411000, "w"),
+        _msg("Dimitri Vegas - Mammoth.flac", "audio/flac", 1, 200, 1411000, "r"),
     ]
     want = TrackIdentity(artist="Dimitri Vegas", title="Mammoth", duration_s=200)
     chosen = select_audio(parse_audio_candidates(msgs), "Dimitri Vegas Mammoth", want=want)
+    assert chosen.ref == "r"
+
+
+def test_select_audio_artist_gate_empties_pool_raises() -> None:
+    # Alfaaz -> Alka regression: only title+duration match is by the wrong artist
+    # (filename "Alka Yagnik - Hai Mera Dil Tu"); the gate drops it and the source
+    # fails so the cascade advances.
+    msgs = [_msg("Alka Yagnik - Hai Mera Dil Tu.flac", "audio/flac", 1, 209, 1411000, "w")]
+    want = TrackIdentity(artist="Alfaaz", title="Hai Mera Dil", duration_s=210)
+    with pytest.raises(LookupError, match="no title-matching"):
+        select_audio(parse_audio_candidates(msgs), "Alfaaz Hai Mera Dil", want=want)
+
+
+def test_select_audio_no_separator_uses_full_stem_as_artist() -> None:
+    # no " - " separator -> whole stem is the candidate artist; it contains the
+    # wanted token so the gate passes.
+    msgs = [_msg("Alfaaz Hai Mera Dil.flac", "audio/flac", 1, 210, 1411000, "r")]
+    want = TrackIdentity(artist="Alfaaz", title="Hai Mera Dil", duration_s=210)
+    chosen = select_audio(parse_audio_candidates(msgs), "Alfaaz Hai Mera Dil", want=want)
     assert chosen.ref == "r"
 
 

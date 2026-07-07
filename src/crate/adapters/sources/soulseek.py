@@ -19,7 +19,13 @@ from typing import Any
 
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
-from crate.domain.matching import duration_prefilter, match_score, norm_tokens, title_matches
+from crate.domain.matching import (
+    artist_matches,
+    duration_prefilter,
+    match_score,
+    norm_tokens,
+    title_matches,
+)
 
 Search = Callable[[str], list[dict[str, Any]]]  # query -> slskd response items
 Download = Callable[["SlskFile", Path], Path]  # chosen file + out dir -> local path
@@ -43,6 +49,14 @@ class SlskFile:
 
 def _basename(remote_path: str) -> str:
     return remote_path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _candidate_artist(filename: str) -> str:
+    """Best-effort artist from a Soulseek filename: the part left of ' - ' in an
+    'Artist - Title' stem, or the whole stem when there's no separator."""
+    stem = Path(_basename(filename)).stem
+    left, sep, _ = stem.partition(" - ")
+    return left.strip() if sep else stem.strip()
 
 
 def parse_responses(responses: list[dict[str, Any]]) -> list[SlskFile]:
@@ -78,7 +92,10 @@ def rank_files(
 ) -> list[SlskFile]:
     """Title-matching candidates above the bitrate floor, best first.
 
-    When ``want`` is known the pool is first duration-prefiltered (by the peer's
+    When ``want.artist`` is known a wrong-artist file is gated out (its artist is
+    derived best-effort from the filename), so a same-title file by a different
+    artist can't survive on a peer that coincidentally reports a matching length.
+    When ``want`` is known the pool is then duration-prefiltered (by the peer's
     reported ``length_s``), and the ranking leads with ``match_score`` of the
     filename against the query + artist tokens — so a same-title file by the wrong
     artist loses to the requested one. Remaining tiebreaks (unchanged): prefer
@@ -89,9 +106,11 @@ def rank_files(
         for c in candidates
         if c.bitrate_bps >= floor and title_matches(Path(_basename(c.filename)).stem, query)
     ]
+    artist = want.artist if want and want.artist else ""
+    if artist:
+        matching = [c for c in matching if artist_matches(_candidate_artist(c.filename), artist)]
     if want is not None:
         matching = duration_prefilter(matching, want.duration_s, lambda c: c.length_s)
-    artist = want.artist if want and want.artist else ""
     score_query = f"{query} {artist}".strip()
 
     def score(c: SlskFile) -> float:
