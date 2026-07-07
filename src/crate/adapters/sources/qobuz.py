@@ -21,7 +21,7 @@ from crate.domain.matching import match_score, title_matches
 
 Search = Callable[[str], Any]  # query -> Qobuz search JSON
 GetFileUrl = Callable[[int], str]  # track id -> signed direct FLAC url
-GetBytes = Callable[[str], bytes]
+Fetch = Callable[[str, Path], None]  # (url, dest) -> stream the FLAC to dest
 Clock = Callable[[], float]
 
 # hi-res <=192kHz 24-bit; the client can fall back to 7 (<=96k) / 6 (CD FLAC).
@@ -96,18 +96,25 @@ def qobuz_download(
     *,
     search: Search,
     get_file_url: GetFileUrl,
-    get_bytes: GetBytes,
+    fetch: Fetch,
     isrc: str | None = None,
     clock: Clock = time.monotonic,
 ) -> DownloadOutcome:
-    """Search Qobuz, resolve the signed FLAC url, download it (already FLAC)."""
+    """Search Qobuz, resolve the signed FLAC url, stream it to disk (already FLAC).
+
+    Streams to a ``.part`` sidecar and renames on success, so an interrupted
+    download never leaves a half file that a later probe would treat as real."""
     start = clock()
     track = select_track(parse_search(search(query)), query, isrc)
-    content = get_bytes(get_file_url(track.id))
 
     name = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]") + ".flac"
     dest = out_dir / name
-    dest.write_bytes(content)
+    part = dest.with_name(dest.name + ".part")
+    try:
+        fetch(get_file_url(track.id), part)
+        part.replace(dest)
+    finally:
+        part.unlink(missing_ok=True)
     return DownloadOutcome(
         path=dest,
         tier=1,

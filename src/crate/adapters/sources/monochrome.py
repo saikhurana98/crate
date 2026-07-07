@@ -33,12 +33,14 @@ DEFAULT_AMZ_BASE = "https://amz.geeked.wtf"
 
 SearchJson = Callable[[str], Any]  # query -> TIDAL search JSON (unauth)
 AmzFetch = Callable[[dict[str, Any]], Any]  # amz params -> track JSON (browser, auth)
-GetBytes = Callable[[str], bytes]
+Fetch = Callable[[str, Path], None]  # (url, dest) -> stream the encrypted MP4 to dest
 Decrypt = Callable[[Path, str, str, Path], None]  # (enc, kid_hex, key_hex, out)
 Clock = Callable[[], float]
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _KID_BYTES = 16  # CENC default_KID is a 16-byte UUID
+_KID_WINDOW = 1 << 20  # 1 MiB — the tenc box lives in the moov near the file head
+_KID_WINDOW_MAX = 8 << 20  # 8 MiB — give up (and don't read the whole file) past this
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,13 +154,37 @@ def parse_kid(mp4: bytes) -> str:
     return kid.hex()
 
 
+def read_kid(path: Path) -> str:
+    """Find the default_KID by reading only the head of ``path``, never the whole file.
+
+    Reads an initial 1 MiB window and scans for the ``tenc`` box; if it isn't in the
+    window (or the KID straddles the edge) the window doubles up to 8 MiB before
+    giving up. The tenc box lives in the ``moov`` near the file head, so 1 MiB
+    almost always suffices — this avoids reading 50-200 MB of CENC fMP4 into RAM
+    just to parse 16 bytes.
+    """
+    window = _KID_WINDOW
+    with path.open("rb") as fh:
+        while True:
+            head = fh.read(window)
+            try:
+                return parse_kid(head)
+            except ValueError:
+                # Stop when we've read the whole file (a bigger window can't help)
+                # or hit the cap; re-parse so the real error surfaces.
+                if len(head) < window or window >= _KID_WINDOW_MAX:
+                    return parse_kid(head)
+            window *= 2
+            fh.seek(0)
+
+
 def monochrome_download(
     query: str,
     out_dir: Path,
     *,
     search_json: SearchJson,
     amz_fetch: AmzFetch,
-    get_bytes: GetBytes,
+    fetch: Fetch,
     decrypt: Decrypt,
     match_title: str | None = None,
     clock: Clock = time.monotonic,
@@ -168,6 +194,9 @@ def monochrome_download(
     ``query`` drives the TIDAL search (title + artist gives better recall);
     ``match_title`` (if given) is what the title guard compares against, so an
     artist token in the query can't false-positive a wrong single-word title.
+
+    The encrypted fMP4 streams to disk (``fetch``); the KID is read from a small
+    head window (``read_kid``) rather than the whole file.
     """
     start = clock()
     track = select_by_title(parse_search(search_json(query)), match_title or query)
@@ -177,8 +206,8 @@ def monochrome_download(
     enc = out_dir / f"{stem}.enc.mp4"
     flac = out_dir / f"{stem}.flac"
     try:
-        enc.write_bytes(get_bytes(stream.stream_url))
-        kid = parse_kid(enc.read_bytes())
+        fetch(stream.stream_url, enc)
+        kid = read_kid(enc)
         decrypt(enc, kid, stream.decryption_key, flac)
     finally:
         enc.unlink(missing_ok=True)

@@ -9,12 +9,14 @@ adapter and tested there).
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from crate.adapters.sources.qobuz import FORMAT_HIRES, sign_get_file_url
 
+_CHUNK = 64 * 1024  # 64 KiB — stream the FLAC to disk, never buffer the whole file
 _BASE = "https://www.qobuz.com/api.json/0.2"
 # hi-res 24/192, hi-res 24/96, CD 16/44.1 — try best-first
 _FORMATS = (FORMAT_HIRES, 7, 6)
@@ -59,10 +61,13 @@ class QobuzClient:  # pragma: no cover - network I/O
             last = body
         raise RuntimeError(f"no full FLAC stream for {track_id} (subscription/token?): {last}")
 
-    def get_bytes(self, url: str) -> bytes:
-        resp = self._http.get(url, timeout=120.0)
-        resp.raise_for_status()
-        return resp.content
+    def fetch(self, url: str, dest: Path) -> None:
+        """Stream the FLAC at ``url`` to ``dest`` in 64 KiB chunks (no full buffer)."""
+        with self._http.stream("GET", url, timeout=120.0) as resp:
+            resp.raise_for_status()
+            with dest.open("wb") as fh:
+                for chunk in resp.iter_bytes(_CHUNK):
+                    fh.write(chunk)
 
     def close(self) -> None:
         self._http.close()

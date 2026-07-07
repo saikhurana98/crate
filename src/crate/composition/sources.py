@@ -58,7 +58,7 @@ def _qobuz_source() -> SourceEntry:  # pragma: no cover - IO wiring
             out_dir,
             search=client.search,
             get_file_url=client.get_file_url,
-            get_bytes=client.get_bytes,
+            fetch=client.fetch,
         )
 
     return SourceEntry(SourceRef("qobuz", Tier.ONE), qobuz, expected_lossless=True)
@@ -72,13 +72,16 @@ def _monochrome_source() -> SourceEntry:  # pragma: no cover - IO wiring
     def search_json(query: str) -> Any:
         return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
 
+    def fetch(url: str, dest: Path) -> None:
+        http.stream_to(url, dest)  # discard the bytes-written count
+
     def monochrome(query: str, out_dir: Path) -> DownloadOutcome:
         return monochrome_download(
             query,
             out_dir,
             search_json=search_json,
             amz_fetch=session.fetch_amz,
-            get_bytes=http.get_bytes,
+            fetch=fetch,
             decrypt=mp4decrypt_cenc,
         )
 
@@ -115,7 +118,7 @@ def _deezer_source() -> SourceEntry:  # pragma: no cover - IO wiring
             out_dir,
             search=client.search,
             resolve_url=client.resolve_url,
-            get_bytes=client.get_bytes,
+            fetch=client.fetch,
         )
 
     # Deezer always serves FLAC when available; if the account tier lacks it the
