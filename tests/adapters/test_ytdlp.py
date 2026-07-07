@@ -1,12 +1,29 @@
-"""Tier-3 yt-dlp adapter. Pure command-building + result parsing are tested
-with an injected fake runner/clock; no network in unit tests."""
+"""Tier-3 yt-dlp adapter. Command-building, candidate parsing, and scored
+selection are tested with an injected fake runner/clock; no network."""
 
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from crate.adapters.sources.ytdlp import build_command, download, extract_path
+from crate.adapters.sources.ytdlp import (
+    YtCandidate,
+    build_command,
+    build_search_command,
+    download,
+    extract_path,
+    parse_candidates,
+    select_candidate,
+)
+
+
+def _cp(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+
+
+# ---------------------------------------------------------------------------
+# command building
+# ---------------------------------------------------------------------------
 
 
 def test_build_command_uses_ytsearch_for_free_text() -> None:
@@ -22,35 +39,211 @@ def test_build_command_passes_url_through() -> None:
     assert cmd[-1] == url
 
 
+def test_build_search_command_is_metadata_only() -> None:
+    cmd = build_search_command("Karan Aujla Softly", n=5)
+    assert cmd[0] == "yt-dlp"
+    assert cmd[1] == "ytsearch5:Karan Aujla Softly"
+    assert "--skip-download" in cmd
+    assert "%(id)s\t%(title)s\t%(channel)s\t%(duration)s" in cmd
+
+
 def test_extract_path_takes_last_nonempty_line() -> None:
     stdout = "some log\n\n/tmp/out/Song [id].opus\n"
     assert extract_path(stdout) == Path("/tmp/out/Song [id].opus")
 
 
-def test_download_returns_outcome_with_elapsed() -> None:
-    calls: list[list[str]] = []
-    times = iter([100.0, 103.5])
+def test_extract_path_raises_on_empty() -> None:
+    with pytest.raises(RuntimeError, match="no output path"):
+        extract_path("   \n\n")
 
-    def fake_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="/tmp/out/Track [x].opus\n", stderr="")
 
+# ---------------------------------------------------------------------------
+# candidate parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_candidates_tolerates_malformed_lines() -> None:
+    stdout = (
+        "id1\tSong One\tArtist One\t210\n"
+        "\n"
+        "garbage-line-without-tabs\n"
+        "id2\tSong Two\tArtist Two\tNA\n"  # unparseable duration -> None
+        "\tOnly title\tchan\t100\n"  # empty id -> dropped
+        "id3\tSong Three\tArtist Three\t180.9\n"  # float duration -> int
+    )
+    cands = parse_candidates(stdout)
+    assert [c.id for c in cands] == ["id1", "id2", "id3"]
+    assert cands[0].duration_s == 210
+    assert cands[1].duration_s is None
+    assert cands[2].duration_s == 180
+
+
+def test_parse_candidates_empty_stdout() -> None:
+    assert parse_candidates("") == []
+
+
+# ---------------------------------------------------------------------------
+# scored selection
+# ---------------------------------------------------------------------------
+
+
+def test_select_skips_junk_first_hit_via_match_score() -> None:
+    # The first hit is a mislabelled full-movie video; the second is the real
+    # "Artist - Song". match_score (title+channel overlap with the query) must
+    # lift the correct one above the junk first hit.
+    cands = [
+        YtCandidate("j1", "Aadat Se Majboor Full Video Song | Movie | Stars", "T-Series", 240),
+        YtCandidate("c1", "Karan Aujla - Softly", "Karan Aujla", 200),
+    ]
+    chosen = select_candidate(cands, "Karan Aujla Softly")
+    assert chosen.id == "c1"
+
+
+def test_select_drops_off_duration_candidates() -> None:
+    cands = [
+        YtCandidate("far", "Karan Aujla Softly", "Karan Aujla", 400),  # off by 200s
+        YtCandidate("near", "Karan Aujla Softly Slowed", "Karan Aujla", 203),  # within 7s
+    ]
+    chosen = select_candidate(cands, "Karan Aujla Softly", expected_duration_s=200)
+    assert chosen.id == "near"
+
+
+def test_select_keeps_all_when_duration_filter_empties_pool() -> None:
+    # No candidate is within tolerance -> fall back to the title-matched pool
+    # rather than returning nothing.
+    cands = [
+        YtCandidate("a", "Karan Aujla Softly", "Karan Aujla", 400),
+        YtCandidate("b", "Karan Aujla Softly", "Some Reupload", None),
+    ]
+    chosen = select_candidate(cands, "Karan Aujla Softly", expected_duration_s=200)
+    assert chosen.id in {"a", "b"}
+
+
+def test_select_raises_lookuperror_when_nothing_title_matches() -> None:
+    cands = [YtCandidate("x", "Totally Unrelated Track", "Nobody", 200)]
+    with pytest.raises(LookupError, match="no title-matching"):
+        select_candidate(cands, "Karan Aujla Softly")
+
+
+def test_select_raises_lookuperror_on_empty_pool() -> None:
+    with pytest.raises(LookupError, match="no title-matching"):
+        select_candidate([], "Karan Aujla Softly")
+
+
+# ---------------------------------------------------------------------------
+# download orchestration
+# ---------------------------------------------------------------------------
+
+
+def test_download_searches_selects_then_downloads_by_id() -> None:
+    calls: list[tuple[list[str], float]] = []
+    search_out = (
+        "j1\tAadat Se Majboor Full Video Song | Movie | Stars\tT-Series\t240\n"
+        "c1\tKaran Aujla - Softly\tKaran Aujla\t200\n"
+    )
+
+    def fake_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, timeout_s))
+        if "--skip-download" in cmd:
+            return _cp(0, stdout=search_out)
+        return _cp(0, stdout="/tmp/out/Karan Aujla - Softly [c1].opus\n")
+
+    times = iter([100.0, 104.0])
     outcome = download(
-        "Karan Aujla Boyfriend",
+        "Karan Aujla Softly",
         Path("/tmp/out"),
         runner=fake_runner,
         clock=lambda: next(times),
     )
-    assert outcome.path == Path("/tmp/out/Track [x].opus")
-    assert outcome.elapsed_s == pytest.approx(3.5)
+    assert outcome.path == Path("/tmp/out/Karan Aujla - Softly [c1].opus")
     assert outcome.tier == 3
     assert outcome.source == "ytdlp"
-    assert calls  # runner was invoked
+    assert outcome.elapsed_s == pytest.approx(4.0)
+    # title from the chosen candidate; artist stays None (channel != artist)
+    assert outcome.title == "Karan Aujla - Softly"
+    assert outcome.artist is None
+    # search ran with the 60s budget, the by-id download with the 600s budget
+    assert calls[0][1] == pytest.approx(60.0)
+    assert "--skip-download" in calls[0][0]
+    assert calls[1][1] == pytest.approx(600.0)
+    assert "https://www.youtube.com/watch?v=c1" in calls[1][0]
 
 
-def test_download_raises_on_nonzero_exit() -> None:
-    def failing_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+def test_download_url_query_skips_search() -> None:
+    calls: list[list[str]] = []
+
+    def fake_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return _cp(0, stdout="/tmp/out/Track [x].opus\n")
+
+    outcome = download(
+        "https://youtube.com/watch?v=x",
+        Path("/tmp/out"),
+        runner=fake_runner,
+        clock=iter([0.0, 2.5]).__next__,
+    )
+    assert outcome.path == Path("/tmp/out/Track [x].opus")
+    assert outcome.title is None
+    # single call, no search step
+    assert len(calls) == 1
+    assert not any("--skip-download" in c for c in calls)
+
+
+def test_download_falls_back_when_search_exits_nonzero() -> None:
+    calls: list[list[str]] = []
+
+    def fake_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if "--skip-download" in cmd:
+            return _cp(1, stderr="search boom")
+        return _cp(0, stdout="/tmp/out/Fallback [f].opus\n")
+
+    outcome = download(
+        "Some Query",
+        Path("/tmp/out"),
+        runner=fake_runner,
+        clock=iter([0.0, 3.0]).__next__,
+    )
+    assert outcome.path == Path("/tmp/out/Fallback [f].opus")
+    # the fallback uses the single-shot ytsearch1 command
+    assert any("ytsearch1:Some Query" in c for c in calls[-1])
+
+
+def test_download_falls_back_when_search_unparseable() -> None:
+    calls: list[list[str]] = []
+
+    def fake_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if "--skip-download" in cmd:
+            return _cp(0, stdout="no tabs here at all\n")  # yields zero candidates
+        return _cp(0, stdout="/tmp/out/Fallback [f].opus\n")
+
+    outcome = download("Some Query", Path("/tmp/out"), runner=fake_runner, clock=lambda: 0.0)
+    assert outcome.path == Path("/tmp/out/Fallback [f].opus")
+    assert any("ytsearch1:Some Query" in c for c in calls[-1])
+
+
+def test_download_raises_on_download_nonzero_exit() -> None:
+    def fake_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+        if "--skip-download" in cmd:
+            return _cp(0, stdout="c1\tKaran Aujla - Softly\tKaran Aujla\t200\n")
+        return _cp(1, stderr="download boom")
 
     with pytest.raises(RuntimeError, match="yt-dlp failed"):
-        download("nope", Path("/tmp/out"), runner=failing_runner, clock=lambda: 0.0)
+        download("Karan Aujla Softly", Path("/tmp/out"), runner=fake_runner, clock=lambda: 0.0)
+
+
+def test_download_raises_on_fallback_nonzero_exit() -> None:
+    def fake_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+        return _cp(1, stderr="boom")  # both search and fallback fail
+
+    with pytest.raises(RuntimeError, match="yt-dlp failed"):
+        download("nope", Path("/tmp/out"), runner=fake_runner, clock=lambda: 0.0)
+
+
+def test_download_raises_runtimeerror_on_timeout() -> None:
+    def timing_out_runner(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd, timeout_s)
+
+    with pytest.raises(RuntimeError, match="yt-dlp timed out"):
+        download("anything", Path("/tmp/out"), runner=timing_out_runner, clock=lambda: 0.0)

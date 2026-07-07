@@ -8,10 +8,18 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 from crate.domain.audio import AudioInfo
+
+# ffprobe should return in well under a second; 30s is a generous ceiling that
+# still guarantees a wedged process (corrupt/truncated file) can never pin a
+# queue-worker thread forever.
+_PROBE_TIMEOUT_S = 30
+
+Runner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
 
 
 def _audio_stream(data: dict[str, Any]) -> dict[str, Any]:
@@ -56,21 +64,29 @@ def parse_ffprobe(data: dict[str, Any], size_bytes: int) -> AudioInfo:
     )
 
 
-def probe(path: Path) -> AudioInfo:  # pragma: no cover - thin subprocess wrapper
-    """Run ffprobe on ``path`` and return an AudioInfo."""
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            "-show_streams",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+def _default_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:  # pragma: no cover
+    return subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=_PROBE_TIMEOUT_S)
+
+
+def probe(path: Path, *, runner: Runner = _default_runner) -> AudioInfo:
+    """Run ffprobe on ``path`` and return an AudioInfo.
+
+    Bounded by a 30s timeout (``_default_runner``) so a wedged ffprobe can never
+    permanently kill a queue-worker thread. The subprocess is injected so the
+    timeout translation is unit-tested without spawning a process.
+    """
+    cmd = [
+        "ffprobe",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(path),
+    ]
+    try:
+        result = runner(cmd)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("ffprobe timed out after 30s") from exc
     return parse_ffprobe(json.loads(result.stdout), size_bytes=path.stat().st_size)
