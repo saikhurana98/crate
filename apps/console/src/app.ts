@@ -988,14 +988,28 @@ function activeDownloads(): number {
   const singles = state.inflight.filter((r) => !r.batch_id).length;
   return inBatches + singles;
 }
-function downloadsNavHtml(): string {
+// Segmented page switcher (console | downloads) sitting next to the logo.
+function navTabsHtml(): string {
+  const onConsole = state.page === "console";
   const n = activeDownloads();
   const badge =
     n > 0
       ? `<span style="font:700 10px 'Doto';min-width:17px;height:17px;padding:0 4px;border-radius:10px;background:#ff4c38;color:#0c0e0c;display:inline-flex;align-items:center;justify-content:center">${n}</span>`
       : "";
-  return `<button data-act="gotoBulk" title="Bulk downloads" style="display:inline-flex;align-items:center;gap:7px;border:1px solid #272c25;border-radius:20px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 13px;background:#131612;color:#99a091;transition:border-color .15s" class="ghost">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>downloads${badge}
+  const seg = (active: boolean): string =>
+    active ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#99a091";
+  return `<nav style="display:flex;align-items:center;gap:3px;background:#131612;border:1px solid #22261f;border-radius:20px;padding:3px;margin-left:4px;flex-shrink:0">
+      <button data-act="gotoConsole" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(onConsole)};transition:.15s">console</button>
+      <button data-act="gotoBulk" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(!onConsole)};transition:.15s">downloads${badge}</button>
+    </nav>`;
+}
+
+// Right-side button that opens the bulk paste drawer (distinct from the page tab).
+function bulkBtnHtml(): string {
+  const n = activeDownloads();
+  const count = n > 0 ? `<span style="font:800 12px 'Doto';color:#e9ede3">${n}</span>` : "";
+  return `<button data-act="openBulkPanel" title="Bulk downloads panel" style="display:flex;align-items:center;gap:8px;padding:7px 13px;background:#131612;border:1px solid #272c25;border-radius:20px;cursor:pointer;color:#99a091;font:500 11px 'JetBrains Mono';letter-spacing:.06em;transition:border-color .15s" class="ghost">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>bulk${count}
     </button>`;
 }
 
@@ -1012,7 +1026,7 @@ function headerHtml(): string {
     : `<div style="position:relative;flex:1;max-width:460px;margin-left:16px">
         <div style="display:flex;align-items:center;position:relative">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:13px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
-          <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks — queue a download…" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:8px 14px 8px 34px;transition:border-color .15s"/>
+          <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks or paste a Spotify / YouTube playlist link…" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:8px 14px 8px 34px;transition:border-color .15s"/>
         </div>
         ${searchDropdownHtml()}
       </div>`;
@@ -1023,9 +1037,10 @@ function headerHtml(): string {
         <span style="font:800 17px 'Doto';letter-spacing:.08em">crate</span>
         <span style="font:500 11px 'JetBrains Mono';color:#5d6456;letter-spacing:.14em;text-transform:uppercase;margin-top:1px">console</span>
       </div>
+      ${navTabsHtml()}
       ${search}
       <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
-        ${downloadsNavHtml()}
+        ${bulkBtnHtml()}
         <div style="display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:20px;background:${bg};border:1px solid ${bd};transition:.2s">
           ${spin ? `<span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>` : ""}
           <span style="font:600 11px 'JetBrains Mono';color:${col}">${txt}</span>
@@ -1166,7 +1181,7 @@ function mTracksTab(): string {
     ? ""
     : `<div style="position:relative;display:flex;align-items:center">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:14px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
-        <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks — queue a download…" style="width:100%;background:#111411;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 13px 'Instrument Sans';padding:11px 15px 11px 38px"/>
+        <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks or paste a Spotify / YouTube playlist link…" style="width:100%;background:#111411;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 13px 'Instrument Sans';padding:11px 15px 11px 38px"/>
       </div>${mSearchResults(q)}`;
   return `<h1 style="margin:0 0 12px;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Tracks</h1>
     ${searchBox}
