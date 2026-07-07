@@ -1,8 +1,12 @@
-"""ffprobe JSON -> AudioInfo parsing (pure, no subprocess)."""
+"""ffprobe JSON -> AudioInfo parsing (pure) + bounded-subprocess behaviour."""
+
+import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
-from crate.infrastructure.audio.probe import parse_ffprobe
+from crate.infrastructure.audio.probe import parse_ffprobe, probe
 
 OPUS_JSON = {
     "streams": [
@@ -64,3 +68,28 @@ def test_parse_falls_back_to_format_bitrate_when_stream_missing_it() -> None:
 def test_parse_raises_when_no_audio_stream() -> None:
     with pytest.raises(ValueError, match="no audio stream"):
         parse_ffprobe({"streams": [{"codec_type": "video"}], "format": {}}, size_bytes=1)
+
+
+def test_probe_uses_injected_runner_and_parses(tmp_path: Path) -> None:
+    f = tmp_path / "clip.webm"
+    f.write_bytes(b"\x00" * 4_100_000)
+
+    def fake_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        assert cmd[0] == "ffprobe"
+        assert str(f) in cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(OPUS_JSON), stderr="")
+
+    info = probe(f, runner=fake_runner)
+    assert info.codec == "opus"
+    assert info.size_bytes == 4_100_000
+
+
+def test_probe_raises_runtimeerror_on_timeout(tmp_path: Path) -> None:
+    f = tmp_path / "clip.webm"
+    f.write_bytes(b"\x00")
+
+    def timing_out_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd, 30)
+
+    with pytest.raises(RuntimeError, match="ffprobe timed out after 30s"):
+        probe(f, runner=timing_out_runner)
