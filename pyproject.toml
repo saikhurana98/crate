@@ -12,6 +12,7 @@ dependencies = [
   "pycryptodome>=3.23.0",
   "fastapi>=0.115",
   "uvicorn>=0.34",
+  "mutagen>=1.47",
 ]
 
 [project.scripts]
@@ -79,7 +80,7 @@ mypy_path = "src"
 packages = ["crate"]
 
 [[tool.mypy.overrides]]
-module = ["telethon.*", "Crypto.*"]
+module = ["telethon.*", "Crypto.*", "mutagen.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

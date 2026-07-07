@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from crate.application.download import DownloadReport
+from crate.application.librarian import Finalizer
 from crate.application.multiplex import (
     CascadeAttempt,
     MuxStrategy,
@@ -46,6 +47,7 @@ def run_cascade(
     prober: Prober,
     recorder: RequestRecorder | None = None,
     request_id: str | None = None,
+    finalizer: Finalizer | None = None,
 ) -> CascadeResult:
     """Ask each tier in priority order; return the first verified winner.
 
@@ -53,7 +55,11 @@ def run_cascade(
     are persisted (opened before the first tier, finished/failed at the end) so
     the management console can show live and historical downloads. Pass
     ``request_id`` to attach to a row that already exists (e.g. a console
-    ``queued`` request the shim just claimed) instead of opening a new one."""
+    ``queued`` request the shim just claimed) instead of opening a new one.
+
+    When a ``finalizer`` is supplied, the winning file is organized + tagged and
+    moved into the music library the moment it verifies (per track, not per
+    batch); the recorder then stores the final library path."""
     rid = (
         request_id
         if request_id is not None
@@ -67,6 +73,8 @@ def run_cascade(
             for a in tier_attempts:
                 recorder.record_attempt(rid, a.source, a.tier, a.ok, a.detail)
         if report is not None:
+            if finalizer is not None:
+                report = finalizer(report)
             if recorder is not None and rid is not None:
                 recorder.finish_request(rid, report)
             return CascadeResult(query, report, attempts)
