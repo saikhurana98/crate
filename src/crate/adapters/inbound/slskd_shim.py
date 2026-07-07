@@ -109,18 +109,27 @@ class ShimState:
                 }
 
     def run_download(self, filename: str) -> None:
-        """Run the cascade for this file and land the FLAC at downloads_dir/filename."""
+        """Run the cascade for this file and land the FLAC at downloads_dir/filename.
+
+        When a librarian is active the cascade already moved the file into the
+        music library (``produced`` is outside the staging dir); in that case we
+        leave it there and just report the transfer complete, rather than dragging
+        it back into staging."""
         query = self._file_query.get(filename, Path(filename).stem)
         with self._lock:
             self._transfers.setdefault(filename, {"filename": filename, "size": 0})
             self._transfers[filename]["state"] = "InProgress"
         try:
             produced = self._download(query, self._dir)
-            dest = self._dir / filename
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if produced.resolve() != dest.resolve():
-                shutil.move(str(produced), str(dest))
-            size = dest.stat().st_size
+            final = produced
+            if produced.resolve().parent == self._dir.resolve():
+                # not finalized elsewhere → normalise the name inside staging
+                dest = self._dir / filename
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if produced.resolve() != dest.resolve():
+                    shutil.move(str(produced), str(dest))
+                final = dest
+            size = final.stat().st_size
             with self._lock:
                 self._transfers[filename].update(
                     state="Completed, Succeeded", bytesTransferred=size, size=size

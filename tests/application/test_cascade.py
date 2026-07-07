@@ -67,6 +67,29 @@ def test_tiers_evaluated_in_priority_order_regardless_of_input_order(tmp_path: P
     assert result.winner is not None and result.winner.outcome.tier == 1
 
 
+def test_finalizer_applied_to_winner_before_recording(tmp_path: Path) -> None:
+    import dataclasses
+
+    moved: list[Path] = []
+
+    def t1(q: str, d: Path) -> DownloadOutcome:
+        return DownloadOutcome(Path("/staging/a.flac"), 1, "qobuz", 1.0, q)
+
+    def finalizer(report):  # type: ignore[no-untyped-def]
+        assert report.outcome is not None
+        final = tmp_path / "library" / "A" / "B" / "01 Song.flac"
+        moved.append(final)
+        return dataclasses.replace(report, outcome=dataclasses.replace(report.outcome, path=final))
+
+    tiers = [_tier("qobuz", Tier.ONE, t1, True)]
+    result = run_cascade("q", tmp_path, tiers, prober=lambda p: _flac(), finalizer=finalizer)
+
+    assert result.winner is not None
+    # the cascade returns the finalized (library) path, not the staging path
+    assert result.winner.outcome.path == tmp_path / "library" / "A" / "B" / "01 Song.flac"
+    assert moved == [result.winner.outcome.path]
+
+
 def test_no_winner_when_all_tiers_fail(tmp_path: Path) -> None:
     def boom(q: str, d: Path) -> DownloadOutcome:
         raise RuntimeError("down")

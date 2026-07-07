@@ -284,15 +284,31 @@ def _tiers_provider(config: Any) -> Callable[[], list[TierMux]]:  # pragma: no c
     return current_tiers
 
 
+def build_finalizer() -> Any:  # pragma: no cover - IO wiring
+    """A per-track librarian (organize + tag + move into ``CRATE_LIBRARY_ROOT``),
+    or ``None`` when the library root is unset — in which case downloads stay in
+    the staging dir and the previous (batch) behaviour is preserved."""
+    root = os.environ.get("CRATE_LIBRARY_ROOT")
+    if not root:
+        return None
+    from crate.application.librarian import make_finalizer
+    from crate.infrastructure.audio.tags import read_tags, write_tags
+
+    return make_finalizer(Path(root), read_tags=read_tags, write_tags=write_tags)
+
+
 def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - IO wiring
     """A ``download(query, out_dir) -> path`` that runs the full cascade — used by
     the slskd shim (`crate serve`) so Explo pulls through the tiered stack. Records
-    every request to the console DB."""
+    every request to the console DB. With a library root set, each winner is
+    finalized into the library as it completes and the returned path is the final
+    library location."""
     from crate.application.cascade import run_cascade
     from crate.infrastructure.audio.probe import probe
 
     recorder = build_recorder("explo")
     current_tiers = _tiers_provider(_config_store_if_enabled())
+    finalizer = build_finalizer()
 
     def download(query: str, out_dir: Path) -> Path:
         # de-dup: hand Explo the existing file if we already have this track.
@@ -308,7 +324,9 @@ def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - 
             )
             recorder.complete_as_duplicate(rid, existing)
             return Path(str(existing["path"]))
-        result = run_cascade(query, out_dir, current_tiers(), prober=probe, recorder=recorder)
+        result = run_cascade(
+            query, out_dir, current_tiers(), prober=probe, recorder=recorder, finalizer=finalizer
+        )
         if result.winner is None or result.winner.outcome is None:
             raise RuntimeError(f"no source produced a file for {query!r}")
         return result.winner.outcome.path
@@ -332,6 +350,7 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
 
     store = build_recorder("console")
     current_tiers = _tiers_provider(_config_store_if_enabled())
+    finalizer = build_finalizer()
     out_dir = Path(os.environ.get("CRATE_SERVE_DOWNLOADS", "downloads"))
     poll = float(os.environ.get("CRATE_QUEUE_POLL", "2.0"))
 
@@ -364,6 +383,7 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
                     prober=probe,
                     recorder=store,
                     request_id=claimed["id"],
+                    finalizer=finalizer,
                 )
             except Exception as exc:  # never let one bad request kill the loop
                 store.fail_request(claimed["id"], f"queue worker error: {exc}")
