@@ -24,6 +24,7 @@ from crate.adapters.sources.monochrome import (
     parse_kid,
     parse_search,
     pick_best,
+    read_kid,
     select_by_title,
     title_matches,
 )
@@ -169,6 +170,29 @@ def test_parse_kid_raises_without_tenc() -> None:
         parse_kid(b"ftypmp41 no encryption here")
 
 
+def test_read_kid_finds_tenc_in_first_window(tmp_path: Path) -> None:
+    enc = tmp_path / "head.mp4"
+    enc.write_bytes(ENC_MP4)
+    assert read_kid(enc) == KID_HEX
+
+
+def test_read_kid_extends_window_past_first_mib(tmp_path: Path) -> None:
+    # tenc sits ~1.5 MiB in, beyond the initial 1 MiB window, so read_kid must
+    # double the window to find it — and must never need to read the whole file.
+    enc = tmp_path / "far.mp4"
+    lead = b"\x00" * (1_500_000)
+    trail = b"\x00" * (4 << 20)  # 4 MiB of payload after the KID that we must not read
+    enc.write_bytes(lead + b"tenc" + bytes(8) + bytes.fromhex(KID_HEX) + trail)
+    assert read_kid(enc) == KID_HEX
+
+
+def test_read_kid_raises_when_no_tenc_within_cap(tmp_path: Path) -> None:
+    enc = tmp_path / "clear.mp4"
+    enc.write_bytes(b"ftypmp41 plain audio, never CENC-encrypted" + b"\x00" * 4096)
+    with pytest.raises(ValueError, match="not CENC-encrypted"):
+        read_kid(enc)
+
+
 def test_download_guards_on_match_title_not_query(tmp_path: Path) -> None:
     # search surfaces a wrong single-word title that only matches the query's ARTIST
     wrong = {
@@ -191,7 +215,7 @@ def test_download_guards_on_match_title_not_query(tmp_path: Path) -> None:
             tmp_path,
             search_json=lambda q: wrong,
             amz_fetch=lambda p: AMZ_RESPONSE,
-            get_bytes=lambda u: b"",
+            fetch=lambda u, d: None,
             decrypt=lambda e, k, key, o: None,
             match_title="Besharmi Ki Height",  # guard uses this -> "BENNY" rejected
             clock=lambda: 0.0,
@@ -210,9 +234,9 @@ def test_download_resolves_downloads_and_decrypts(tmp_path: Path) -> None:
         amz_calls.append(params)
         return AMZ_RESPONSE
 
-    def get_bytes(url: str) -> bytes:
+    def fetch(url: str, dest: Path) -> None:
         assert url.endswith("ql=UHD_48")  # highest FLAC selected
-        return ENC_MP4
+        dest.write_bytes(ENC_MP4)
 
     def fake_decrypt(enc: Path, kid: str, key: str, out: Path) -> None:
         decrypt_calls.append((kid, key, out.name))
@@ -223,7 +247,7 @@ def test_download_resolves_downloads_and_decrypts(tmp_path: Path) -> None:
         tmp_path,
         search_json=search_json,
         amz_fetch=amz_fetch,
-        get_bytes=get_bytes,
+        fetch=fetch,
         decrypt=fake_decrypt,
         clock=iter([100.0, 106.0]).__next__,
     )

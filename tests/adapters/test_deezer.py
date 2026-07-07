@@ -14,6 +14,7 @@ from Crypto.Cipher import Blowfish
 from crate.adapters.sources.deezer import (
     DeezerTrack,
     blowfish_key,
+    decrypt_stream,
     decrypt_track,
     deezer_download,
     parse_search,
@@ -72,6 +73,23 @@ def test_decrypt_track_roundtrips_the_stripe_scheme() -> None:
     assert decrypt_track(encrypted, key) == plain
 
 
+def test_decrypt_stream_matches_whole_buffer_decrypt(tmp_path: Path) -> None:
+    # The streamed file->file path must produce byte-identical output to the
+    # in-memory whole-buffer decrypt for a multi-stripe payload (encrypted stripes
+    # at index 0,3,6 + clear stripes between + a trailing partial chunk).
+    key = blowfish_key(3135556)
+    plain = bytes((i * 11) % 256 for i in range(2048 * 7 + 777))
+    encrypted = _stripe_encrypt(plain, key)
+    assert encrypted != plain
+
+    src = tmp_path / "in.enc"
+    dst = tmp_path / "out.flac"
+    src.write_bytes(encrypted)
+    decrypt_stream(src, dst, key)
+
+    assert dst.read_bytes() == decrypt_track(encrypted, key) == plain
+
+
 def test_parse_search_maps_tracks() -> None:
     tracks = parse_search(SEARCH_RESPONSE)
     assert len(tracks) == 2
@@ -102,16 +120,17 @@ def test_deezer_download_resolves_and_decrypts(tmp_path: Path) -> None:
         calls["resolved"] = track_id
         return f"https://cdn.deezer/{track_id}.enc"
 
-    def get_bytes(url: str) -> bytes:
+    def fetch(url: str, dest: Path) -> None:
         assert url.endswith("3135556.enc")
-        return served
+        assert dest.name.endswith(".enc.part")  # encrypted bytes stream to a sidecar
+        dest.write_bytes(served)
 
     outcome = deezer_download(
         "Daft Punk Harder Better Faster Stronger",
         tmp_path,
         search=search,
         resolve_url=resolve_url,
-        get_bytes=get_bytes,
+        fetch=fetch,
         clock=iter([1.0, 6.0]).__next__,
     )
     assert outcome.tier == 2
@@ -120,6 +139,7 @@ def test_deezer_download_resolves_and_decrypts(tmp_path: Path) -> None:
     assert outcome.path.suffix == ".flac"
     assert outcome.path.read_bytes() == plain  # decrypted correctly
     assert calls["resolved"] == 3135556
+    assert not list(tmp_path.glob("*.part"))  # encrypted + decrypted temps cleaned up
 
 
 def test_deezer_download_raises_when_no_match(tmp_path: Path) -> None:
@@ -129,7 +149,7 @@ def test_deezer_download_raises_when_no_match(tmp_path: Path) -> None:
             tmp_path,
             search=lambda q: SEARCH_RESPONSE,
             resolve_url=lambda i: "x",
-            get_bytes=lambda u: b"",
+            fetch=lambda u, d: None,
             clock=lambda: 0.0,
         )
 

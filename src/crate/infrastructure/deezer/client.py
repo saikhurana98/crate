@@ -8,10 +8,12 @@ lives in the adapter.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+_CHUNK = 64 * 1024  # 64 KiB — stream encrypted bytes to disk, never buffer the whole file
 _GW = "https://www.deezer.com/ajax/gw-light.php"
 _MEDIA = "https://media.deezer.com/v1/get_url"
 _SEARCH = "https://api.deezer.com/search"
@@ -74,10 +76,13 @@ class DeezerClient:  # pragma: no cover - network I/O
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"no FLAC stream for {track_id} (account tier?): {body}") from exc
 
-    def get_bytes(self, url: str) -> bytes:
-        resp = self._http.get(url, timeout=120.0)
-        resp.raise_for_status()
-        return resp.content
+    def fetch(self, url: str, dest: Path) -> None:
+        """Stream the encrypted FLAC at ``url`` to ``dest`` in 64 KiB chunks."""
+        with self._http.stream("GET", url, timeout=120.0) as resp:
+            resp.raise_for_status()
+            with dest.open("wb") as fh:
+                for chunk in resp.iter_bytes(_CHUNK):
+                    fh.write(chunk)
 
     def close(self) -> None:
         self._http.close()

@@ -99,16 +99,17 @@ def test_qobuz_download_writes_flac_tier1(tmp_path: Path) -> None:
         calls["id"] = track_id
         return "https://cdn.qobuz/track.flac"
 
-    def get_bytes(url: str) -> bytes:
+    def fetch(url: str, dest: Path) -> None:
         assert url.endswith(".flac")
-        return b"fLaC\x00realqobuzflac"  # already FLAC, no decryption
+        assert dest.name.endswith(".part")  # streamed to a sidecar, renamed on success
+        dest.write_bytes(b"fLaC\x00realqobuzflac")  # already FLAC, no decryption
 
     outcome = qobuz_download(
         "Daft Punk Get Lucky",
         tmp_path,
         search=search,
         get_file_url=get_file_url,
-        get_bytes=get_bytes,
+        fetch=fetch,
         clock=iter([2.0, 7.0]).__next__,
     )
     assert outcome.tier == 1
@@ -117,6 +118,7 @@ def test_qobuz_download_writes_flac_tier1(tmp_path: Path) -> None:
     assert outcome.path.suffix == ".flac"
     assert outcome.path.read_bytes().startswith(b"fLaC")
     assert calls["id"] == 12345
+    assert not list(tmp_path.glob("*.part"))  # temp sidecar cleaned up
 
 
 def test_qobuz_download_raises_when_no_match(tmp_path: Path) -> None:
@@ -126,7 +128,7 @@ def test_qobuz_download_raises_when_no_match(tmp_path: Path) -> None:
             tmp_path,
             search=lambda q: SEARCH_RESPONSE,
             get_file_url=lambda i: "x",
-            get_bytes=lambda u: b"",
+            fetch=lambda u, d: None,
             clock=lambda: 0.0,
         )
 

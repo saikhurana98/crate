@@ -30,7 +30,7 @@ _CHUNK = 2048
 
 Search = Callable[[str], Any]  # query -> Deezer search JSON
 ResolveUrl = Callable[[int], str]  # track id -> encrypted CDN url (client does token+get_url)
-GetBytes = Callable[[str], bytes]
+Fetch = Callable[[str, Path], None]  # (url, dest) -> stream the encrypted stream to dest
 Clock = Callable[[], float]
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -52,17 +52,33 @@ def blowfish_key(track_id: int) -> bytes:
     return bytes(ord(md5[i]) ^ ord(md5[i + 16]) ^ _SECRET[i] for i in range(16))
 
 
+def _destripe(index: int, chunk: bytes, key: bytes) -> bytes:
+    """One stripe of Deezer's CBC-stripe scheme: every 3rd full 2048-byte chunk is
+    Blowfish-CBC encrypted, the rest (and any trailing partial chunk) is clear."""
+    if index % 3 == 0 and len(chunk) == _CHUNK:
+        return bytes(Blowfish.new(key, Blowfish.MODE_CBC, _IV).decrypt(chunk))
+    return chunk
+
+
 def decrypt_track(data: bytes, key: bytes) -> bytes:
-    """Reverse Deezer's CBC-stripe: every 3rd full 2048-byte chunk is Blowfish-CBC
-    encrypted, the rest (and any trailing partial chunk) is clear."""
+    """Reverse Deezer's CBC-stripe in memory (bytes -> bytes). Thin wrapper over the
+    per-stripe rule shared with :func:`decrypt_stream`."""
     out = bytearray()
     for index, start in enumerate(range(0, len(data), _CHUNK)):
-        chunk = data[start : start + _CHUNK]
-        if index % 3 == 0 and len(chunk) == _CHUNK:
-            out += Blowfish.new(key, Blowfish.MODE_CBC, _IV).decrypt(chunk)
-        else:
-            out += chunk
+        out += _destripe(index, data[start : start + _CHUNK], key)
     return bytes(out)
+
+
+def decrypt_stream(src: Path, dst: Path, key: bytes) -> None:
+    """Reverse Deezer's CBC-stripe file -> file, 2048 bytes at a time.
+
+    Same rule as :func:`decrypt_track` but streamed, so a 50-200 MB FLAC is never
+    held in RAM (neither the encrypted nor the decrypted copy)."""
+    with src.open("rb") as fin, dst.open("wb") as fout:
+        index = 0
+        while chunk := fin.read(_CHUNK):
+            fout.write(_destripe(index, chunk, key))
+            index += 1
 
 
 def parse_search(data: dict[str, Any]) -> list[DeezerTrack]:
@@ -101,19 +117,30 @@ def deezer_download(
     *,
     search: Search,
     resolve_url: ResolveUrl,
-    get_bytes: GetBytes,
+    fetch: Fetch,
     isrc: str | None = None,
     clock: Clock = time.monotonic,
 ) -> DownloadOutcome:
-    """Search Deezer, resolve the FLAC stream, download + Blowfish-decrypt it."""
+    """Search Deezer, resolve the FLAC stream, stream it to disk + Blowfish-decrypt.
+
+    The encrypted body streams to ``<dest>.enc.part``, decrypts stripe-by-stripe to
+    ``<dest>.part``, then renames to the final name — so neither the encrypted nor
+    the decrypted file is ever fully buffered in RAM, and a failure leaves no half
+    file. Both temporaries are removed in ``finally``."""
     start = clock()
     track = select_track(parse_search(search(query)), query, isrc)
-    encrypted = get_bytes(resolve_url(track.id))
-    flac = decrypt_track(encrypted, blowfish_key(track.id))
 
     name = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]") + ".flac"
     dest = out_dir / name
-    dest.write_bytes(flac)
+    enc = dest.with_name(dest.name + ".enc.part")
+    part = dest.with_name(dest.name + ".part")
+    try:
+        fetch(resolve_url(track.id), enc)
+        decrypt_stream(enc, part, blowfish_key(track.id))
+        part.replace(dest)
+    finally:
+        enc.unlink(missing_ok=True)
+        part.unlink(missing_ok=True)
     return DownloadOutcome(
         path=dest,
         tier=2,
