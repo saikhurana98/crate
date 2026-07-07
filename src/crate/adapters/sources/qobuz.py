@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from crate.domain.download import DownloadOutcome
-from crate.domain.matching import title_matches
+from crate.domain.matching import match_score, title_matches
 
 Search = Callable[[str], Any]  # query -> Qobuz search JSON
 GetFileUrl = Callable[[int], str]  # track id -> signed direct FLAC url
@@ -75,15 +75,19 @@ def parse_search(data: dict[str, Any]) -> list[QobuzTrack]:
 
 
 def select_track(tracks: list[QobuzTrack], query: str, isrc: str | None = None) -> QobuzTrack:
-    """Prefer an exact ISRC match; else the first title-matching result."""
+    """Prefer an exact ISRC match; else the best title+artist match.
+
+    Among title-matching results, pick the one whose artist best matches the
+    query too — so a requested song isn't swapped for an unrelated track that
+    merely shares the title."""
     if isrc:
         for track in tracks:
             if track.isrc and track.isrc.upper() == isrc.upper():
                 return track
-    for track in tracks:
-        if title_matches(track.title, query):
-            return track
-    raise LookupError("no title-matching Qobuz track")
+    matching = [t for t in tracks if title_matches(t.title, query)]
+    if not matching:
+        raise LookupError("no title-matching Qobuz track")
+    return max(matching, key=lambda t: match_score(t.title, t.artist, query))
 
 
 def qobuz_download(
