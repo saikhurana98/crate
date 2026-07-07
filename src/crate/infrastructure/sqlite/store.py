@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 import uuid
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from crate.application.download import DownloadReport
 from crate.infrastructure.sqlite.db import now_iso
+
+_STATS_TTL_S = 2.0  # console SSE polls stats every 2 s per client; cache the frame
 
 
 def _new_id() -> str:
@@ -22,10 +27,26 @@ def _new_id() -> str:
 
 
 class RequestStore:
-    def __init__(self, conn: sqlite3.Connection, requested_via: str = "api") -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        requested_via: str = "api",
+        *,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._conn = conn
         self._via = requested_via
         self._lock = threading.Lock()
+        self._now = now
+        # cached stats() frame + the monotonic time it was computed; guarded by
+        # self._lock. Every write busts it via _invalidate_stats() so a reader
+        # never serves a frame that predates its own write.
+        self._stats_cache: tuple[dict[str, Any], float] | None = None
+
+    def _invalidate_stats(self) -> None:
+        """Drop the cached stats frame. MUST be called while holding self._lock
+        (every write method does), so the invalidation is atomic with the write."""
+        self._stats_cache = None
 
     # --- RequestRecorder (writes) ---
     def open_request(self, query: str) -> str:
@@ -36,6 +57,7 @@ class RequestStore:
                 "VALUES (?, ?, ?, 'downloading', ?)",
                 (rid, query, self._via, now_iso()),
             )
+            self._invalidate_stats()
         return rid
 
     # --- console queue (cross-process work items) ---
@@ -50,6 +72,7 @@ class RequestStore:
                 "VALUES (?, ?, ?, 'queued', ?, ?)",
                 (rid, query, self._via, now_iso(), batch_id),
             )
+            self._invalidate_stats()
         return rid
 
     # requests in a paused or cancelled batch are not claimable
@@ -76,6 +99,7 @@ class RequestStore:
             )
             if cur.rowcount != 1:  # another worker claimed it first
                 return None
+            self._invalidate_stats()  # a row moved queued -> downloading
             return {"id": row["id"], "query": row["query"]}
 
     def record_attempt(
@@ -87,6 +111,7 @@ class RequestStore:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (request_id, source, tier, 1 if ok else 0, detail, now_iso()),
             )
+            self._invalidate_stats()
 
     def finish_request(self, request_id: str, report: DownloadReport) -> None:
         outcome, info, verdict = report.outcome, report.info, report.verdict
@@ -116,6 +141,7 @@ class RequestStore:
                     verdict.label,
                 ),
             )
+            self._invalidate_stats()
 
     def fail_request(self, request_id: str, error: str) -> None:
         with self._lock:
@@ -123,6 +149,7 @@ class RequestStore:
                 "UPDATE requests SET status='failed', error=?, finished_at=? WHERE id=?",
                 (error, now_iso(), request_id),
             )
+            self._invalidate_stats()
 
     # --- reads (console) ---
     # NB: all reads take self._lock too. The console shares one SQLite connection
@@ -173,6 +200,9 @@ class RequestStore:
             return out
 
     def stats(self) -> dict[str, Any]:
+        """Aggregate dashboard counters. Cached for ``_STATS_TTL_S`` (the SSE poll
+        cadence) and busted by every write, so the ~10 full-table aggregates below
+        run at most once per TTL no matter how many console clients poll."""
         conn = self._conn
 
         def scalar(sql: str) -> Any:
@@ -180,6 +210,9 @@ class RequestStore:
             return row[0] if row and row[0] is not None else 0
 
         with self._lock:
+            cached = self._stats_cache
+            if cached is not None and self._now() - cached[1] < _STATS_TTL_S:
+                return cached[0]
             total = scalar("SELECT COUNT(*) FROM requests")
             done = scalar("SELECT COUNT(*) FROM requests WHERE status='done'")
             failed = scalar("SELECT COUNT(*) FROM requests WHERE status='failed'")
@@ -209,21 +242,23 @@ class RequestStore:
             }
             total_bytes = scalar("SELECT COALESCE(SUM(size_bytes), 0) FROM downloads")
             avg_elapsed_s = scalar("SELECT COALESCE(AVG(elapsed_s), 0) FROM downloads")
-        return {
-            "total": total,
-            "done": done,
-            "failed": failed,
-            "in_flight": in_flight,
-            "queued": queued,
-            "success_rate": (done / settled) if settled else 0.0,
-            "lossless": lossless,
-            "lossless_rate": (lossless / done) if done else 0.0,
-            "total_bytes": total_bytes,
-            "avg_elapsed_s": avg_elapsed_s,
-            "wins_by_source": wins_by_source,
-            "wins_by_tier": wins_by_tier,
-            "attempts_by_source": attempts_by_source,
-        }
+            frame = {
+                "total": total,
+                "done": done,
+                "failed": failed,
+                "in_flight": in_flight,
+                "queued": queued,
+                "success_rate": (done / settled) if settled else 0.0,
+                "lossless": lossless,
+                "lossless_rate": (lossless / done) if done else 0.0,
+                "total_bytes": total_bytes,
+                "avg_elapsed_s": avg_elapsed_s,
+                "wins_by_source": wins_by_source,
+                "wins_by_tier": wins_by_tier,
+                "attempts_by_source": attempts_by_source,
+            }
+            self._stats_cache = (frame, self._now())
+            return frame
 
     # --- bulk batches ---
     def create_batch(self, name: str, origin: str, owner: str, total: int) -> str:
@@ -234,6 +269,7 @@ class RequestStore:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (bid, name, origin, owner, total, now_iso()),
             )
+            self._invalidate_stats()
         return bid
 
     def list_batches(self) -> list[dict[str, Any]]:
@@ -287,6 +323,7 @@ class RequestStore:
             cur = self._conn.execute(
                 "UPDATE batches SET paused=? WHERE id=?", (1 if paused else 0, batch_id)
             )
+            self._invalidate_stats()
         return cur.rowcount == 1
 
     def cancel_batch(self, batch_id: str) -> bool:
@@ -298,6 +335,7 @@ class RequestStore:
                 "UPDATE requests SET status='cancelled' WHERE batch_id=? AND status='queued'",
                 (batch_id,),
             )
+            self._invalidate_stats()
         return cur.rowcount == 1
 
     def reap_orphans(self) -> int:
@@ -312,6 +350,7 @@ class RequestStore:
             cur = self._conn.execute(
                 "UPDATE requests SET status='queued', finished_at=NULL WHERE status='downloading'"
             )
+            self._invalidate_stats()
         return cur.rowcount
 
     def requeue(self, request_id: str) -> bool:
@@ -322,6 +361,7 @@ class RequestStore:
                 "WHERE id=? AND status IN ('failed', 'cancelled')",
                 (request_id,),
             )
+            self._invalidate_stats()
         return cur.rowcount == 1
 
     # --- de-duplication (skip re-downloading a track already in the library) ---
@@ -364,3 +404,19 @@ class RequestStore:
                     existing["quality_label"],
                 ),
             )
+            self._invalidate_stats()
+
+    # --- maintenance (retention) ---
+    def prune_attempts(self, older_than_days: int = 90) -> int:
+        """Delete attempt rows older than ``older_than_days``; return the count.
+
+        The ``attempts`` table grows unbounded (one row per source tried per
+        request); it's only used for the per-request trail + the stats aggregate,
+        so old rows carry no value. ``created_at`` is a UTC ISO-8601 string, which
+        sorts lexicographically the same as chronologically, so a plain string
+        comparison against the computed cutoff is a correct range predicate."""
+        cutoff = (datetime.now(UTC) - timedelta(days=older_than_days)).isoformat()
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM attempts WHERE created_at < ?", (cutoff,))
+            self._invalidate_stats()
+        return cur.rowcount

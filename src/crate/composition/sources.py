@@ -391,6 +391,37 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
     return loop
 
 
+def _retention_days() -> int:  # pragma: no cover - env read
+    return int(os.environ.get("CRATE_ATTEMPTS_RETENTION_DAYS", "90"))
+
+
+def prune_attempts() -> int:  # pragma: no cover - IO wiring
+    """Drop attempt rows older than the retention window (default 90 d). Run once
+    at ``serve`` startup and then daily by the maintenance thread; the ``attempts``
+    table is append-only and otherwise grows without bound."""
+    return int(build_recorder("serve").prune_attempts(_retention_days()))
+
+
+def build_maintenance() -> Callable[[threading.Event], None]:  # pragma: no cover - IO wiring
+    """A daily loop that prunes stale ``attempts`` rows. Runs in the ``serve``
+    process alongside the queue workers and shares its ``stop`` Event. Mirrors
+    ``build_queue_worker``: build the store once, then loop until stopped. The
+    startup prune is done separately in ``serve`` (like ``reap_orphans``); this
+    thread handles the recurring pass so a long-lived server keeps retention."""
+    store = build_recorder("serve")
+    retention_days = _retention_days()
+    interval = float(os.environ.get("CRATE_MAINTENANCE_INTERVAL", "86400"))
+
+    def loop(stop: threading.Event) -> None:
+        while not stop.wait(interval):  # first sleeps, then prunes (startup prune runs in serve)
+            try:
+                store.prune_attempts(retention_days)
+            except Exception:  # never let a maintenance hiccup kill the thread
+                continue
+
+    return loop
+
+
 def build_spotify_search() -> Callable[[str, int], list[dict[str, Any]]] | None:
     """Spotify track search for the console, or ``None`` when creds are absent
     (the /api/search endpoint then reports 503 and the UI hides search)."""
