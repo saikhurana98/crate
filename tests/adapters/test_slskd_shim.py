@@ -98,3 +98,28 @@ def test_api_key_check() -> None:
     assert shim.authorized({}) is False
     # no key configured -> open
     assert ShimState(download=_dl_ok(), downloads_dir=Path("/tmp")).authorized({}) is True
+
+
+def test_transfers_map_is_bounded_evicting_completed_first(tmp_path: Path) -> None:
+    """Explo re-enqueues on every sync, so _transfers would grow unbounded. Once
+    over the cap, oldest *finished* records are dropped; in-flight ones survive.
+    250 completed + 5 in-flight -> map stays within the cap, in-flight preserved."""
+    from crate.adapters.inbound.slskd_shim import _TRANSFERS_MAX
+
+    shim = ShimState(download=_dl_ok(), downloads_dir=tmp_path)
+
+    # 5 in-flight transfers that must never be evicted (Explo still polling them)
+    inflight = [f"live-{i}.flac" for i in range(5)]
+    for name in inflight:
+        shim.enqueue("crate", [{"filename": name, "size": 1}])
+        shim._transfers[name]["state"] = "InProgress"
+
+    # 250 transfers that complete; each new enqueue re-checks the cap and evicts
+    for i in range(250):
+        name = f"done-{i}.flac"
+        shim.enqueue("crate", [{"filename": name, "size": 1}])
+        shim._transfers[name]["state"] = "Completed, Succeeded"
+
+    assert len(shim._transfers) <= _TRANSFERS_MAX  # bounded despite 255 inserts
+    files = {f["filename"] for f in shim.transfers("crate")["directories"][0]["files"]}
+    assert set(inflight) <= files  # the 5 in-flight survived every eviction pass

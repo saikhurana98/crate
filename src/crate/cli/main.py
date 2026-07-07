@@ -89,11 +89,18 @@ def serve(  # pragma: no cover - network server loop
     import threading
 
     from crate.adapters.inbound.slskd_shim import ShimState
-    from crate.composition.sources import build_queue_worker, build_shim_download, reap_orphans
+    from crate.composition.sources import (
+        build_maintenance,
+        build_queue_worker,
+        build_shim_download,
+        prune_attempts,
+        reap_orphans,
+    )
     from crate.infrastructure.http_server.serve import run_server
 
     downloads = Path(os.environ.get("CRATE_SERVE_DOWNLOADS", "downloads"))
     downloads.mkdir(parents=True, exist_ok=True)
+    stop = threading.Event()
     # Crash recovery: requeue anything a previous serve left mid-flight before the
     # workers start, else those rows hang 'downloading' forever (claim_next only
     # picks 'queued'). Only meaningful with a console DB (CRATE_DB).
@@ -101,6 +108,12 @@ def serve(  # pragma: no cover - network server loop
         reaped = reap_orphans()
         if reaped:
             typer.echo(f"reaped {reaped} orphaned download(s) from a previous run -> requeued")
+        # Retention: prune stale attempt rows once now, then daily in the background
+        # (the attempts table is append-only and would otherwise grow unbounded).
+        pruned = prune_attempts()
+        if pruned:
+            typer.echo(f"pruned {pruned} attempt row(s) older than the retention window")
+        threading.Thread(target=build_maintenance(), args=(stop,), daemon=True).start()
     shim = ShimState(
         build_shim_download(), downloads, api_key=os.environ.get("CRATE_SERVE_API_KEY") or None
     )
@@ -109,7 +122,6 @@ def serve(  # pragma: no cover - network server loop
     # Multiple worker threads give bulk batches parallelism; claim_next is atomic
     # so they never double-claim a row.
     concurrency = max(1, int(os.environ.get("CRATE_BULK_CONCURRENCY", "4")))
-    stop = threading.Event()
     for _ in range(concurrency):
         threading.Thread(target=build_queue_worker(), args=(stop,), daemon=True).start()
     typer.echo(

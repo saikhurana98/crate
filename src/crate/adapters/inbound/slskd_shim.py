@@ -23,6 +23,12 @@ Download = Callable[[str, Path], Path]  # (query, out_dir) -> path of the FLAC
 
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
+# Explo re-enqueues on every sync, so _transfers grows without bound. Cap it and,
+# once over the cap, drop the oldest *finished* records first (dict preserves
+# insertion order). In-flight transfers are never evicted — Explo is still polling
+# them — so the live set can transiently exceed the cap.
+_TRANSFERS_MAX = 200
+
 
 class ShimState:
     def __init__(self, download: Download, downloads_dir: Path, api_key: str | None = None) -> None:
@@ -34,6 +40,22 @@ class ShimState:
         self._file_query: dict[str, str] = {}  # advertised filename -> query
         self._transfers: dict[str, dict[str, Any]] = {}  # filename -> transfer record
         self._lock = threading.Lock()
+
+    def _evict_transfers(self) -> None:
+        """Bound ``_transfers`` to ``_TRANSFERS_MAX``. Call while holding the lock,
+        right after inserting a record. Evicts the oldest *finished* transfers
+        (state starts with ``Completed``) first; in-flight ones are kept so Explo
+        can still poll them, which means the map can briefly exceed the cap when
+        every over-cap record is still running."""
+        if len(self._transfers) <= _TRANSFERS_MAX:
+            return
+        overflow = len(self._transfers) - _TRANSFERS_MAX
+        for filename, rec in list(self._transfers.items()):  # oldest first
+            if overflow <= 0:
+                break
+            if str(rec.get("state", "")).startswith("Completed"):
+                del self._transfers[filename]
+                overflow -= 1
 
     # --- auth ---
     def authorized(self, headers: Mapping[str, str]) -> bool:
@@ -107,6 +129,7 @@ class ShimState:
                     "bytesTransferred": 0,
                     "state": "Queued, Remotely",
                 }
+                self._evict_transfers()
 
     def run_download(self, filename: str) -> None:
         """Run the cascade for this file and land the FLAC at downloads_dir/filename.
@@ -119,6 +142,7 @@ class ShimState:
         with self._lock:
             self._transfers.setdefault(filename, {"filename": filename, "size": 0})
             self._transfers[filename]["state"] = "InProgress"
+            self._evict_transfers()
         try:
             produced = self._download(query, self._dir)
             final = produced

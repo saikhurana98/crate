@@ -3,6 +3,8 @@
 Uses a real temp-file SQLite DB (WAL) so the migration runner + SQL are exercised
 end to end; no mocking of the DB."""
 
+import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from crate.application.download import DownloadReport
@@ -14,6 +16,23 @@ from crate.infrastructure.sqlite.store import RequestStore
 
 def _store(tmp_path: Path, via: str = "explo") -> RequestStore:
     return RequestStore(connect(tmp_path / "crate.db"), requested_via=via)
+
+
+class _CountingConn:
+    """Wraps a real connection, counting SELECT executes so a test can assert a
+    cached stats() call ran no fresh queries. Delegates everything else."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.selects = 0
+
+    def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+        if sql.lstrip().upper().startswith("SELECT"):
+            self.selects += 1
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
 
 
 def _report(source: str = "qobuz", tier: int = 1, lossless: bool = True) -> DownloadReport:
@@ -180,3 +199,145 @@ def test_finish_with_incomplete_report_is_noop(tmp_path: Path) -> None:
     store.finish_request(rid, DownloadReport("t", None, None, None, "partial"))
     got = store.get_request(rid)
     assert got is not None and got["status"] == "downloading" and got["download"] is None
+
+
+# --- stats() cache (P0-B) ---
+
+
+def test_stats_cache_hits_within_ttl_without_requerying(tmp_path: Path) -> None:
+    """The SSE stream polls stats() every 2 s per client; a second call inside the
+    TTL must return the same frame without touching the DB again."""
+    counting = _CountingConn(connect(tmp_path / "crate.db"))
+    clock = [1000.0]
+    store = RequestStore(counting, requested_via="console", now=lambda: clock[0])  # type: ignore[arg-type]
+    store.open_request("t")
+
+    first = store.stats()
+    counting.selects = 0  # ignore the queries the first (uncached) call ran
+    clock[0] = 1001.5  # still within the 2.0 s TTL
+    second = store.stats()
+
+    assert second is first  # exact cached object, not just equal
+    assert counting.selects == 0  # no fresh reads
+
+
+def test_stats_cache_expires_after_ttl(tmp_path: Path) -> None:
+    counting = _CountingConn(connect(tmp_path / "crate.db"))
+    clock = [1000.0]
+    store = RequestStore(counting, requested_via="console", now=lambda: clock[0])  # type: ignore[arg-type]
+    store.open_request("t")
+
+    store.stats()
+    counting.selects = 0
+    clock[0] = 1002.01  # past the 2.0 s TTL
+    store.stats()
+
+    assert counting.selects > 0  # recomputed
+
+
+def test_every_write_busts_the_stats_cache(tmp_path: Path) -> None:
+    """Each write method must invalidate the cache so a reader never serves a
+    frame that predates its own write."""
+    store = _store(tmp_path, via="console")
+
+    def total() -> int:
+        return int(store.stats()["total"])
+
+    assert total() == 0  # primes the cache
+    store.open_request("a")
+    assert total() == 1  # busted by open_request
+
+    rid = store.enqueue("b")
+    assert total() == 2  # busted by enqueue
+
+    store.claim_next()  # 'b' queued -> downloading (joins 'a' already downloading)
+    assert store.stats()["in_flight"] == 2  # busted by claim_next
+
+    store.record_attempt(rid, "qobuz", 1, True, "ok")
+    store.stats()  # busted by record_attempt (attempts_by_source refreshed)
+    store.finish_request(rid, _report())
+    assert store.stats()["done"] == 1  # busted by finish_request
+
+    fid = store.open_request("c")
+    store.fail_request(fid, "boom")
+    assert store.stats()["failed"] == 1  # busted by fail_request
+
+    store.requeue(fid)
+    assert store.stats()["queued"] == 1  # busted by requeue
+
+    store.reap_orphans()
+    store.stats()  # busted by reap_orphans
+
+    bid = store.create_batch("PL", "paste", "", 1)
+    store.stats()  # busted by create_batch
+    store.set_batch_paused(bid, True)
+    store.stats()  # busted by set_batch_paused
+    store.cancel_batch(bid)
+    store.stats()  # busted by cancel_batch
+
+    # 'b' finished above, so it is now a completed library entry we can reuse.
+    existing = store.find_completed("b")
+    assert existing is not None
+    done_before = store.stats()["done"]
+    dup = store.enqueue("b")
+    store.complete_as_duplicate(dup, existing)
+    assert store.stats()["done"] == done_before + 1  # busted by complete_as_duplicate
+
+
+# --- attempts retention (P0-B) ---
+
+
+def test_prune_attempts_deletes_only_old_rows(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = store.open_request("t")
+    store.record_attempt(rid, "qobuz", 1, True, "recent")  # created_at = now
+    # hand-insert an ancient attempt row (created_at 200 days ago)
+    old = (datetime.now(UTC) - timedelta(days=200)).isoformat()
+    conn = connect(tmp_path / "crate.db")
+    conn.execute(
+        "INSERT INTO attempts(request_id, source, tier, ok, detail, created_at) "
+        "VALUES (?, 'ytdlp', 3, 0, 'ancient', ?)",
+        (rid, old),
+    )
+
+    assert store.prune_attempts(older_than_days=90) == 1  # only the ancient row
+    got = store.get_request(rid)
+    assert got is not None
+    assert [a["detail"] for a in got["attempts"]] == ["recent"]
+
+
+def test_prune_attempts_noop_when_all_recent(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = store.open_request("t")
+    store.record_attempt(rid, "qobuz", 1, True, "ok")
+    assert store.prune_attempts() == 0
+
+
+# --- index usage (P0-B) ---
+
+
+def test_find_completed_uses_query_status_index(tmp_path: Path) -> None:
+    """find_completed runs once per download; its requests(query,status) filter
+    must hit idx_requests_query_status, not full-scan."""
+    conn = connect(tmp_path / "crate.db")
+    plan = conn.execute(
+        "EXPLAIN QUERY PLAN "
+        "SELECT r.tier_won, r.source_won, d.* FROM requests r "
+        "JOIN downloads d ON d.request_id = r.id "
+        "WHERE r.query = ? AND r.status = 'done' "
+        "ORDER BY r.finished_at DESC LIMIT 1",
+        ("some track",),
+    ).fetchall()
+    details = " | ".join(row["detail"] for row in plan)
+    assert "USING INDEX idx_requests_query_status" in details
+
+
+def test_migration_004_creates_perf_indexes(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "crate.db")
+    indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+    assert {
+        "idx_requests_query_status",
+        "idx_requests_status_created",
+        "idx_attempts_source_ok",
+        "idx_batches_flags",
+    } <= indexes
