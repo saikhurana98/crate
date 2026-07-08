@@ -328,9 +328,15 @@ def build_finalizer() -> Any:  # pragma: no cover - IO wiring
     if not root:
         return None
     from crate.application.librarian import make_finalizer
-    from crate.infrastructure.audio.tags import read_tags, write_tags
+    from crate.infrastructure.audio.tags import embed_cover, read_tags, write_tags
 
-    return make_finalizer(Path(root), read_tags=read_tags, write_tags=write_tags)
+    return make_finalizer(
+        Path(root),
+        read_tags=read_tags,
+        write_tags=write_tags,
+        fetch_art=http.fetch_bytes,
+        embed_cover=embed_cover,
+    )
 
 
 def _bound_run(prober: Any, finalizer: Any) -> Callable[..., Any]:  # pragma: no cover - IO wiring

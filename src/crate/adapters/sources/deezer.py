@@ -45,6 +45,7 @@ class DeezerTrack:
     album: str
     duration_s: int | None
     isrc: str | None
+    cover_url: str | None = None
 
 
 def blowfish_key(track_id: int) -> bytes:
@@ -86,14 +87,19 @@ def parse_search(data: dict[str, Any]) -> list[DeezerTrack]:
     """Parse an api.deezer.com/search response."""
     tracks: list[DeezerTrack] = []
     for item in data.get("data", []):
+        album = item.get("album") or {}
+        # Deezer's album carries several cover sizes; prefer 1000px cover_xl,
+        # then cover_big — the librarian caps the fetch so a big URL is fine.
+        cover = album.get("cover_xl") or album.get("cover_big")
         tracks.append(
             DeezerTrack(
                 id=int(item["id"]),
                 title=str(item.get("title", "Unknown")),
                 artist=str(item.get("artist", {}).get("name", "Unknown")),
-                album=str(item.get("album", {}).get("title", "")),
+                album=str(album.get("title", "")),
                 duration_s=item.get("duration"),
                 isrc=item.get("isrc"),
+                cover_url=cover or None,
             )
         )
     return tracks
@@ -170,4 +176,5 @@ def deezer_download(
         title=track.title,
         artist=track.artist,
         album=track.album or None,
+        art_url=track.cover_url,
     )

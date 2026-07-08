@@ -41,6 +41,7 @@ class QobuzTrack:
     bit_depth: int | None
     sample_rate_khz: float | None
     isrc: str | None
+    cover_url: str | None = None
 
 
 def sign_get_file_url(track_id: int, format_id: int, request_ts: int, app_secret: str) -> str:
@@ -60,16 +61,19 @@ def parse_search(data: dict[str, Any]) -> list[QobuzTrack]:
     tracks: list[QobuzTrack] = []
     for item in data.get("tracks", {}).get("items", []):
         performer = item.get("performer") or {}
+        album = item.get("album") or {}
+        image = album.get("image") or {}
         tracks.append(
             QobuzTrack(
                 id=int(item["id"]),
                 title=str(item.get("title", "Unknown")),
                 artist=str(performer.get("name", "Unknown")),
-                album=str(item.get("album", {}).get("title", "")),
+                album=str(album.get("title", "")),
                 duration_s=item.get("duration"),
                 bit_depth=item.get("maximum_bit_depth"),
                 sample_rate_khz=item.get("maximum_sampling_rate"),
                 isrc=item.get("isrc"),
+                cover_url=image.get("large") or None,
             )
         )
     return tracks
@@ -143,4 +147,5 @@ def qobuz_download(
         title=track.title,
         artist=track.artist,
         album=track.album or None,
+        art_url=track.cover_url,
     )

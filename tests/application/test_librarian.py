@@ -131,3 +131,95 @@ def test_make_finalizer_passes_through_report_without_file(tmp_path: Path) -> No
     fin = make_finalizer(tmp_path, read_tags=_reader(TrackTags()), write_tags=_noop)
     empty = DownloadReport("q", None, None, None, "no source produced a file")
     assert fin(empty) is empty
+
+
+# --- cover art ---------------------------------------------------------------
+
+
+def test_finalize_embeds_art_and_writes_cover_jpg(tmp_path: Path) -> None:
+    src = _staged(tmp_path)
+    lib = tmp_path / "library"
+    tags = TrackTags(artist="KK", album="Life", title="Yaaron")
+    embeds: list[tuple[Path, bytes]] = []
+
+    dest = finalize(
+        src,
+        lib,
+        read_tags=_reader(tags),
+        write_tags=_noop,
+        art_url="https://cdn/cover.jpg",
+        fetch_art=lambda url: b"JPEGDATA",
+        embed_cover=lambda p, jpeg: embeds.append((p, jpeg)),
+    )
+
+    # embed ran on the pre-move (produced) file with the fetched bytes
+    assert embeds == [(src, b"JPEGDATA")]
+    # cover.jpg landed in the destination album dir next to the final file
+    assert (dest.parent / "cover.jpg").read_bytes() == b"JPEGDATA"
+    assert dest == lib / "KK" / "Life" / "Yaaron.flac"
+
+
+def test_finalize_survives_art_fetch_failure(tmp_path: Path) -> None:
+    src = _staged(tmp_path)
+    lib = tmp_path / "library"
+    tags = TrackTags(artist="KK", album="Life", title="Yaaron")
+    embeds: list[object] = []
+
+    def boom(url: str) -> bytes:
+        raise RuntimeError("art server down")
+
+    dest = finalize(
+        src,
+        lib,
+        read_tags=_reader(tags),
+        write_tags=_noop,
+        art_url="https://cdn/cover.jpg",
+        fetch_art=boom,
+        embed_cover=lambda p, jpeg: embeds.append(jpeg),
+    )
+
+    # file still tagged + moved; no embed, no cover.jpg, no crash
+    assert dest.exists() and not src.exists()
+    assert not embeds
+    assert not (dest.parent / "cover.jpg").exists()
+
+
+def test_finalize_no_art_url_skips_fetch_and_embed(tmp_path: Path) -> None:
+    src = _staged(tmp_path)
+    lib = tmp_path / "library"
+    calls: list[str] = []
+
+    dest = finalize(
+        src,
+        lib,
+        read_tags=_reader(TrackTags(artist="A", album="B", title="C")),
+        write_tags=_noop,
+        art_url=None,
+        fetch_art=lambda url: calls.append(url) or b"x",  # type: ignore[func-returns-value]
+        embed_cover=lambda p, j: calls.append("embed"),
+    )
+
+    assert calls == []  # neither called
+    assert not (dest.parent / "cover.jpg").exists()
+
+
+def test_make_finalizer_threads_outcome_art_url(tmp_path: Path) -> None:
+    src = _staged(tmp_path)
+    lib = tmp_path / "library"
+    embeds: list[tuple[Path, bytes]] = []
+    fin = make_finalizer(
+        lib,
+        read_tags=_reader(TrackTags()),
+        write_tags=_noop,
+        fetch_art=lambda url: b"ART",
+        embed_cover=lambda p, jpeg: embeds.append((p, jpeg)),
+    )
+
+    out = fin(
+        _report(src, artist="Coldplay", album="Parachutes", title="Yellow", art_url="https://cdn/c")
+    )
+
+    assert out.outcome is not None
+    dest = out.outcome.path
+    assert embeds == [(src, b"ART")]
+    assert (dest.parent / "cover.jpg").read_bytes() == b"ART"

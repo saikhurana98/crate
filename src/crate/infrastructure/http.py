@@ -18,6 +18,24 @@ def get_json(
     return resp.json()
 
 
+def fetch_bytes(url: str, *, max_bytes: int = 4_000_000, timeout: float = 20.0) -> bytes:
+    """Fetch a *small* resource (cover art) into memory, capped at ``max_bytes``.
+
+    Streams in chunks and raises :class:`ValueError` the moment the accumulated
+    body exceeds ``max_bytes``, so a mis-served huge file can never be buffered
+    whole. For art only — never call this on an audio file (use
+    :func:`stream_to`). The librarian catches every exception this raises, so an
+    over-cap or failed art fetch never fails the download."""
+    buf = bytearray()
+    with httpx.stream("GET", url, timeout=timeout, follow_redirects=True) as resp:
+        resp.raise_for_status()
+        for chunk in resp.iter_bytes(_CHUNK):
+            buf += chunk
+            if len(buf) > max_bytes:
+                raise ValueError(f"art exceeds {max_bytes} byte cap")
+    return bytes(buf)
+
+
 def stream_to(url: str, dest: Path, *, timeout: float = 120.0) -> int:  # pragma: no cover
     """Stream ``url`` to ``dest`` in 64 KiB chunks; return the bytes written.
 

@@ -26,6 +26,7 @@ from crate.adapters.sources.monochrome import (
     pick_best,
     read_kid,
     select_by_title,
+    tidal_cover_url,
     title_matches,
 )
 
@@ -39,7 +40,10 @@ SEARCH_RESPONSE = {
                 "audioQuality": "HI_RES_LOSSLESS",
                 "mediaMetadata": {"tags": ["HIRES_LOSSLESS"]},
                 "artist": {"name": "Diljit Dosanjh"},
-                "album": {"title": "Dealer"},
+                "album": {
+                    "title": "Dealer",
+                    "cover": "24d9e3d0-1a2b-4c3d-9e8f-000011112222",
+                },
             }
         ]
     }
@@ -86,6 +90,20 @@ def test_parse_search_maps_metadata() -> None:
     assert t.album == "Dealer"
     assert t.duration_s == 110
     assert t.hires is True
+    # album cover UUID -> tidal resources URL (dashes replaced by slashes)
+    assert t.cover_url == (
+        "https://resources.tidal.com/images/24d9e3d0/1a2b/4c3d/9e8f/000011112222/1280x1280.jpg"
+    )
+
+
+def test_tidal_cover_url_none_when_absent() -> None:
+    assert tidal_cover_url(None) is None
+    assert tidal_cover_url("") is None
+
+
+def test_parse_search_no_cover_leaves_art_url_none() -> None:
+    data = {"data": {"items": [{"id": 1, "title": "T", "artist": {"name": "A"}, "album": {}}]}}
+    assert parse_search(data)[0].cover_url is None
 
 
 def test_pick_best_raises_on_empty() -> None:
