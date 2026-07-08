@@ -27,7 +27,7 @@ from crate.domain.matching import artist_matches, duration_prefilter, match_scor
 
 Search = Callable[[str], Any]  # query -> arcod get-music JSON
 CreateDownload = Callable[[dict[str, Any]], Any]  # payload -> create-job JSON ({"id": uuid, ...})
-Poll = Callable[[str], Any]  # job id -> status JSON
+Poll = Callable[[str, str], Any]  # (job id, access token) -> status JSON
 Fetch = Callable[[str, Path], None]  # (downloadUrl, dest) -> stream the file to dest
 Clock = Callable[[], float]
 Sleep = Callable[[float], None]
@@ -167,11 +167,12 @@ def arcod_download(
 
     job = create_download(build_download_payload(track))
     job_id = str(job["id"])
+    token = str(job["accessToken"])  # authorises the per-job status endpoint
 
     deadline = clock() + POLL_TIMEOUT_S
     status: dict[str, Any] = {}
     while True:
-        status = dict(poll(job_id))
+        status = dict(poll(job_id, token))
         state = status.get("status")
         if state == "completed":
             break
