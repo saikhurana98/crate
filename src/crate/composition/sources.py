@@ -8,6 +8,7 @@ via ``CRATE_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
   Tier 1  Qobuz (hi-res FLAC, direct)        opt-in CRATE_QOBUZ=1
           Monochrome (Amazon 24-bit FLAC)   opt-in CRATE_MONOCHROME=1
   Tier 2  Deezer (16-bit FLAC via ARL)       opt-in CRATE_DEEZER=1
+          arcod (Qobuz proxy, no auth)       opt-in CRATE_ARCOD=1
           Soulseek (via slskd)               opt-in CRATE_SOULSEEK=1
           Telegram music bot                 opt-in CRATE_TELEGRAM=1
   Tier 3  yt-dlp (lossy fallback)            always on
@@ -132,6 +133,28 @@ def _deezer_source() -> SourceEntry:  # pragma: no cover - IO wiring
     return SourceEntry(SourceRef("deezer", Tier.TWO), deezer, expected_lossless=True)
 
 
+def _arcod_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from crate.adapters.sources.arcod import arcod_download
+    from crate.infrastructure.arcod.client import ArcodClient
+
+    client = ArcodClient(os.environ.get("CRATE_ARCOD_BASE", "https://arcod.xyz"))
+
+    def arcod(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return arcod_download(
+            query,
+            out_dir,
+            want,
+            search=client.search,
+            create_download=client.create_download,
+            poll=client.poll,
+            fetch=client.fetch,
+        )
+
+    # arcod may deliver MP3 despite requesting FLAC (Qobuz proxy, quality not
+    # guaranteed) -> NOT lossless-gated; the prober keeps whatever it serves.
+    return SourceEntry(SourceRef("arcod", Tier.TWO), arcod, expected_lossless=False)
+
+
 def _soulseek_source() -> SourceEntry:  # pragma: no cover - IO wiring
     from crate.adapters.sources.soulseek import soulseek_download
     from crate.infrastructure.soulseek.slskd_client import SlskdClient
@@ -168,6 +191,7 @@ _FACTORIES: dict[str, Callable[[], SourceEntry]] = {
     "qobuz": _qobuz_source,
     "monochrome": _monochrome_source,
     "deezer": _deezer_source,
+    "arcod": _arcod_source,
     "soulseek": _soulseek_source,
     "telegram": _telegram_source,
     "ytdlp": _ytdlp_source,
@@ -232,6 +256,8 @@ def _tiers_from_env() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     tier2: list[SourceEntry] = []
     if _enabled("CRATE_DEEZER"):
         tier2.append(_deezer_source())
+    if _enabled("CRATE_ARCOD"):
+        tier2.append(_arcod_source())
     if _enabled("CRATE_SOULSEEK"):
         tier2.append(_soulseek_source())
     if _enabled("CRATE_TELEGRAM"):

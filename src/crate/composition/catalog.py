@@ -34,6 +34,7 @@ SOURCES: tuple[SourceSpec, ...] = (
     ),
     SourceSpec("monochrome", 1, "CRATE_MONOCHROME", (), True),  # browser session, no env secret
     SourceSpec("deezer", 2, "CRATE_DEEZER", ("CRATE_DEEZER_ARL",), True),
+    SourceSpec("arcod", 2, "CRATE_ARCOD", (), False),  # Qobuz proxy, no auth; may serve MP3
     SourceSpec(
         "soulseek",
         2,
