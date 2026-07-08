@@ -41,8 +41,13 @@ class ArcodClient:  # pragma: no cover - network I/O
         resp.raise_for_status()
         return dict(resp.json())
 
-    def poll(self, job_id: str) -> dict[str, Any]:
-        resp = self._http.get(f"{self._base}/api/v2/downloads/{job_id}")
+    def poll(self, job_id: str, token: str) -> dict[str, Any]:
+        # the per-job status endpoint is authorised by the accessToken that
+        # ``create_download`` returned, sent as the x-download-token header.
+        resp = self._http.get(
+            f"{self._base}/api/v2/downloads/{job_id}",
+            headers={"x-download-token": token},
+        )
         resp.raise_for_status()
         return dict(resp.json())
 

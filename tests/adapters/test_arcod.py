@@ -160,9 +160,11 @@ class _FakePoll:
     def __init__(self, *statuses: dict[str, Any]) -> None:
         self._statuses = list(statuses)
         self.seen: list[str] = []
+        self.tokens: list[str] = []
 
-    def __call__(self, job_id: str) -> dict[str, Any]:
+    def __call__(self, job_id: str, token: str) -> dict[str, Any]:
         self.seen.append(job_id)
+        self.tokens.append(token)
         return self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
 
 
@@ -175,7 +177,7 @@ def test_arcod_download_happy_path(tmp_path: Path) -> None:
 
     def create_download(payload: dict[str, Any]) -> dict[str, Any]:
         payloads["sent"] = payload
-        return {"id": "job-uuid-1", "status": "pending"}
+        return {"id": "job-uuid-1", "accessToken": "tok-1", "status": "pending"}
 
     poll = _FakePoll(
         {"status": "pending"},
@@ -214,6 +216,7 @@ def test_arcod_download_happy_path(tmp_path: Path) -> None:
     assert outcome.track_no == 4
     assert payloads["sent"]["trackId"] == "302821383"
     assert poll.seen == ["job-uuid-1", "job-uuid-1"]  # polled twice (pending -> completed)
+    assert poll.tokens == ["tok-1", "tok-1"]  # accessToken threaded into every poll
     assert not list(tmp_path.glob("*.part"))  # sidecar cleaned up
 
 
@@ -223,8 +226,8 @@ def test_arcod_download_raises_on_failed_status(tmp_path: Path) -> None:
             "Diljit Dosanjh Panga Next Level",
             tmp_path,
             search=lambda q: SEARCH_RESPONSE,
-            create_download=lambda p: {"id": "job-x", "status": "pending"},
-            poll=lambda j: {"status": "failed", "error": "source unavailable"},
+            create_download=lambda p: {"id": "job-x", "accessToken": "t", "status": "pending"},
+            poll=lambda j, t: {"status": "failed", "error": "source unavailable"},
             fetch=lambda u, d: None,
             clock=lambda: 0.0,
             sleep=lambda _s: None,
@@ -240,8 +243,8 @@ def test_arcod_download_raises_on_timeout(tmp_path: Path) -> None:
             "Diljit Dosanjh Panga Next Level",
             tmp_path,
             search=lambda q: SEARCH_RESPONSE,
-            create_download=lambda p: {"id": "job-slow", "status": "pending"},
-            poll=lambda j: {"status": "pending"},
+            create_download=lambda p: {"id": "job-slow", "accessToken": "t", "status": "pending"},
+            poll=lambda j, t: {"status": "pending"},
             fetch=lambda u, d: None,
             clock=clock,
             sleep=lambda _s: None,
@@ -254,8 +257,8 @@ def test_arcod_download_raises_when_no_match(tmp_path: Path) -> None:
             "No Such Song Here",
             tmp_path,
             search=lambda q: SEARCH_RESPONSE,
-            create_download=lambda p: {"id": "x"},
-            poll=lambda j: {"status": "completed"},
+            create_download=lambda p: {"id": "x", "accessToken": "t"},
+            poll=lambda j, t: {"status": "completed"},
             fetch=lambda u, d: None,
             clock=lambda: 0.0,
             sleep=lambda _s: None,
