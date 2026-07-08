@@ -25,3 +25,7 @@ class DownloadOutcome:
     title: str | None = None
     track_no: int | None = None
     disc_no: int | None = None
+    # Album cover URL the source already knew (structured sources fill it). The
+    # librarian best-effort fetches it, embeds a front cover, and writes
+    # ``cover.jpg`` beside the file; ``None`` means "no art known" (never fatal).
+    art_url: str | None = None

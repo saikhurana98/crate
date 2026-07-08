@@ -1,5 +1,14 @@
 # Phase 4 — Deep verification & art (optional; revives ADR-0005)
 
+> **Shipped (2026-07): cover-art embedding only.** Section 3 below is live — the
+> librarian fetches the album cover the source already knew about, embeds a front
+> cover, and writes `cover.jpg`, retiring the external beets art pass for new
+> downloads. Sections 1 (chromaprint identity / AcoustID) and 2 (fake-FLAC
+> spectral detection) are **DEFERRED**: both add a binary dep (`fpcalc`) or extra
+> ffmpeg passes for marginal gain, so they were dropped to keep the stack elegant
+> and small. Revisit only if a concrete mis-identification / fake-FLAC incident
+> justifies the weight.
+
 Goal: verify *identity* and *authenticity* of files, and make the librarian
 fetch cover art natively (retiring the external beets pass for new downloads).
 

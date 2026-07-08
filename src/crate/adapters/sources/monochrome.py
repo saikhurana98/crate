@@ -52,6 +52,7 @@ class MonoTrack:
     album: str
     duration_s: int | None
     hires: bool
+    cover_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,19 @@ class AmzStream:
     codec: str
     bit_depth: int | None
     sample_rate: int | None
+
+
+def tidal_cover_url(cover: str | None) -> str | None:
+    """Build the TIDAL resources cover URL from an album ``cover`` UUID.
+
+    TIDAL exposes covers at
+    ``https://resources.tidal.com/images/<uuid-with-slashes>/1280x1280.jpg``,
+    where the dashes of the UUID are replaced by ``/``. Returns ``None`` when no
+    cover UUID is present (art is then simply skipped, never fatal)."""
+    if not cover:
+        return None
+    path = cover.replace("-", "/")
+    return f"https://resources.tidal.com/images/{path}/1280x1280.jpg"
 
 
 def _is_hires(item: dict[str, Any]) -> bool:
@@ -77,14 +91,16 @@ def parse_search(data: dict[str, Any]) -> list[MonoTrack]:
         if not artist:
             artists = item.get("artists", [])
             artist = artists[0].get("name") if artists else "Unknown"
+        album = item.get("album") or {}
         tracks.append(
             MonoTrack(
                 id=int(item["id"]),
                 title=str(item.get("title", "Unknown")),
                 artist=str(artist),
-                album=str(item.get("album", {}).get("title", "")),
+                album=str(album.get("title", "")),
                 duration_s=item.get("duration"),
                 hires=_is_hires(item),
+                cover_url=tidal_cover_url(album.get("cover")),
             )
         )
     return tracks
@@ -239,4 +255,5 @@ def monochrome_download(
         title=track.title,
         artist=track.artist,
         album=track.album or None,
+        art_url=track.cover_url,
     )

@@ -201,4 +201,5 @@ def arcod_download(
         artist=track.artist,
         album=track.album_title or None,
         track_no=track.track_no,
+        art_url=track.cover_url or None,
     )

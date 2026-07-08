@@ -83,6 +83,13 @@ packages = ["crate"]
 module = ["telethon.*", "Crypto.*", "mutagen.*"]
 ignore_missing_imports = true
 
+# tags.py embeds cover art by constructing mutagen's picture types (FLAC.Picture,
+# ID3.APIC, MP4Cover, …), whose stubs are untyped — allow those calls here rather
+# than scatter per-line ignores.
+[[tool.mypy.overrides]]
+module = ["crate.infrastructure.audio.tags"]
+disallow_untyped_calls = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

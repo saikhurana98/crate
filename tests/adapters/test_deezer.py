@@ -27,7 +27,11 @@ SEARCH_RESPONSE = {
             "id": 3135556,
             "title": "Harder, Better, Faster, Stronger",
             "artist": {"name": "Daft Punk"},
-            "album": {"title": "Discovery"},
+            "album": {
+                "title": "Discovery",
+                "cover_xl": "https://e-cdns-images.dzcdn.net/images/cover/abc/1000x1000.jpg",
+                "cover_big": "https://e-cdns-images.dzcdn.net/images/cover/abc/500x500.jpg",
+            },
             "duration": 224,
         },
         {
@@ -98,6 +102,9 @@ def test_parse_search_maps_tracks() -> None:
     assert tracks[0].artist == "Daft Punk"
     assert tracks[0].album == "Discovery"
     assert tracks[0].duration_s == 224
+    # cover_xl (1000px) preferred over cover_big; item without a cover -> None
+    assert tracks[0].cover_url == "https://e-cdns-images.dzcdn.net/images/cover/abc/1000x1000.jpg"
+    assert tracks[1].cover_url is None
 
 
 def test_select_track_title_guard() -> None:
@@ -177,6 +184,22 @@ def test_deezer_download_resolves_and_decrypts(tmp_path: Path) -> None:
     assert outcome.path.read_bytes() == plain  # decrypted correctly
     assert calls["resolved"] == 3135556
     assert not list(tmp_path.glob("*.part"))  # encrypted + decrypted temps cleaned up
+    assert outcome.art_url == "https://e-cdns-images.dzcdn.net/images/cover/abc/1000x1000.jpg"
+
+
+def test_parse_search_falls_back_to_cover_big() -> None:
+    data = {
+        "data": [
+            {
+                "id": 7,
+                "title": "T",
+                "artist": {"name": "A"},
+                "album": {"title": "Al", "cover_big": "https://cdn/500.jpg"},  # no cover_xl
+                "duration": 100,
+            }
+        ]
+    }
+    assert parse_search(data)[0].cover_url == "https://cdn/500.jpg"
 
 
 def test_deezer_download_raises_when_no_match(tmp_path: Path) -> None:

@@ -26,7 +26,10 @@ SEARCH_RESPONSE = {
                 "id": 12345,
                 "title": "Get Lucky",
                 "performer": {"name": "Daft Punk"},
-                "album": {"title": "Random Access Memories"},
+                "album": {
+                    "title": "Random Access Memories",
+                    "image": {"large": "https://static.qobuz.com/images/covers/ram_600.jpg"},
+                },
                 "duration": 369,
                 "maximum_bit_depth": 24,
                 "maximum_sampling_rate": 88.2,
@@ -65,6 +68,23 @@ def test_parse_search_maps_hires_metadata() -> None:
     assert t.bit_depth == 24
     assert t.sample_rate_khz == 88.2
     assert t.isrc == "USQX91300108"
+    assert t.cover_url == "https://static.qobuz.com/images/covers/ram_600.jpg"
+    assert tracks[1].cover_url is None  # second item has no album.image
+
+
+def test_qobuz_download_sets_art_url(tmp_path: Path) -> None:
+    def fetch(url: str, dest: Path) -> None:
+        dest.write_bytes(b"fLaC\x00x")
+
+    outcome = qobuz_download(
+        "Daft Punk Get Lucky",
+        tmp_path,
+        search=lambda q: SEARCH_RESPONSE,
+        get_file_url=lambda i: "https://cdn.qobuz/track.flac",
+        fetch=fetch,
+        clock=iter([0.0, 1.0]).__next__,
+    )
+    assert outcome.art_url == "https://static.qobuz.com/images/covers/ram_600.jpg"
 
 
 def test_select_track_prefers_isrc_then_title() -> None:
