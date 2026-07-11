@@ -188,6 +188,27 @@ def test_mark_needs_confirm_parks_item_with_score(tmp_path: Path) -> None:
     assert store.review_stats()["needs_confirm"] == 1
 
 
+def test_force_review_download_rearms_stored_candidate(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    lossy = _lossy_done(store, "Lossy Track")
+    store.queue_review_download(
+        lossy, _cand(), is_upgrade=True, target_path="/nas/Lossy Track.opus"
+    )
+    store.claim_next()
+    store.mark_needs_confirm(lossy, 0.42)
+
+    assert store.force_review_download(lossy) is True
+    armed = store.get_review_candidate(lossy)
+    assert armed is not None and armed["force"] == 1
+    assert store.get_request(lossy)["status"] == "queued"  # requeued for the worker
+
+
+def test_force_review_download_false_when_nothing_armed(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _failed(store, "No Candidate")
+    assert store.force_review_download(rid) is False
+
+
 def test_set_match_similarity_records_score(tmp_path: Path) -> None:
     store = _store(tmp_path)
     lossy = _lossy_done(store, "Lossy Track")

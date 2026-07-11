@@ -45,9 +45,11 @@ const C = {
 // chips). Reuses the file's existing softer coral (#ff6b58, already used for failure
 // text) rather than inventing a new palette — a warmer "amber" that stays in-system
 // and reads distinct from the hard-alarm red (#ff4c38).
-const WARN = "#ff6b58";
-const WARN_BG = "rgba(255,107,88,.09)";
-const WARN_BD = "rgba(255,107,88,.4)";
+// Amber/yellow "needs attention" — deliberately distinct from the failed red so
+// CONFIRM never reads as FAILED.
+const WARN = "#f2c14e";
+const WARN_BG = "rgba(242,193,78,.10)";
+const WARN_BD = "rgba(242,193,78,.42)";
 
 // Per-source config panel definition: [envKey, label][] + non-secret settings.
 interface PanelDef {
@@ -409,17 +411,14 @@ async function identifyReview(id: string): Promise<void> {
 // "Replace anyway" on a needs_confirm item — re-send the last chosen candidate with
 // force=true so the fingerprint gate is overridden.
 async function replaceAnyway(id: string): Promise<void> {
-  const cand = state.reviewLastCand[id];
-  if (!cand) {
-    toast("No candidate to replace with — search and pick one first");
-    return;
-  }
+  // Uses the candidate stored server-side (the one that failed the gate), so this
+  // works even after a reload — no client-side candidate required.
   stopClip(); // stop the audition once the pick is committed
   state.reviewDownloading[id] = true;
   render();
   try {
-    await api.reviewDownload(id, cand, true);
-    toast(`Replacing anyway: ${state.reviewItems.find((i) => i.id === id)?.query ?? ""} · ${cand.source}`);
+    await api.reviewConfirm(id);
+    toast(`Replacing anyway: ${state.reviewItems.find((i) => i.id === id)?.query ?? ""}`);
     void loadReview().then(render);
   } catch (err) {
     state.reviewDownloading[id] = false;
@@ -1961,7 +1960,10 @@ function reviewItemHtml(item: ReviewItem): string {
   // "Replace anyway" (force the same candidate) / "Keep current" (dismiss).
   if (confirm) {
     const lastCand = state.reviewLastCand[id];
-    const canForce = !!lastCand && !downloading;
+    // The candidate is always stored server-side for a needs_confirm item, so
+    // "replace anyway" is available regardless of client state — only gated while
+    // a re-download is already in flight.
+    const canForce = !downloading;
     const pctStr = matchPct != null ? `${matchPct}%` : "an unknown amount";
     const cBody = `<div style="border-top:1px solid #1a1e19;padding:14px 18px 16px;animation:fadein .2s ease">
       ${provenanceBlock(item)}
@@ -1973,7 +1975,7 @@ function reviewItemHtml(item: ReviewItem): string {
       <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
         <button data-act="replaceAnyway" data-id="${esc(id)}" ${canForce ? "" : "disabled"} style="background:${canForce ? WARN : "#181c17"};border:none;border-radius:14px;color:${canForce ? "#14170f" : "#5d6456"};font:600 12.5px 'Instrument Sans';padding:11px 18px;cursor:${canForce ? "pointer" : "default"};transition:.15s">Replace anyway</button>
         <button data-act="dismissReview" data-id="${esc(id)}" style="background:none;border:1px solid #272c25;border-radius:14px;color:#5d6456;font:600 11px 'JetBrains Mono';padding:11px 15px;cursor:pointer;transition:border-color .15s,color .15s">keep current</button>
-        <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#464d40">${lastCand ? "replace overrides the fingerprint gate" : "no armed candidate — search from the lossy item first"}</span>
+        <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#464d40">replace overrides the fingerprint gate</span>
       </div>
     </div>`;
     return `<section style="background:#111411;border:1px solid ${cardBorder};border-radius:20px;margin-bottom:12px;overflow:hidden;transition:border-color .2s">${head}${cBody}</section>`;

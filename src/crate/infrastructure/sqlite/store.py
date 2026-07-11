@@ -612,6 +612,31 @@ class RequestStore:
             self._invalidate_stats()
         return True
 
+    def force_review_download(self, request_id: str) -> bool:
+        """Re-arm the already-stored candidate with ``force`` and requeue it.
+
+        A ``needs_confirm`` item still holds the candidate that failed the gate in
+        ``review_candidates``; this is the "replace anyway" path — it flips
+        ``force`` on and requeues, so the worker replaces without the gate. No
+        client-side candidate is needed (survives a reload). False when nothing is
+        armed for this request."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM review_candidates WHERE request_id=?", (request_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            self._conn.execute(
+                "UPDATE review_candidates SET force=1 WHERE request_id=?", (request_id,)
+            )
+            self._conn.execute(
+                "UPDATE requests SET status='queued', error=NULL, finished_at=NULL, "
+                "dismissed=0 WHERE id=?",
+                (request_id,),
+            )
+            self._invalidate_stats()
+        return True
+
     def set_match_similarity(self, request_id: str, score: float) -> None:
         """Record the fingerprint similarity of a completed review upgrade."""
         with self._lock:

@@ -377,3 +377,25 @@ def test_search_rows_mark_streamable(tmp_path: Path) -> None:
     rows = {r["source"]: r for r in client.post(f"/api/review/{rid}/search", json={}).json()}
     assert rows["qobuz"]["streamable"] is True
     assert rows["monochrome"]["streamable"] is False
+
+
+def test_confirm_rearms_and_requeues(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+    cand = {"source": "qobuz", "ref": "42", "title": "Gosh", "artist": "Jamie xx"}
+    client = TestClient(create_app(store, candidate_sources=_cand_source([])))
+    client.post(f"/api/review/{rid}/download", json={"candidate": cand})
+    store.claim_next()
+    store.mark_needs_confirm(rid, 0.5)
+
+    r = client.post(f"/api/review/{rid}/confirm")
+    assert r.status_code == 200 and r.json()["status"] == "queued"
+    armed = store.get_review_candidate(rid)
+    assert armed is not None and armed["force"] == 1
+
+
+def test_confirm_404_when_no_candidate(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _failed(store, "Nope")
+    client = TestClient(create_app(store))
+    assert client.post(f"/api/review/{rid}/confirm").status_code == 404
