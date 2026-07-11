@@ -378,6 +378,16 @@ def create_app(
             media_type=relayed.get("content-type"),
         )
 
+    @api.post("/review/{request_id}/confirm")
+    def review_confirm(request_id: str) -> dict[str, Any]:
+        """Replace anyway: re-arm the stored candidate with force + requeue.
+
+        Uses the candidate already in ``review_candidates`` (the one that failed the
+        gate), so a ``needs_confirm`` item can be confirmed even after a reload."""
+        if not store.force_review_download(request_id):
+            raise HTTPException(status_code=404, detail="no candidate to confirm")
+        return {"id": request_id, "status": "queued"}
+
     @api.post("/review/{request_id}/dismiss")
     def review_dismiss(request_id: str) -> dict[str, Any]:
         if not store.dismiss_review(request_id):

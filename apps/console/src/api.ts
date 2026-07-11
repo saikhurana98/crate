@@ -307,6 +307,12 @@ export const api = {
     ),
   reviewIdentify: (id: string) =>
     send<ReviewHint>("POST", `/api/review/${encodeURIComponent(id)}/identify`, {}),
+  reviewConfirm: (id: string) =>
+    send<{ id: string; status: string }>(
+      "POST",
+      `/api/review/${encodeURIComponent(id)}/confirm`,
+      {},
+    ),
   reviewAudioUrl: (id: string) => `/api/review/${encodeURIComponent(id)}/audio`,
   reviewCandidateStreamUrl: (source: string, ref: string) =>
     `/api/review/candidate-stream?source=${encodeURIComponent(source)}&ref=${encodeURIComponent(ref)}`,
