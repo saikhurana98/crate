@@ -191,16 +191,23 @@ export interface ReviewItem {
   id: string;
   query: string;
   requested_via: string;
-  status: string; // failed | done
-  kind: "failed" | "lossy";
+  status: string; // failed | done | needs_confirm
+  kind: "failed" | "lossy" | "needs_confirm";
   reason: string | null; // failure reason (failed items)
   source_won: string | null;
+  title: string | null; // wanted title (for comparing against the fingerprint hint)
   duration_s: number | null; // wanted duration
   quality_label: string | null; // current file (lossy items)
   size_bytes: number | null;
   file_path: string | null;
   file_duration_s: number | null;
   lossless: number | null;
+  has_audio: boolean; // a current file exists -> the /audio player is available
+  // advisory fingerprint hint (ADR-0019); null until identified / when unavailable
+  acoustid_artist: string | null;
+  acoustid_title: string | null;
+  acoustid_mbid: string | null;
+  match_similarity: number | null; // 0..1 fingerprint match of the last re-download
 }
 
 export interface ReviewCandidate {
@@ -215,13 +222,22 @@ export interface ReviewCandidate {
   lossless: boolean;
   duration_s: number | null;
   size_bytes: number | null;
+  preview_url: string | null; // ~30s source clip for the A/B ear test (null = none)
   match: number;
+}
+
+// The advisory hint POST /review/{id}/identify returns ({} -> all null here).
+export interface ReviewHint {
+  canonical_artist?: string | null;
+  canonical_title?: string | null;
+  mbid?: string | null;
 }
 
 export interface ReviewStats {
   needs_review: number;
   failed: number;
   lossy: number;
+  needs_confirm: number;
   resolved: number;
 }
 
@@ -282,12 +298,15 @@ export const api = {
   review: () => get<ReviewResponse>("/api/review"),
   reviewSearch: (id: string, q: string) =>
     send<ReviewCandidate[]>("POST", `/api/review/${encodeURIComponent(id)}/search`, { q }),
-  reviewDownload: (id: string, candidate: ReviewCandidate) =>
+  reviewDownload: (id: string, candidate: ReviewCandidate, force = false) =>
     send<{ id: string; status: string; source: string }>(
       "POST",
       `/api/review/${encodeURIComponent(id)}/download`,
-      { candidate },
+      { candidate, force },
     ),
+  reviewIdentify: (id: string) =>
+    send<ReviewHint>("POST", `/api/review/${encodeURIComponent(id)}/identify`, {}),
+  reviewAudioUrl: (id: string) => `/api/review/${encodeURIComponent(id)}/audio`,
   reviewDismiss: (id: string) =>
     send<{ id: string; dismissed: boolean }>(
       "POST",

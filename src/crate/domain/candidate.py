@@ -30,3 +30,4 @@ class Candidate:
     lossless: bool
     duration_s: int | None
     size_bytes: int | None
+    preview_url: str | None = None  # source's ~30 s clip for the review A/B ear test

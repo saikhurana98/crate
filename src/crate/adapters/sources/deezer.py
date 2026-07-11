@@ -47,6 +47,7 @@ class DeezerTrack:
     duration_s: int | None
     isrc: str | None
     cover_url: str | None = None
+    preview_url: str | None = None
 
 
 def blowfish_key(track_id: int) -> bytes:
@@ -101,6 +102,7 @@ def parse_search(data: dict[str, Any]) -> list[DeezerTrack]:
                 duration_s=item.get("duration"),
                 isrc=item.get("isrc"),
                 cover_url=cover or None,
+                preview_url=item.get("preview") or None,  # 30 s public CDN clip
             )
         )
     return tracks
@@ -222,6 +224,7 @@ def search_candidates(
             lossless=True,
             duration_s=t.duration_s,
             size_bytes=None,
+            preview_url=t.preview_url,
         )
         for t in tracks
         if title_matches(t.title, query)

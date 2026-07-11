@@ -82,7 +82,13 @@ def test_review_stats_counts(tmp_path: Path) -> None:
     _failed(store, "F2")
     _lossy_done(store, "L1")
     stats = store.review_stats()
-    assert stats == {"needs_review": 3, "failed": 2, "lossy": 1, "resolved": 0}
+    assert stats == {
+        "needs_review": 3,
+        "failed": 2,
+        "lossy": 1,
+        "needs_confirm": 0,
+        "resolved": 0,
+    }
 
 
 def _cand() -> Candidate:
@@ -135,3 +141,68 @@ def test_get_review_candidate_none_for_ordinary_request(tmp_path: Path) -> None:
     store = _store(tmp_path)
     rid = store.enqueue("Some Track")
     assert store.get_review_candidate(rid) is None
+
+
+# --- migration 007: fingerprint guard (ADR-0019) ---
+
+
+def test_migration_007_adds_fingerprint_columns(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "crate.db")
+    req = {r["name"] for r in conn.execute("PRAGMA table_info(requests)")}
+    assert {
+        "acoustid_artist",
+        "acoustid_title",
+        "acoustid_mbid",
+        "ref_fingerprint",
+        "match_similarity",
+    } <= req
+    cand = {r["name"] for r in conn.execute("PRAGMA table_info(review_candidates)")}
+    assert "force" in cand
+
+
+def test_queue_review_download_stores_force(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    lossy = _lossy_done(store, "Lossy Track")
+    store.queue_review_download(
+        lossy, _cand(), is_upgrade=True, target_path="/nas/Lossy Track.opus", force=True
+    )
+    armed = store.get_review_candidate(lossy)
+    assert armed is not None and armed["force"] == 1
+
+
+def test_mark_needs_confirm_parks_item_with_score(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    lossy = _lossy_done(store, "Lossy Track")
+    store.queue_review_download(
+        lossy, _cand(), is_upgrade=True, target_path="/nas/Lossy Track.opus"
+    )
+    store.claim_next()
+    store.mark_needs_confirm(lossy, 0.42)
+
+    items = {i["id"]: i for i in store.list_review()}
+    assert lossy in items
+    item = items[lossy]
+    assert item["kind"] == "needs_confirm"
+    assert item["match_similarity"] == 0.42
+    assert item["file_path"] == "/nas/Lossy Track.opus"  # existing file untouched
+    assert store.review_stats()["needs_confirm"] == 1
+
+
+def test_set_match_similarity_records_score(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    lossy = _lossy_done(store, "Lossy Track")
+    store.set_match_similarity(lossy, 0.98)
+    item = next(i for i in store.list_review() if i["id"] == lossy)
+    assert item["match_similarity"] == 0.98
+
+
+def test_set_identity_hint_caches_advisory_fields(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    lossy = _lossy_done(store, "Lossy Track")
+    store.set_identity_hint(
+        lossy, artist="Avicii", title="Lonely Together (acoustic)", mbid="mbid-1"
+    )
+    item = next(i for i in store.list_review() if i["id"] == lossy)
+    assert item["acoustid_artist"] == "Avicii"
+    assert item["acoustid_title"] == "Lonely Together (acoustic)"
+    assert item["acoustid_mbid"] == "mbid-1"

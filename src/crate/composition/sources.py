@@ -591,7 +591,10 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
     candidate (``review_candidates`` row) skips the cascade and downloads exactly
     that candidate, then upgrades in place (lossy) or fulfils (failed)."""
     from crate.application.dedup import resolve_request
-    from crate.application.review import run_review_download
+    from crate.application.review import MatchTooLow, run_review_download
+    from crate.domain.fingerprint import similarity as fp_similarity
+    from crate.infrastructure.audio.fingerprint import fingerprint as fp_raw
+    from crate.infrastructure.audio.fingerprint import fpcalc_available
     from crate.infrastructure.audio.probe import probe
 
     store = build_recorder("console")
@@ -602,6 +605,9 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
     candidate_sources = build_candidate_sources()
     out_dir = Path(os.environ.get("CRATE_SERVE_DOWNLOADS", "downloads"))
     poll = float(os.environ.get("CRATE_QUEUE_POLL", "2.0"))
+    # Fingerprint gate is opt-in: only armed when the fpcalc binary is present
+    # (the core image may omit it), else review upgrades replace ungated as before.
+    fingerprinter = fp_raw if fpcalc_available() else None
 
     def handle(claimed: dict[str, Any]) -> None:
         review = store.get_review_candidate(claimed["id"])
@@ -610,19 +616,26 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
             source = candidate_sources.get(candidate.source)
             if source is None:
                 raise RuntimeError(f"candidate source {candidate.source!r} not available")
-            run_review_download(
-                claimed["id"],
-                out_dir,
-                candidate,
-                want=claimed["identity"],
-                is_upgrade=bool(review["is_upgrade"]),
-                target_path=review["target_path"],
-                download=source[1],
-                prober=probe,
-                finalizer=finalizer,
-                replace=replace,
-                recorder=store,
-            )
+            try:
+                run_review_download(
+                    claimed["id"],
+                    out_dir,
+                    candidate,
+                    want=claimed["identity"],
+                    is_upgrade=bool(review["is_upgrade"]),
+                    target_path=review["target_path"],
+                    download=source[1],
+                    prober=probe,
+                    finalizer=finalizer,
+                    replace=replace,
+                    recorder=store,
+                    fingerprinter=fingerprinter,
+                    similarity=fp_similarity,
+                    force=bool(review["force"]),
+                )
+            except MatchTooLow as low:
+                # Gate refused the replace; park for the user instead of failing.
+                store.mark_needs_confirm(claimed["id"], low.score)
             return
         resolve_request(
             claimed["query"],
@@ -850,6 +863,31 @@ def build_spotify_oauth(
     return SpotifyOAuthProvider(client, redirect_uri, config, store)
 
 
+def build_identifier() -> Any:  # pragma: no cover - IO wiring
+    """Advisory AcoustID identifier for the review hint: ``path -> IdentityHint``.
+
+    Returns None when the feature is off — no ``fpcalc`` binary or no
+    ``CRATE_ACOUSTID_KEY`` — so the ``/review/{id}/identify`` endpoint returns
+    ``{}`` and the UI falls back to metadata only (ADR-0019)."""
+    from crate.infrastructure.audio.fingerprint import fingerprint_compressed, fpcalc_available
+
+    key = os.environ.get("CRATE_ACOUSTID_KEY")
+    if not key or not fpcalc_available():
+        return None
+    from pathlib import Path as _Path
+
+    from crate.application.identify import identify
+    from crate.domain.identity import IdentityHint
+    from crate.infrastructure.acoustid.client import AcoustidClient
+
+    client = AcoustidClient(key)
+
+    def identifier(path: _Path) -> IdentityHint | None:
+        return identify(path, fingerprint_compressed=fingerprint_compressed, lookup=client.lookup)
+
+    return identifier
+
+
 def build_console_app() -> Any:  # pragma: no cover - IO wiring
     """FastAPI app for `crate console`: a read-only view over the history DB."""
     from crate.adapters.inbound.ops_api import create_app
@@ -869,4 +907,5 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         spotify=build_spotify_oauth(config, store),
         bulk_resolve=build_bulk_resolver(),
         candidate_sources=build_candidate_sources,
+        identify_hint=build_identifier(),
     )

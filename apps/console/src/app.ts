@@ -41,6 +41,14 @@ const C = {
   ink: "#14170f",
 };
 
+// Attention/warning accent for the fingerprint gate (needs_confirm + wrong-version
+// chips). Reuses the file's existing softer coral (#ff6b58, already used for failure
+// text) rather than inventing a new palette — a warmer "amber" that stays in-system
+// and reads distinct from the hard-alarm red (#ff4c38).
+const WARN = "#ff6b58";
+const WARN_BG = "rgba(255,107,88,.09)";
+const WARN_BD = "rgba(255,107,88,.4)";
+
 // Per-source config panel definition: [envKey, label][] + non-secret settings.
 interface PanelDef {
   creds: [string, string][];
@@ -142,6 +150,9 @@ interface State {
   reviewCands: Record<string, ReviewCandidate[]>; // item id -> found candidates
   reviewSel: Record<string, string>; // item id -> selected candidate id
   reviewDownloading: Record<string, boolean>; // item id -> re-download posted
+  reviewIdentifying: Record<string, boolean>; // item id -> AcoustID identify in flight
+  reviewHint: Record<string, { artist: string | null; title: string | null; mbid: string | null }>; // item id -> fingerprint hint (key present => identify ran)
+  reviewLastCand: Record<string, ReviewCandidate>; // item id -> candidate last chosen (for a force re-send)
 }
 
 const state: State = {
@@ -191,6 +202,9 @@ const state: State = {
   reviewCands: {},
   reviewSel: {},
   reviewDownloading: {},
+  reviewIdentifying: {},
+  reviewHint: {},
+  reviewLastCand: {},
 };
 
 const root = document.getElementById("app")!;
@@ -301,6 +315,9 @@ async function loadReview(): Promise<void> {
       state.reviewSel,
       state.reviewQ,
       state.reviewSearching,
+      state.reviewIdentifying,
+      state.reviewHint,
+      state.reviewLastCand,
     ] as Record<string, unknown>[]) {
       for (const id of Object.keys(map)) if (!live.has(id)) delete map[id];
     }
@@ -328,6 +345,7 @@ async function downloadCand(id: string): Promise<void> {
   const cands = state.reviewCands[id] ?? [];
   const cand = cands.find((c) => c.id === state.reviewSel[id]);
   if (!cand) return;
+  state.reviewLastCand[id] = cand; // remember it so a needs_confirm item can force-resend
   state.reviewDownloading[id] = true;
   render();
   try {
@@ -350,6 +368,115 @@ async function dismissReview(id: string): Promise<void> {
   } catch (err) {
     toast(`Dismiss failed: ${(err as Error).message}`);
   }
+  render();
+}
+
+// Advisory fingerprint identify (AcoustID). Result cached on the item row too, but
+// a freshly returned hint is preferred; {} => "no fingerprint match".
+async function identifyReview(id: string): Promise<void> {
+  state.reviewIdentifying[id] = true;
+  render();
+  try {
+    const hint = await api.reviewIdentify(id);
+    state.reviewHint[id] = {
+      artist: hint.canonical_artist ?? null,
+      title: hint.canonical_title ?? null,
+      mbid: hint.mbid ?? null,
+    };
+  } catch (err) {
+    toast(`Identify failed: ${(err as Error).message}`);
+  }
+  state.reviewIdentifying[id] = false;
+  render();
+}
+
+// "Replace anyway" on a needs_confirm item — re-send the last chosen candidate with
+// force=true so the fingerprint gate is overridden.
+async function replaceAnyway(id: string): Promise<void> {
+  const cand = state.reviewLastCand[id];
+  if (!cand) {
+    toast("No candidate to replace with — search and pick one first");
+    return;
+  }
+  state.reviewDownloading[id] = true;
+  render();
+  try {
+    await api.reviewDownload(id, cand, true);
+    toast(`Replacing anyway: ${state.reviewItems.find((i) => i.id === id)?.query ?? ""} · ${cand.source}`);
+    void loadReview().then(render);
+  } catch (err) {
+    state.reviewDownloading[id] = false;
+    toast(`Replace failed: ${(err as Error).message}`);
+  }
+  render();
+}
+
+// ---------- sample playback (one shared <audio> for the whole page) ----------
+// A single element => starting any clip pauses whatever else was sounding. Playback
+// state lives in module vars; audio events schedule a re-render so the scrubber +
+// eq-bar track the element.
+let audioEl: HTMLAudioElement | null = null;
+let playKey: string | null = null; // which row is loaded, e.g. `cur:<id>` / `cand:<id>:<cid>`
+let playPos = 0; // current time (s)
+let playDur = 0; // duration (s)
+let playPaused = false;
+
+function ensureAudio(): HTMLAudioElement {
+  if (audioEl) return audioEl;
+  const a = new Audio();
+  a.preload = "metadata";
+  a.addEventListener("timeupdate", () => {
+    playPos = a.currentTime;
+    render();
+  });
+  const setDur = () => {
+    playDur = isFinite(a.duration) ? a.duration : 0;
+    render();
+  };
+  a.addEventListener("loadedmetadata", setDur);
+  a.addEventListener("durationchange", setDur);
+  a.addEventListener("play", () => {
+    playPaused = false;
+    render();
+  });
+  a.addEventListener("pause", () => {
+    playPaused = true;
+    render();
+  });
+  a.addEventListener("ended", () => {
+    playKey = null;
+    playPos = 0;
+    render();
+  });
+  a.addEventListener("error", () => {
+    playKey = null;
+    render();
+  });
+  audioEl = a;
+  return a;
+}
+
+function toggleClip(key: string, url: string): void {
+  const a = ensureAudio();
+  if (playKey === key) {
+    if (a.paused) void a.play().catch(() => undefined);
+    else a.pause();
+    return;
+  }
+  playKey = key;
+  playPos = 0;
+  playDur = 0;
+  playPaused = false;
+  a.src = url;
+  void a.play().catch(() => undefined); // stream/format errors surface via the error handler
+  render();
+}
+
+function seekClip(key: string, frac: number): void {
+  const a = ensureAudio();
+  if (playKey !== key || !isFinite(a.duration) || a.duration <= 0) return;
+  a.currentTime = Math.max(0, Math.min(1, frac)) * a.duration;
+  playPos = a.currentTime;
   render();
 }
 
@@ -544,6 +671,40 @@ function moveSource(name: string, targetKey: string, index: number | null): void
 
 // ---------- shared SVG bits ----------
 const DL_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>`;
+const PLAY_ICON = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"></path></svg>`;
+const PAUSE_ICON = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z"></path></svg>`;
+// "Now sounding" indicator — the console's eq-bar idiom (staggered eq1/eq2/eq3).
+function eqBars(): string {
+  return `<span style="display:inline-flex;align-items:flex-end;gap:2px;height:13px;flex-shrink:0" title="now sounding">
+    <span style="width:2.5px;background:#e9ede3;border-radius:2px;animation:eq1 .9s ease-in-out infinite"></span>
+    <span style="width:2.5px;background:#e9ede3;border-radius:2px;animation:eq2 1.1s ease-in-out infinite"></span>
+    <span style="width:2.5px;background:#e9ede3;border-radius:2px;animation:eq3 .8s ease-in-out infinite"></span>
+  </span>`;
+}
+// Small round play/pause IconButton bound to a playback key + stream url.
+function playBtn(key: string, url: string, size: number): string {
+  const sounding = playKey === key;
+  const isPlaying = sounding && !playPaused;
+  return `<button class="qbtn" data-act="playClip" data-key="${esc(key)}" data-url="${esc(url)}" title="${isPlaying ? "Pause" : "Play"}" style="width:${size}px;height:${size}px;border-radius:50%;border:1px solid ${sounding ? "#e9ede3" : "#272c25"};background:${sounding ? "rgba(233,237,227,.09)" : "none"};cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:${sounding ? "#e9ede3" : "#99a091"};flex-shrink:0;transition:border-color .15s,color .15s">${isPlaying ? PAUSE_ICON : PLAY_ICON}</button>`;
+}
+// Current-file player: play/pause + slim scrubber + mono timecode, streaming /audio.
+function currentFilePlayer(item: ReviewItem): string {
+  if (!item.has_audio) return "";
+  const key = `cur:${item.id}`;
+  const url = api.reviewAudioUrl(item.id);
+  const sounding = playKey === key;
+  const isPlaying = sounding && !playPaused;
+  const pos = sounding ? playPos : 0;
+  const total = sounding ? playDur : 0;
+  const frac = total > 0 ? Math.min(100, (pos / total) * 100) : 0;
+  return `<div style="display:flex;align-items:center;gap:11px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:10px 13px;margin-bottom:10px">
+    ${playBtn(key, url, 30)}
+    <span style="font:500 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0">current file</span>
+    <div data-act="seekClip" data-key="${esc(key)}" style="flex:1;height:5px;background:#272c25;border-radius:3px;overflow:hidden;cursor:pointer"><div style="height:100%;width:${frac}%;background:#e9ede3;border-radius:3px;transition:width .15s linear;pointer-events:none"></div></div>
+    <span style="font:700 11px 'JetBrains Mono';color:#99a091;flex-shrink:0">${dur(pos)} / ${dur(total)}</span>
+    ${isPlaying ? eqBars() : ""}
+  </div>`;
+}
 // strategy glyphs: parallel = fork/branch, uniform = rotate/round-robin
 const iconParallel = (sz: number, sw: number): string =>
   `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"></path><path d="M12 8l-6 5v8"></path><path d="M12 8l6 5v8"></path><path d="M12 8v13"></path></svg>`;
@@ -1556,21 +1717,30 @@ function bulkPanelHtml(): string {
 // ---------- review tab (user-assisted retry / re-download) ----------
 function reviewStatCardsHtml(): string {
   const s = state.reviewStats;
-  type Card = [string, string, string, boolean];
+  // tone: "" = default dark, "light" = inverted, "amber" = attention/warning
+  type Card = [string, string, string, "" | "light" | "amber"];
   const cards: Card[] = s
     ? [
-        ["Needs review", String(s.needs_review), `${s.failed} failed · ${s.lossy} lossy`, true],
-        ["Failed", String(s.failed), "no source produced a file", false],
-        ["Lossy grabs", String(s.lossy), "FLAC upgrade available", false],
-        ["Resolved", String(s.resolved), "via review", false],
+        [
+          "Needs review",
+          String(s.needs_review),
+          `${s.failed} failed · ${s.lossy} lossy · ${s.needs_confirm} confirm`,
+          "light",
+        ],
+        ["Failed", String(s.failed), "no source produced a file", ""],
+        ["Lossy grabs", String(s.lossy), "FLAC upgrade available", ""],
+        ["Needs confirm", String(s.needs_confirm), "fingerprint didn’t match", "amber"],
+        ["Resolved", String(s.resolved), "via review", ""],
       ]
-    : Array<Card>(4).fill(["—", "—", "", false]);
-  return `<div style="display:grid;grid-template-columns:repeat(${state.isMobile ? 2 : 4},1fr);gap:12px;margin-bottom:16px">${cards
-    .map(([label, value, sub, light]) => {
+    : Array<Card>(5).fill(["—", "—", "", ""]);
+  return `<div style="display:grid;grid-template-columns:repeat(${state.isMobile ? 2 : 5},1fr);gap:12px;margin-bottom:16px">${cards
+    .map(([label, value, sub, tone]) => {
+      const light = tone === "light";
+      const amber = tone === "amber";
       const bg = light ? "#dfe4d6" : "#111411";
-      const bd = light ? "#dfe4d6" : "#22261f";
-      const lc = light ? "#4d5346" : "#5d6456";
-      const vc = light ? "#14170f" : "#e9ede3";
+      const bd = light ? "#dfe4d6" : amber ? WARN_BD : "#22261f";
+      const lc = light ? "#4d5346" : amber ? WARN : "#5d6456";
+      const vc = light ? "#14170f" : amber ? WARN : "#e9ede3";
       return `<div style="background:${bg};border:1px solid ${bd};border-radius:18px;padding:14px 16px">
         <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:${lc}">${esc(label)}</div>
         <div style="font:800 27px 'Doto';margin-top:8px;line-height:1;color:${vc}">${esc(value)}</div>
@@ -1606,26 +1776,64 @@ function reviewCandRowHtml(itemId: string, expected: number | null, c: ReviewCan
     <span style="font:500 10px 'JetBrains Mono';color:#99a091;flex-shrink:0;width:34px;text-align:right">${dur(c.duration_s)}</span>
     <span style="font:500 10px 'JetBrains Mono';color:${deltaColor};flex-shrink:0;width:32px">${delta}</span>
     <span style="font:400 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0;width:46px;text-align:right">${bytes(c.size_bytes)}</span>
+    ${c.preview_url ? playBtn(`cand:${itemId}:${c.id}`, c.preview_url, 26) : ""}
     <span style="font:800 16px 'Doto';color:${matchColor};width:46px;text-align:right;flex-shrink:0">${c.match}%</span>
   </div>`;
 }
 
+// Advisory AcoustID fingerprint hint on an expanded lossy item (needs a current
+// file). Prefer a freshly returned hint, fall back to the item's polled acoustid_*.
+// Wrong-version / different-title reads render as a warning chip.
+function fingerprintBlock(item: ReviewItem): string {
+  if (item.kind !== "lossy" || !item.has_audio) return "";
+  const id = item.id;
+  const identifying = !!state.reviewIdentifying[id];
+  const identified = id in state.reviewHint; // identify has completed at least once
+  const hint = state.reviewHint[id];
+  const artist = hint?.artist ?? item.acoustid_artist;
+  const title = hint?.title ?? item.acoustid_title;
+  let hintLine = "";
+  if (title) {
+    const wanted = (item.title ?? item.query ?? "").trim().toLowerCase();
+    const got = title.trim().toLowerCase();
+    const versionTag = /\b(acoustic|instrumental|live|remix)\b/i.test(title);
+    const wrong = versionTag || (!!wanted && !!got && wanted !== got);
+    const text = `fingerprint reads this as: ${esc(artist ?? "unknown")} — ${esc(title)}`;
+    hintLine = wrong
+      ? `<div style="display:inline-flex;align-items:center;gap:7px;background:${WARN_BG};border:1px solid ${WARN_BD};border-radius:12px;padding:6px 11px;margin-top:8px;font:500 10.5px 'JetBrains Mono';color:${WARN}"><span style="flex-shrink:0">⚠</span>${text}</div>`
+      : `<div style="margin-top:8px;font:400 10.5px 'JetBrains Mono';color:#5d6456">${text}</div>`;
+  } else if (identified) {
+    hintLine = `<div style="margin-top:8px;font:400 10.5px 'JetBrains Mono';color:#5d6456">No fingerprint match — using metadata score only.</div>`;
+  }
+  const btn = `<button data-act="identifyReview" data-id="${esc(id)}" ${identifying ? "disabled" : ""} style="display:inline-flex;align-items:center;gap:7px;background:#181c17;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:7px 13px;cursor:${identifying ? "default" : "pointer"};transition:border-color .15s,color .15s">${
+    identifying
+      ? `<span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>identifying…`
+      : "Identify"
+  }</button>`;
+  return `<div style="margin-bottom:12px">${btn}${hintLine}</div>`;
+}
+
 function reviewItemHtml(item: ReviewItem): string {
   const id = item.id;
-  const failed = item.kind === "failed";
+  const kind = item.kind;
+  const failed = kind === "failed";
+  const confirm = kind === "needs_confirm";
   const expanded = !!state.reviewOpen[id];
   const searching = !!state.reviewSearching[id];
   const downloading = !!state.reviewDownloading[id];
   const cands = state.reviewCands[id] ?? [];
   const selCand = cands.find((c) => c.id === state.reviewSel[id]);
   const q = state.reviewQ[id] != null ? state.reviewQ[id] : item.query;
-  const reasonLabel = failed ? "FAILED" : "LOSSY";
-  const reasonColor = failed ? "#ff6b58" : "#99a091";
-  const reasonBg = failed ? "rgba(255,76,56,.08)" : "rgba(153,160,145,.08)";
-  const reasonBorder = failed ? "rgba(255,76,56,.35)" : "#39402f";
+  const matchPct = item.match_similarity != null ? Math.round(item.match_similarity * 100) : null;
+  const reasonLabel = failed ? "FAILED" : confirm ? "CONFIRM" : "LOSSY";
+  const reasonColor = failed ? "#ff6b58" : confirm ? WARN : "#99a091";
+  const reasonBg = failed ? "rgba(255,76,56,.08)" : confirm ? WARN_BG : "rgba(153,160,145,.08)";
+  const reasonBorder = failed ? "rgba(255,76,56,.35)" : confirm ? WARN_BD : "#39402f";
   const sub = failed
     ? `${esc(item.reason ?? "all tiers missed")} · via ${esc(item.requested_via)}`
-    : `${esc(item.quality_label ?? "lossy")} · ${bytes(item.size_bytes)}${item.source_won ? ` · won by ${esc(item.source_won)}` : ""}`;
+    : confirm
+      ? `⚠ doesn’t match current file${matchPct != null ? ` · ${matchPct}%` : ""}`
+      : `${esc(item.quality_label ?? "lossy")} · ${bytes(item.size_bytes)}${item.source_won ? ` · won by ${esc(item.source_won)}` : ""}`;
   const cardBorder = expanded ? "#39402f" : "#22261f";
   const current =
     !failed && item.quality_label
@@ -1649,6 +1857,27 @@ function reviewItemHtml(item: ReviewItem): string {
     return `<section style="background:#111411;border:1px solid ${cardBorder};border-radius:20px;margin-bottom:12px;overflow:hidden;transition:border-color .2s">${head}</section>`;
   }
 
+  // needs_confirm: parked by the fingerprint gate — warn + play the current file +
+  // "Replace anyway" (force the same candidate) / "Keep current" (dismiss).
+  if (confirm) {
+    const lastCand = state.reviewLastCand[id];
+    const canForce = !!lastCand && !downloading;
+    const pctStr = matchPct != null ? `${matchPct}%` : "an unknown amount";
+    const cBody = `<div style="border-top:1px solid #1a1e19;padding:14px 18px 16px;animation:fadein .2s ease">
+      <div style="display:flex;gap:11px;background:${WARN_BG};border:1px solid ${WARN_BD};border-radius:14px;padding:13px 15px;margin-bottom:12px">
+        <span style="font:600 14px 'Instrument Sans';color:${WARN};flex-shrink:0;line-height:1.3">⚠</span>
+        <div style="font:400 12px 'Instrument Sans';color:#e9ede3;line-height:1.5">Doesn’t match your current file — <span style="color:${WARN};font-weight:600">${pctStr}</span>. This may be a different version or song.${lastCand ? ` <span style="color:#5d6456">(candidate: ${esc(lastCand.source)} · ${esc(lastCand.quality_label)})</span>` : ""}</div>
+      </div>
+      ${currentFilePlayer(item)}
+      <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+        <button data-act="replaceAnyway" data-id="${esc(id)}" ${canForce ? "" : "disabled"} style="background:${canForce ? WARN : "#181c17"};border:none;border-radius:14px;color:${canForce ? "#14170f" : "#5d6456"};font:600 12.5px 'Instrument Sans';padding:11px 18px;cursor:${canForce ? "pointer" : "default"};transition:.15s">Replace anyway</button>
+        <button data-act="dismissReview" data-id="${esc(id)}" style="background:none;border:1px solid #272c25;border-radius:14px;color:#5d6456;font:600 11px 'JetBrains Mono';padding:11px 15px;cursor:pointer;transition:border-color .15s,color .15s">keep current</button>
+        <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#464d40">${lastCand ? "replace overrides the fingerprint gate" : "no armed candidate — search from the lossy item first"}</span>
+      </div>
+    </div>`;
+    return `<section style="background:#111411;border:1px solid ${cardBorder};border-radius:20px;margin-bottom:12px;overflow:hidden;transition:border-color .2s">${head}${cBody}</section>`;
+  }
+
   const dlDisabled = !selCand;
   const dlBg = selCand ? "#e9ede3" : "#181c17";
   const dlColor = selCand ? "#14170f" : "#5d6456";
@@ -1668,6 +1897,8 @@ function reviewItemHtml(item: ReviewItem): string {
         <span>expected · ${dur(item.duration_s)}</span>
         ${current ? `<span style="color:#99a091">${current}</span>` : ""}
       </div>
+      ${currentFilePlayer(item)}
+      ${fingerprintBlock(item)}
       ${
         searching
           ? `<div style="display:flex;align-items:center;gap:10px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:16px 14px;font:400 11.5px 'JetBrains Mono';color:#99a091"><span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0"></span>Searching all sources…</div>`
@@ -1844,6 +2075,13 @@ function bindEvents(): void {
     } else if (act === "rescanReview") void rescanReview(el.dataset.id!);
     else if (act === "downloadCand") void downloadCand(el.dataset.id!);
     else if (act === "dismissReview") void dismissReview(el.dataset.id!);
+    else if (act === "identifyReview") void identifyReview(el.dataset.id!);
+    else if (act === "replaceAnyway") void replaceAnyway(el.dataset.id!);
+    else if (act === "playClip") toggleClip(el.dataset.key!, el.dataset.url!);
+    else if (act === "seekClip") {
+      const rect = el.getBoundingClientRect();
+      seekClip(el.dataset.key!, rect.width > 0 ? ((e as MouseEvent).clientX - rect.left) / rect.width : 0);
+    }
     else if (act === "openBulkPanel") {
       state.bulkPanel = true;
       render();

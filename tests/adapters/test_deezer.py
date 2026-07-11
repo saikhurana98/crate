@@ -218,3 +218,22 @@ def test_deezer_track_dataclass_immutable() -> None:
     t = DeezerTrack(1, "T", "A", "Al", 100, None)
     with pytest.raises(AttributeError):
         t.title = "x"  # type: ignore[misc]
+
+
+def test_parse_search_captures_preview_url() -> None:
+    data = {
+        "data": [
+            {
+                "id": 42,
+                "title": "Gosh",
+                "artist": {"name": "Jamie xx"},
+                "album": {"title": "In Colour"},
+                "duration": 311,
+                "preview": "https://cdns-preview.dzcdn.net/stream/clip.mp3",
+            },
+            {"id": 7, "title": "No Preview", "artist": {"name": "X"}, "album": {"title": "Y"}},
+        ]
+    }
+    tracks = parse_search(data)
+    assert tracks[0].preview_url == "https://cdns-preview.dzcdn.net/stream/clip.mp3"
+    assert tracks[1].preview_url is None

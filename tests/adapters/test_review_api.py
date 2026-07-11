@@ -58,7 +58,13 @@ def test_review_list_returns_items_and_stats(tmp_path: Path) -> None:
     client = TestClient(create_app(store))
 
     body = client.get("/api/review").json()
-    assert body["stats"] == {"needs_review": 2, "failed": 1, "lossy": 1, "resolved": 0}
+    assert body["stats"] == {
+        "needs_review": 2,
+        "failed": 1,
+        "lossy": 1,
+        "needs_confirm": 0,
+        "resolved": 0,
+    }
     kinds = sorted(i["kind"] for i in body["items"])
     assert kinds == ["failed", "lossy"]
 
@@ -184,3 +190,91 @@ def test_review_search_default_query_uses_request(tmp_path: Path) -> None:
     assert seen["q"] == "Gosh"
     client.post(f"/api/review/{rid}/search", json={"q": "custom terms"})
     assert seen["q"] == "custom terms"
+
+
+# --- fingerprint guard endpoints (ADR-0019) ---
+
+
+def _lossy_at(store: RequestStore, query: str, path: str) -> str:
+    rid = store.open_request(query, TrackIdentity(title=query, duration_s=200))
+    store.finish_request(rid, _report(path, "ytdlp", 3, lossless=False))
+    return rid
+
+
+def test_download_passes_force_to_store(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+    client = TestClient(create_app(store, candidate_sources=_cand_source([])))
+    cand = {"source": "qobuz", "ref": "42", "title": "Gosh", "artist": "Jamie xx"}
+    client.post(f"/api/review/{rid}/download", json={"candidate": cand, "force": True})
+    armed = store.get_review_candidate(rid)
+    assert armed is not None and armed["force"] == 1 and armed["is_upgrade"] == 1
+
+
+def test_identify_returns_hint_and_caches(tmp_path: Path) -> None:
+    from crate.domain.identity import IdentityHint
+
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+
+    def fake_identify(path: Path) -> IdentityHint:
+        return IdentityHint("Avicii", "Lonely Together (acoustic)", "mbid-1")
+
+    client = TestClient(create_app(store, identify_hint=fake_identify))
+    body = client.post(f"/api/review/{rid}/identify").json()
+    assert body["canonical_artist"] == "Avicii"
+    assert body["canonical_title"] == "Lonely Together (acoustic)"
+    # cached on the request row -> surfaces in the review list
+    item = next(i for i in store.list_review() if i["id"] == rid)
+    assert item["acoustid_title"] == "Lonely Together (acoustic)"
+
+
+def test_identify_without_identifier_returns_empty(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+    client = TestClient(create_app(store))  # no identify_hint wired -> feature off
+    assert client.post(f"/api/review/{rid}/identify").json() == {}
+
+
+def test_audio_streams_file_with_range(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    audio = tmp_path / "song.opus"
+    audio.write_bytes(b"OggS" + b"\x00" * 200)
+    rid = _lossy_at(store, "Gosh", str(audio))
+    client = TestClient(create_app(store))
+
+    full = client.get(f"/api/review/{rid}/audio")
+    assert full.status_code == 200
+    assert full.headers.get("accept-ranges") == "bytes"
+
+    partial = client.get(f"/api/review/{rid}/audio", headers={"Range": "bytes=0-3"})
+    assert partial.status_code == 206
+    assert partial.content == b"OggS"
+
+
+def test_audio_404_when_file_missing(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")  # path /nas/Gosh.opus does not exist
+    client = TestClient(create_app(store))
+    assert client.get(f"/api/review/{rid}/audio").status_code == 404
+
+
+def test_search_rows_carry_preview_url(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+    cand = Candidate(
+        "deezer",
+        2,
+        "9",
+        "Gosh",
+        "Jamie xx",
+        "In Colour",
+        "FLAC 16/44",
+        True,
+        311,
+        None,
+        preview_url="https://cdn.deezer.example/clip.mp3",
+    )
+    client = TestClient(create_app(store, candidate_sources=_cand_source([cand])))
+    rows = client.post(f"/api/review/{rid}/search", json={}).json()
+    assert rows[0]["preview_url"] == "https://cdn.deezer.example/clip.mp3"

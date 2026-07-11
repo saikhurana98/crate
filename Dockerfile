@@ -37,8 +37,10 @@ LABEL org.opencontainers.image.description="Load-balanced tiered FLAC music down
 # headed Monochrome browser (xvfb-run needs xauth, which recommends-off omits).
 # tini: real PID 1 — xvfb-run's bash script hangs the server if it runs as PID 1,
 # so tini sits above it and reaps/forwards signals. mp4decrypt: CENC decrypt.
+# libchromaprint-tools: fpcalc for the review fingerprint guard (ADR-0019) —
+# absent -> the guard silently turns itself off, so this is the "full" image only.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg xvfb xauth tini \
+    && apt-get install -y --no-install-recommends ffmpeg xvfb xauth tini libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=bento4 /b4/build/mp4decrypt /usr/local/bin/mp4decrypt
