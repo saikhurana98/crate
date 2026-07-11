@@ -19,6 +19,7 @@ surfaces as ``RuntimeError`` instead of pinning the worker thread forever.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -36,10 +37,12 @@ __all__ = [
     "YtCandidate",
     "build_command",
     "build_search_command",
+    "build_stream_url_command",
     "download",
     "download_candidate",
     "extract_path",
     "parse_candidates",
+    "parse_stream_url",
     "search_candidates",
     "select_candidate",
 ]
@@ -174,6 +177,38 @@ def build_command(query: str, out_dir: Path) -> list[str]:
         "after_move:filepath",
         target,
     ]
+
+
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def build_stream_url_command(video_id: str) -> list[str]:
+    """Build the ``yt-dlp -g`` argv that prints a candidate's direct audio URL
+    (no download) — for the review candidate-stream proxy.
+
+    ``video_id`` is validated against the exact YouTube id grammar and the watch
+    URL is built here, so a caller can never smuggle an arbitrary URL (or shell
+    meta) into yt-dlp through the ``ref`` — the stream proxy's SSRF guard."""
+    if not _VIDEO_ID_RE.match(video_id):
+        raise ValueError(f"invalid youtube video id: {video_id!r}")
+    return [
+        "yt-dlp",
+        "--no-playlist",
+        "--no-warnings",
+        "-f",
+        "bestaudio",
+        "-g",
+        f"https://www.youtube.com/watch?v={video_id}",
+    ]
+
+
+def parse_stream_url(stdout: str) -> str:
+    """First non-empty line of ``yt-dlp -g`` output — the direct media URL."""
+    for line in stdout.splitlines():
+        url = line.strip()
+        if url.startswith(("http://", "https://")):
+            return url
+    raise RuntimeError("yt-dlp -g produced no stream url")
 
 
 def extract_path(stdout: str) -> Path:

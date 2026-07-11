@@ -223,6 +223,7 @@ export interface ReviewCandidate {
   duration_s: number | null;
   size_bytes: number | null;
   preview_url: string | null; // ~30s source clip for the A/B ear test (null = none)
+  streamable: boolean; // playable via preview_url or the server stream proxy
   match: number;
 }
 
@@ -307,6 +308,8 @@ export const api = {
   reviewIdentify: (id: string) =>
     send<ReviewHint>("POST", `/api/review/${encodeURIComponent(id)}/identify`, {}),
   reviewAudioUrl: (id: string) => `/api/review/${encodeURIComponent(id)}/audio`,
+  reviewCandidateStreamUrl: (source: string, ref: string) =>
+    `/api/review/candidate-stream?source=${encodeURIComponent(source)}&ref=${encodeURIComponent(ref)}`,
   reviewDismiss: (id: string) =>
     send<{ id: string; dismissed: boolean }>(
       "POST",

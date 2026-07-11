@@ -20,7 +20,8 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query
+import httpx
+from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -50,6 +51,11 @@ CandidateSourcesFn = Callable[[], dict[str, tuple[CandidateSearchFn, Any]]]
 # Advisory review hint: existing file path -> IdentityHint (or None). None when the
 # feature is off (no fpcalc binary / no CRATE_ACOUSTID_KEY) — the endpoint returns {}.
 IdentifyFn = Callable[[Path], "IdentityHint | None"]
+# Candidate-stream resolvers: source name -> (ref -> direct streamable media URL).
+# The proxy only ever fetches a URL a resolver produced from a source+ref, never a
+# client-supplied URL — the SSRF boundary for the audition endpoint.
+StreamResolver = Callable[[str], str]
+CandidateStreamersFn = Callable[[], dict[str, StreamResolver]]
 
 _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
@@ -89,6 +95,7 @@ def create_app(
     bulk_resolve: BulkResolveFn | None = None,
     candidate_sources: CandidateSourcesFn | None = None,
     identify_hint: IdentifyFn | None = None,
+    candidate_streamers: CandidateStreamersFn | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     app = FastAPI(title="crate console", docs_url=None, redoc_url=None, openapi_url=None)
@@ -246,8 +253,14 @@ def create_app(
 
         results = await asyncio.gather(*(run_one(s[0]) for s in sources.values()))
         cands = [c for lst in results for c in lst]
+        streamable = set(candidate_streamers().keys()) if candidate_streamers is not None else set()
         rows = [
-            _candidate_row(i, c, candidate_match(c.title, c.artist, c.duration_s, want))
+            _candidate_row(
+                i,
+                c,
+                candidate_match(c.title, c.artist, c.duration_s, want),
+                streamable=bool(c.preview_url) or c.source in streamable,
+            )
             for i, c in enumerate(cands)
         ]
         rows.sort(key=lambda r: r["match"], reverse=True)
@@ -317,6 +330,53 @@ def create_app(
         if not path or not Path(str(path)).is_file():
             raise HTTPException(status_code=404, detail="no audio for this request")
         return FileResponse(str(path))
+
+    @api.get("/review/candidate-stream")
+    async def review_candidate_stream(
+        request: Request, source: str = Query(...), ref: str = Query(...)
+    ) -> StreamingResponse:
+        """Proxy a candidate's audio for the review A/B test (HTTP Range passthrough).
+
+        The URL is resolved from ``source``+``ref`` by a trusted per-source resolver
+        (signed Qobuz FLAC, yt-dlp -g) — a client can never supply the URL, so this
+        can't be turned into an SSRF fetch. Range is forwarded upstream and the 206
+        relayed, so only the listened bytes transfer (no full download)."""
+        streamers = candidate_streamers() if candidate_streamers is not None else {}
+        resolve = streamers.get(source)
+        if resolve is None:
+            raise HTTPException(status_code=404, detail="source not streamable")
+        try:
+            url = await asyncio.to_thread(resolve, ref)
+        except Exception as exc:  # bad ref / resolver failure
+            raise HTTPException(status_code=502, detail="could not resolve stream") from exc
+
+        rng = request.headers.get("range")
+        client = httpx.AsyncClient(timeout=httpx.Timeout(20.0, read=None), follow_redirects=True)
+        upstream = await client.send(
+            client.build_request("GET", url, headers={"Range": rng} if rng else {}),
+            stream=True,
+        )
+        relayed = {
+            h: upstream.headers[h]
+            for h in ("content-type", "content-range", "content-length", "accept-ranges")
+            if h in upstream.headers
+        }
+        relayed.setdefault("accept-ranges", "bytes")
+
+        async def body() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in upstream.aiter_bytes(64 * 1024):
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            body(),
+            status_code=upstream.status_code,
+            headers=relayed,
+            media_type=relayed.get("content-type"),
+        )
 
     @api.post("/review/{request_id}/dismiss")
     def review_dismiss(request_id: str) -> dict[str, Any]:
@@ -468,10 +528,13 @@ def _identity_from_record(record: dict[str, Any]) -> TrackIdentity:
     )
 
 
-def _candidate_row(index: int, c: Candidate, match: int) -> dict[str, Any]:
+def _candidate_row(
+    index: int, c: Candidate, match: int, *, streamable: bool = False
+) -> dict[str, Any]:
     """Serialise a candidate + its match % for the review UI. ``id`` is a stable
     per-response handle for radio selection; the full candidate is echoed back on
-    download so the API caches nothing."""
+    download so the API caches nothing. ``streamable`` says the A/B player can
+    audition it (a static preview clip or a proxyable source)."""
     return {
         "id": f"{c.source}-{index}",
         "source": c.source,
@@ -485,6 +548,7 @@ def _candidate_row(index: int, c: Candidate, match: int) -> dict[str, Any]:
         "duration_s": c.duration_s,
         "size_bytes": c.size_bytes,
         "preview_url": c.preview_url,
+        "streamable": streamable,
         "match": match,
     }
 

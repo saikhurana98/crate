@@ -888,6 +888,35 @@ def build_identifier() -> Any:  # pragma: no cover - IO wiring
     return identifier
 
 
+def build_candidate_streamers() -> dict[str, Callable[[str], str]]:  # pragma: no cover - IO wiring
+    """Per-source resolvers ``ref -> direct streamable URL`` for the review A/B
+    audition proxy. Only sources with a cheap direct URL (Range-able, no full
+    download) are wired: Qobuz (signed FLAC url) and yt-dlp (``-g``). Deezer plays
+    its static preview clip client-side; arcod (async job) / monochrome (DRM) have
+    no such URL and are simply absent -> their rows show no play button."""
+    import subprocess
+
+    streamers: dict[str, Callable[[str], str]] = {}
+
+    if _enabled("CRATE_QOBUZ"):
+        from crate.infrastructure.qobuz.client import QobuzClient
+
+        qobuz = QobuzClient(
+            os.environ["CRATE_QOBUZ_APP_ID"],
+            os.environ["CRATE_QOBUZ_APP_SECRET"],
+            os.environ["CRATE_QOBUZ_TOKEN"],
+        )
+        streamers["qobuz"] = lambda ref: qobuz.get_file_url(int(ref))
+
+    def ytdlp_stream(ref: str) -> str:
+        cmd = ytdlp.build_stream_url_command(ref)  # validates the video id
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30)
+        return ytdlp.parse_stream_url(out.stdout)
+
+    streamers["ytdlp"] = ytdlp_stream
+    return streamers
+
+
 def build_console_app() -> Any:  # pragma: no cover - IO wiring
     """FastAPI app for `crate console`: a read-only view over the history DB."""
     from crate.adapters.inbound.ops_api import create_app
@@ -908,4 +937,5 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         bulk_resolve=build_bulk_resolver(),
         candidate_sources=build_candidate_sources,
         identify_hint=build_identifier(),
+        candidate_streamers=build_candidate_streamers,
     )
