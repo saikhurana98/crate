@@ -207,7 +207,13 @@ class RequestStore:
             params.append(f"%{query}%")
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
+        # Order by last activity, not creation: a review re-download reuses the
+        # original (old) request row, so once it finishes it must surface by its
+        # finish time rather than sink back to its original created_at position.
+        sql += (
+            " ORDER BY COALESCE(r.finished_at, r.created_at) DESC, r.created_at DESC "
+            "LIMIT ? OFFSET ?"
+        )
         params += [limit, offset]
         with self._lock:
             return [dict(row) for row in self._conn.execute(sql, params)]

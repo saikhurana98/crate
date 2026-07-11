@@ -104,6 +104,23 @@ def test_list_filters_by_status_and_query(tmp_path: Path) -> None:
     assert store.list_requests(status="done")[0]["quality_label"].startswith("lossless")
 
 
+def test_list_orders_by_last_activity_not_creation(tmp_path: Path) -> None:
+    # A review re-download reuses the original (old) request row and finishes it
+    # now; it must surface by that finish time, not sink to its created_at slot.
+    store = _store(tmp_path)
+    resolved = store.open_request("Resolved Oldie")  # created long ago, finished today
+    fresh = store.open_request("Fresh Queued")  # created after, never finished
+    store._conn.execute(
+        "UPDATE requests SET created_at=?, finished_at=?, status='done' WHERE id=?",
+        ("2026-07-01T00:00:00+00:00", "2026-07-11T00:00:00+00:00", resolved),
+    )
+    store._conn.execute(
+        "UPDATE requests SET created_at=? WHERE id=?", ("2026-07-05T00:00:00+00:00", fresh)
+    )
+    ids = [r["id"] for r in store.list_requests()]
+    assert ids[0] == resolved  # finished 07-11 outranks fresh's 07-05 creation
+
+
 def test_list_pagination(tmp_path: Path) -> None:
     store = _store(tmp_path)
     for i in range(5):
