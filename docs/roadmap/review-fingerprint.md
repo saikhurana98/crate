@@ -86,18 +86,41 @@ flag and a `threshold`:
   `None`. `_candidate_row` serialises it.
 
 ## Frontend (`apps/console/src/app.ts`, vanilla TS)
+
+**Design status (synced 2026-07-11):** there is **no dedicated fingerprint/playback
+mockup** in the Dotmatrix Design System project (`92d48dad-…`) yet — the review tab
+itself came from a one-off shared doc (`lbmd Console Review.dc.html`). So the layout
+follows the existing review mockup ([`review-tab.md`](review-tab.md)) plus these
+already-in-system idioms/components — **reuse, don't invent tokens**:
+
+- **"Now sounding" indicator** = the console's existing **eq-bar idiom** (from
+  `source/lbmd Console v7.dc.html`): three 2.5px `#e9ede3` bars, `border-radius:2px`,
+  staggered `@keyframes eq1/eq2/eq3` (~0.8–0.9 s `ease-in-out infinite`). Render it on
+  the row whose audio is currently playing — this is the visual "which clip is
+  sounding" cue, cheaper and more on-brand than a scrubber-only state.
+- **Components (design-system names):** third stat → **StatCard**; state/verified/
+  needs-confirm chips → **Badge** (amber for needs-confirm, quiet for the AcoustID
+  hint); match % bar → **Bar**; play/pause → **IconButton**; searching/identifying →
+  **Spinner**; expandable review item → **Panel** / **ListRow**; replace-done →
+  **Toast**. Colors: accent/status from `guidelines/colors-accent-status`, borders
+  `#272c25`, paper `#0c0e0c`, ink `#e9ede3`.
+
 - **Third state:** review items are `failed` | `lossy` | `needs_confirm`; add the
-  `needs_confirm` stat card + badge/filter ("attention required", amber). Wire the
-  `force=true` re-submit ("Replace anyway") + "Keep current" (dismiss) actions.
-- **AcoustID hint line** on an expanded lossy item (muted; warning chip when it
-  differs from the request, esp. version tags).
+  `needs_confirm` **StatCard** + amber **Badge**/filter ("attention required"). Wire
+  the `force=true` re-submit ("Replace anyway") + "Keep current" (dismiss) actions.
+- **AcoustID hint line** on an expanded lossy item (muted text; warning **Badge** when
+  it differs from the request, esp. `(acoustic)`/`(instrumental)`/different-song).
 - **Match confidence** after a re-download: green "✓ matches — 98%" (≥0.95) or the
-  amber needs-confirm panel "⚠ doesn't match — 42%".
-- **Playback:** one shared `<audio>` element for the whole page (starting one
-  pauses others). Current-file play/pause + slim scrubber + monospace timecode
-  streaming `/api/review/{id}/audio`; per-candidate preview button enabled only when
-  `preview_url` present. Tiny inline controls, dot-matrix tokens; no volume/playlist.
+  amber needs-confirm **Panel** "⚠ doesn't match — 42%".
+- **Playback:** one shared `<audio>` element for the whole page (starting one pauses
+  others; the eq-bar marks the active row). Current-file **IconButton** play/pause +
+  slim scrubber + monospace timecode streaming `/api/review/{id}/audio`; per-candidate
+  preview **IconButton** enabled only when `preview_url` present. Tiny inline controls,
+  dot-matrix tokens; no volume/playlist.
 - Reuse the morphdom loop + event delegation. Keep the bundle framework-free < 100 KB.
+
+> If a proper mockup is later authored in the design project, re-sync this section
+> against it before the frontend PR (piece 5).
 
 ## Tests
 - `domain/fingerprint`: `decode_fingerprint`; `similarity` on identical (=1.0),
