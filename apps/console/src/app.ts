@@ -153,6 +153,7 @@ interface State {
   reviewIdentifying: Record<string, boolean>; // item id -> AcoustID identify in flight
   reviewHint: Record<string, { artist: string | null; title: string | null; mbid: string | null }>; // item id -> fingerprint hint (key present => identify ran)
   reviewLastCand: Record<string, ReviewCandidate>; // item id -> candidate last chosen (for a force re-send)
+  reviewDetail: Record<string, RequestDetail>; // item id -> full provenance (origin + identity + attempt trail), fetched on expand
 }
 
 const state: State = {
@@ -205,6 +206,7 @@ const state: State = {
   reviewIdentifying: {},
   reviewHint: {},
   reviewLastCand: {},
+  reviewDetail: {},
 };
 
 const root = document.getElementById("app")!;
@@ -318,11 +320,24 @@ async function loadReview(): Promise<void> {
       state.reviewIdentifying,
       state.reviewHint,
       state.reviewLastCand,
+      state.reviewDetail,
     ] as Record<string, unknown>[]) {
       for (const id of Object.keys(map)) if (!live.has(id)) delete map[id];
     }
   } catch {
     /* transient — keep the last snapshot */
+  }
+}
+
+// Fetch the full provenance (origin + search identity + attempt chronology) the
+// first time a review item is expanded, so a resolve decision has full context.
+async function loadReviewDetail(id: string): Promise<void> {
+  if (state.reviewDetail[id]) return;
+  try {
+    state.reviewDetail[id] = await api.request(id);
+    render();
+  } catch {
+    /* transient — the block just stays collapsed to identity-only */
   }
 }
 
@@ -1821,6 +1836,57 @@ function fingerprintBlock(item: ReviewItem): string {
   return `<div style="margin-bottom:12px">${btn}${hintLine}</div>`;
 }
 
+// Provenance + chronology for a resolve decision: who requested the song, the
+// search metadata it carried (artist/title/ISRC/wanted duration), and the ordered
+// attempt trail (which sources were tried + how each fared). Fetched on expand.
+function provenanceBlock(item: ReviewItem): string {
+  const d = state.reviewDetail[item.id];
+  const chip = (label: string, val: string, color: string = C.muted) =>
+    `<span style="font:400 10px 'JetBrains Mono';color:${C.faint}">${label}</span><span style="font:500 10px 'JetBrains Mono';color:${color};margin-left:5px">${val}</span>`;
+
+  const artist = d?.artist ?? null;
+  const title = d?.title ?? item.title ?? null;
+  const isrc = d?.isrc ?? null;
+  const searched =
+    artist && title ? `${esc(artist)} — ${esc(title)}` : title ? esc(title) : esc(item.query);
+
+  const idLine = `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+    <span style="font:600 12px 'Instrument Sans';color:${C.text}">${searched}</span>
+    ${isrc ? `<span style="font:600 9px 'JetBrains Mono';letter-spacing:.06em;padding:2px 7px;border-radius:8px;background:rgba(153,160,145,.09);border:1px solid #2c322a;color:${C.muted}">ISRC ${esc(isrc)}</span>` : ""}
+    ${item.duration_s != null ? chip("want", dur(item.duration_s)) : ""}
+  </div>`;
+
+  const originLine = `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    ${chip("requested via", esc(item.requested_via), C.muted)}
+    ${d?.batch_id ? chip("batch", esc(d.batch_id.slice(0, 8)), C.muted) : ""}
+    ${d?.created_at ? chip("added", relTime(d.created_at)) : ""}
+    ${d?.source_won ? chip("won by", `${esc(d.source_won)}${d.tier_won != null ? ` · T${d.tier_won}` : ""}`, C.light) : ""}
+  </div>`;
+
+  let trail = "";
+  if (d && d.attempts.length) {
+    const rows = d.attempts
+      .map((a) => {
+        const mc = a.ok ? "#9fce8a" : "#ff6b58";
+        return `<div style="display:flex;align-items:baseline;gap:9px;font:400 10.5px 'JetBrains Mono';line-height:1.75">
+        <span style="color:${mc};width:9px;flex-shrink:0">${a.ok ? "✓" : "✗"}</span>
+        <span style="color:${C.faint};width:15px;flex-shrink:0">T${a.tier}</span>
+        <span style="color:${a.ok ? C.light : C.muted};width:76px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.source)}</span>
+        <span style="color:${C.faint};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.detail)}</span>
+      </div>`;
+      })
+      .join("");
+    trail = `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #1a1e19">
+      <div style="font:600 8.5px 'JetBrains Mono';letter-spacing:.12em;color:${C.dim};margin-bottom:6px">CHRONOLOGY · ${d.attempts.length} ATTEMPT${d.attempts.length === 1 ? "" : "S"}${d.finished_at ? ` · ${relTime(d.finished_at)}` : ""}</div>
+      ${rows}
+    </div>`;
+  } else if (!d) {
+    trail = `<div style="font:400 10px 'JetBrains Mono';color:${C.dim};margin-top:6px">loading history…</div>`;
+  }
+
+  return `<div style="background:#0c0e0c;border:1px solid #22261f;border-radius:14px;padding:12px 14px;margin-bottom:12px">${idLine}${originLine}${trail}</div>`;
+}
+
 function reviewItemHtml(item: ReviewItem): string {
   const id = item.id;
   const kind = item.kind;
@@ -1872,6 +1938,7 @@ function reviewItemHtml(item: ReviewItem): string {
     const canForce = !!lastCand && !downloading;
     const pctStr = matchPct != null ? `${matchPct}%` : "an unknown amount";
     const cBody = `<div style="border-top:1px solid #1a1e19;padding:14px 18px 16px;animation:fadein .2s ease">
+      ${provenanceBlock(item)}
       <div style="display:flex;gap:11px;background:${WARN_BG};border:1px solid ${WARN_BD};border-radius:14px;padding:13px 15px;margin-bottom:12px">
         <span style="font:600 14px 'Instrument Sans';color:${WARN};flex-shrink:0;line-height:1.3">⚠</span>
         <div style="font:400 12px 'Instrument Sans';color:#e9ede3;line-height:1.5">Doesn’t match your current file — <span style="color:${WARN};font-weight:600">${pctStr}</span>. This may be a different version or song.${lastCand ? ` <span style="color:#5d6456">(candidate: ${esc(lastCand.source)} · ${esc(lastCand.quality_label)})</span>` : ""}</div>
@@ -1894,6 +1961,7 @@ function reviewItemHtml(item: ReviewItem): string {
     ? `Download from ${esc(selCand.source)} · ${esc(selCand.quality_label)}`
     : "Select a match to download";
   const body = `<div style="border-top:1px solid #1a1e19;padding:14px 18px 16px;animation:fadein .2s ease">
+      ${provenanceBlock(item)}
       <div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">
         <div style="position:relative;flex:1;display:flex;align-items:center">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:11px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
@@ -2076,6 +2144,7 @@ function bindEvents(): void {
     } else if (act === "toggleReview") {
       const id = el.dataset.id!;
       state.reviewOpen[id] = !state.reviewOpen[id];
+      if (state.reviewOpen[id]) void loadReviewDetail(id);
       render();
     } else if (act === "selectCand") {
       state.reviewSel[el.dataset.rid!] = el.dataset.cid!;
