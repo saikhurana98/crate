@@ -14,6 +14,7 @@ poll / fetch / clock / sleep) is injected.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
 from crate.domain.matching import artist_matches, duration_prefilter, match_score, title_matches
@@ -142,6 +144,57 @@ def select_track(
     return max(pool, key=lambda t: match_score(t.title, t.artist, query))
 
 
+def _stem(artist: str, title: str, track_id: int) -> str:
+    """Sanitised ``artist - title [id]`` filename base (extension added by caller)."""
+    return _UNSAFE.sub("_", f"{artist} - {title} [{track_id}]")
+
+
+def _download_payload(
+    payload: dict[str, Any],
+    stem: str,
+    out_dir: Path,
+    *,
+    create_download: CreateDownload,
+    poll: Poll,
+    fetch: Fetch,
+    clock: Clock,
+    sleep: Sleep,
+) -> Path:
+    """Download-by-payload core shared by the cascade path and the review
+    re-download: create the async job for ``payload``, poll it to completion on a
+    bounded deadline, then stream the delivered file to disk. ``stem`` is the
+    sanitised ``artist - title [id]`` filename base (the extension is taken from
+    the server's ``fileName``). No search — the payload fully identifies the
+    track (its ``ref`` for a stored candidate)."""
+    job = create_download(payload)
+    job_id = str(job["id"])
+    token = str(job["accessToken"])  # authorises the per-job status endpoint
+
+    deadline = clock() + POLL_TIMEOUT_S
+    status: dict[str, Any] = {}
+    while True:
+        status = dict(poll(job_id, token))
+        state = status.get("status")
+        if state == "completed":
+            break
+        if state == "failed":
+            raise RuntimeError(f"arcod job {job_id} failed: {status.get('error')}")
+        if clock() >= deadline:
+            raise RuntimeError(f"arcod job {job_id} timed out (last status: {state})")
+        sleep(POLL_INTERVAL_S)
+
+    download_url = status["downloadUrl"]
+    ext = Path(str(status.get("fileName", ""))).suffix or ".flac"
+    dest = out_dir / (stem + ext)
+    part = dest.with_name(dest.name + ".part")
+    try:
+        fetch(download_url, part)
+        part.replace(dest)
+    finally:
+        part.unlink(missing_ok=True)
+    return dest
+
+
 def arcod_download(
     query: str,
     out_dir: Path,
@@ -164,34 +217,16 @@ def arcod_download(
     server's ``fileName`` (arcod may deliver .mp3 despite the FLAC request)."""
     start = clock()
     track = select_track(parse_search(search(query)), query, want)
-
-    job = create_download(build_download_payload(track))
-    job_id = str(job["id"])
-    token = str(job["accessToken"])  # authorises the per-job status endpoint
-
-    deadline = clock() + POLL_TIMEOUT_S
-    status: dict[str, Any] = {}
-    while True:
-        status = dict(poll(job_id, token))
-        state = status.get("status")
-        if state == "completed":
-            break
-        if state == "failed":
-            raise RuntimeError(f"arcod job {job_id} failed: {status.get('error')}")
-        if clock() >= deadline:
-            raise RuntimeError(f"arcod job {job_id} timed out (last status: {state})")
-        sleep(POLL_INTERVAL_S)
-
-    download_url = status["downloadUrl"]
-    ext = Path(str(status.get("fileName", ""))).suffix or ".flac"
-    name = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]") + ext
-    dest = out_dir / name
-    part = dest.with_name(dest.name + ".part")
-    try:
-        fetch(download_url, part)
-        part.replace(dest)
-    finally:
-        part.unlink(missing_ok=True)
+    dest = _download_payload(
+        build_download_payload(track),
+        _stem(track.artist, track.title, track.id),
+        out_dir,
+        create_download=create_download,
+        poll=poll,
+        fetch=fetch,
+        clock=clock,
+        sleep=sleep,
+    )
     return DownloadOutcome(
         path=dest,
         tier=2,
@@ -203,4 +238,81 @@ def arcod_download(
         album=track.album_title or None,
         track_no=track.track_no,
         art_url=track.cover_url or None,
+    )
+
+
+def _candidate_ref(track: ArcodTrack) -> str:
+    """Pack the whole arcod download payload into the candidate's opaque ``ref``.
+
+    arcod's job creation needs more than a bare track id (album id, artist id,
+    cover, release date), so the ref carries the full payload as JSON. That keeps
+    ``download_candidate`` genuinely search-free — it just replays the stored
+    payload — while staying an opaque string from the caller's view."""
+    return json.dumps(build_download_payload(track))
+
+
+def search_candidates(
+    query: str,
+    want: TrackIdentity | None = None,
+    *,
+    search: Search,
+) -> list[Candidate]:
+    """Every title-matching arcod result as a :class:`Candidate` (no download).
+
+    Reuses ``parse_search`` + the shared title gate (no ``select_track`` collapse).
+    ``ref`` is the full download payload (JSON) so ``download_candidate`` re-creates
+    the exact job without searching. arcod may downgrade FLAC to MP3, so
+    ``lossless`` is left False (matching its ``expected_lossless=False`` wiring)."""
+    tracks = parse_search(search(query))
+    return [
+        Candidate(
+            source="arcod",
+            tier=2,
+            ref=_candidate_ref(t),
+            title=t.title,
+            artist=t.artist,
+            album=t.album_title or None,
+            quality_label="FLAC (proxy)",
+            lossless=False,
+            duration_s=t.duration_s,
+            size_bytes=None,
+        )
+        for t in tracks
+        if title_matches(t.title, query)
+    ]
+
+
+def download_candidate(
+    candidate: Candidate,
+    out_dir: Path,
+    want: TrackIdentity | None = None,
+    *,
+    create_download: CreateDownload,
+    poll: Poll,
+    fetch: Fetch,
+    clock: Clock = time.monotonic,
+    sleep: Sleep = time.sleep,
+) -> DownloadOutcome:
+    """Fetch exactly ``candidate`` by replaying its stored job payload — no search."""
+    start = clock()
+    payload = json.loads(candidate.ref)
+    dest = _download_payload(
+        payload,
+        _stem(candidate.artist, candidate.title, int(payload["trackId"])),
+        out_dir,
+        create_download=create_download,
+        poll=poll,
+        fetch=fetch,
+        clock=clock,
+        sleep=sleep,
+    )
+    return DownloadOutcome(
+        path=dest,
+        tier=2,
+        source="arcod",
+        elapsed_s=clock() - start,
+        query=f"{candidate.artist} - {candidate.title}",
+        title=candidate.title,
+        artist=candidate.artist,
+        album=candidate.album,
     )

@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from crate.application.download import DownloadReport
+from crate.domain.candidate import Candidate
 from crate.domain.identity import TrackIdentity
 from crate.domain.matching import norm_tokens
 from crate.infrastructure.sqlite.db import now_iso
@@ -480,6 +481,127 @@ class RequestStore:
                 ),
             )
             self._invalidate_stats()
+
+    # --- review tab (user-assisted retry / re-download) ---
+    # Failed requests + `done` rows whose file is lossy (lossless=0), minus the
+    # dismissed set. Newest first; each carries the current-file info (lossy) or
+    # the failure reason (failed) the console renders.
+    _REVIEW_SELECT = (
+        "SELECT r.id, r.query, r.requested_via, r.status, r.error, r.created_at, "
+        "r.finished_at, r.artist, r.title, r.isrc, r.duration_s, r.tier_won, r.source_won, "
+        "d.quality_label, d.size_bytes, d.lossless, d.duration_s AS file_duration_s, "
+        "d.path AS file_path, d.codec, d.bitrate "
+        "FROM requests r LEFT JOIN downloads d ON d.request_id = r.id "
+        "WHERE r.dismissed = 0 AND ("
+        "  r.status = 'failed' OR (r.status = 'done' AND d.lossless = 0)"
+        ") ORDER BY r.created_at DESC LIMIT ?"
+    )
+
+    def list_review(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Items worth a second look: failed requests + lossy `done` downloads.
+
+        Excludes ``dismissed`` rows. Each item is tagged ``kind`` (``failed`` /
+        ``lossy``); a lossy item carries its current file's quality/path, a failed
+        item its error reason."""
+        with self._lock:
+            rows = [dict(r) for r in self._conn.execute(self._REVIEW_SELECT, (limit,))]
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            kind = "failed" if row["status"] == "failed" else "lossy"
+            row["kind"] = kind
+            row["reason"] = row["error"] if kind == "failed" else None
+            out.append(row)
+        return out
+
+    def review_stats(self) -> dict[str, int]:
+        """The four review stat-card figures: pending (needs review), failed,
+        lossy, and resolved-via-review (targeted re-downloads that completed)."""
+        items = self.list_review()
+        failed = sum(1 for i in items if i["kind"] == "failed")
+        lossy = sum(1 for i in items if i["kind"] == "lossy")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM review_candidates rc "
+                "JOIN requests r ON r.id = rc.request_id WHERE r.status = 'done'"
+            ).fetchone()
+            resolved = int(row[0]) if row and row[0] is not None else 0
+        return {
+            "needs_review": failed + lossy,
+            "failed": failed,
+            "lossy": lossy,
+            "resolved": resolved,
+        }
+
+    def dismiss_review(self, request_id: str) -> bool:
+        """Remove a request from the review list (``dismissed=1``). Idempotent-ish:
+        returns True only when a row actually changed."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET dismissed=1 WHERE id=? AND dismissed=0", (request_id,)
+            )
+            self._invalidate_stats()
+        return cur.rowcount == 1
+
+    def queue_review_download(
+        self,
+        request_id: str,
+        candidate: Candidate,
+        *,
+        is_upgrade: bool,
+        target_path: str | None,
+    ) -> bool:
+        """Arm a targeted re-download of ``request_id`` from a chosen candidate.
+
+        Stores the candidate (in ``review_candidates``, keyed by the request) and
+        flips the request back to ``queued`` so the serve queue worker claims it and
+        downloads exactly this candidate instead of running the cascade. Reusing the
+        same request row means a lossy upgrade updates *its* download row in place
+        and a fulfilled failure simply becomes ``done`` — both drop out of
+        ``list_review`` naturally. Returns False when the request no longer exists."""
+        with self._lock:
+            exists = self._conn.execute(
+                "SELECT 1 FROM requests WHERE id=?", (request_id,)
+            ).fetchone()
+            if exists is None:
+                return False
+            self._conn.execute(
+                "INSERT OR REPLACE INTO review_candidates("
+                "request_id, source, tier, ref, title, artist, album, quality_label, "
+                "lossless, duration_s, size_bytes, is_upgrade, target_path, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    request_id,
+                    candidate.source,
+                    candidate.tier,
+                    candidate.ref,
+                    candidate.title,
+                    candidate.artist,
+                    candidate.album,
+                    candidate.quality_label,
+                    1 if candidate.lossless else 0,
+                    candidate.duration_s,
+                    candidate.size_bytes,
+                    1 if is_upgrade else 0,
+                    target_path,
+                    now_iso(),
+                ),
+            )
+            self._conn.execute(
+                "UPDATE requests SET status='queued', error=NULL, finished_at=NULL, "
+                "dismissed=0 WHERE id=?",
+                (request_id,),
+            )
+            self._invalidate_stats()
+        return True
+
+    def get_review_candidate(self, request_id: str) -> dict[str, Any] | None:
+        """The armed candidate for a claimed request (or ``None`` for an ordinary
+        cascade request). The queue worker checks this after ``claim_next``."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM review_candidates WHERE request_id=?", (request_id,)
+            ).fetchone()
+            return dict(row) if row else None
 
     # --- maintenance (retention) ---
     def prune_attempts(self, older_than_days: int = 90) -> int:

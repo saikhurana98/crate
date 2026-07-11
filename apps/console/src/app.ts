@@ -13,6 +13,9 @@ import {
   type PlayerTrack,
   type RequestDetail,
   type RequestRow,
+  type ReviewCandidate,
+  type ReviewItem,
+  type ReviewStats,
   type Source,
   type SpotifyTrack,
   type TierCfg,
@@ -123,13 +126,22 @@ interface State {
   player: PlayerState | null; // now-playing + recently-played
   isMobile: boolean; // viewport <= 640px -> tabbed app layout
   activeTab: "cascade" | "activity" | "tracks"; // mobile bottom-nav selection
-  page: "console" | "bulk"; // top-level page (bulk downloads is a separate screen)
+  page: "console" | "bulk" | "review"; // top-level page
   bulkPanel: boolean; // right-side bulk drawer open
   bulkText: string; // paste box (playlist link / track list)
   bulkBusy: boolean; // submit in flight
   batches: Batch[]; // bulk batches (polled)
   expandedBatches: Record<string, boolean>; // batch id -> show track rows
   batchDetails: Record<string, BatchDetail>; // fetched track rows for expanded batches
+  // review tab (user-assisted retry / re-download)
+  reviewItems: ReviewItem[]; // failed + lossy items (polled while on the page)
+  reviewStats: ReviewStats | null; // the 4 stat-card figures
+  reviewOpen: Record<string, boolean>; // item id -> expanded
+  reviewQ: Record<string, string>; // item id -> edited query
+  reviewSearching: Record<string, boolean>; // item id -> search in flight
+  reviewCands: Record<string, ReviewCandidate[]>; // item id -> found candidates
+  reviewSel: Record<string, string>; // item id -> selected candidate id
+  reviewDownloading: Record<string, boolean>; // item id -> re-download posted
 }
 
 const state: State = {
@@ -171,6 +183,14 @@ const state: State = {
   batches: [],
   expandedBatches: {},
   batchDetails: {},
+  reviewItems: [],
+  reviewStats: null,
+  reviewOpen: {},
+  reviewQ: {},
+  reviewSearching: {},
+  reviewCands: {},
+  reviewSel: {},
+  reviewDownloading: {},
 };
 
 const root = document.getElementById("app")!;
@@ -240,6 +260,8 @@ function connectLive(): void {
       state.stats = e.stats;
       state.inflight = e.in_flight;
       render();
+      // a re-download finishing changes the review list — refresh it on the page
+      if (state.page === "review") void loadReview().then(render);
     } catch {
       /* ignore */
     }
@@ -262,6 +284,73 @@ async function loadPlayer(): Promise<void> {
   } catch {
     /* 409 not connected / transient — leave the last snapshot */
   }
+}
+
+// ---------- review tab ----------
+async function loadReview(): Promise<void> {
+  try {
+    const resp = await api.review();
+    state.reviewItems = resp.items;
+    state.reviewStats = resp.stats;
+    // drop transient per-item state for items that resolved and left the list
+    const live = new Set(resp.items.map((i) => i.id));
+    for (const map of [
+      state.reviewDownloading,
+      state.reviewOpen,
+      state.reviewCands,
+      state.reviewSel,
+      state.reviewQ,
+      state.reviewSearching,
+    ] as Record<string, unknown>[]) {
+      for (const id of Object.keys(map)) if (!live.has(id)) delete map[id];
+    }
+  } catch {
+    /* transient — keep the last snapshot */
+  }
+}
+
+async function rescanReview(id: string): Promise<void> {
+  const item = state.reviewItems.find((i) => i.id === id);
+  if (!item) return;
+  const q = state.reviewQ[id] != null ? state.reviewQ[id] : item.query;
+  state.reviewSearching[id] = true;
+  render();
+  try {
+    state.reviewCands[id] = await api.reviewSearch(id, q);
+  } catch (err) {
+    toast(`Search failed: ${(err as Error).message}`);
+  }
+  state.reviewSearching[id] = false;
+  render();
+}
+
+async function downloadCand(id: string): Promise<void> {
+  const cands = state.reviewCands[id] ?? [];
+  const cand = cands.find((c) => c.id === state.reviewSel[id]);
+  if (!cand) return;
+  state.reviewDownloading[id] = true;
+  render();
+  try {
+    await api.reviewDownload(id, cand);
+    toast(`Re-download queued: ${state.reviewItems.find((i) => i.id === id)?.query ?? ""} · ${cand.source}`);
+    void loadReview().then(render);
+  } catch (err) {
+    state.reviewDownloading[id] = false;
+    toast(`Re-download failed: ${(err as Error).message}`);
+  }
+  render();
+}
+
+async function dismissReview(id: string): Promise<void> {
+  const item = state.reviewItems.find((i) => i.id === id);
+  try {
+    await api.reviewDismiss(id);
+    toast(item && item.kind === "lossy" ? "Kept current file" : "Dismissed");
+    await loadReview();
+  } catch (err) {
+    toast(`Dismiss failed: ${(err as Error).message}`);
+  }
+  render();
 }
 
 // ---------- bulk downloads ----------
@@ -1003,19 +1092,29 @@ function activeDownloads(): number {
   const singles = state.inflight.filter((r) => !r.batch_id).length;
   return inBatches + singles;
 }
-// Segmented page switcher (console | downloads) sitting next to the logo.
+// Number of items needing review — drives the red count badge on the review tab.
+function activeReview(): number {
+  return state.reviewStats ? state.reviewStats.needs_review : state.reviewItems.length;
+}
+
+// Segmented page switcher (console | downloads | review) sitting next to the logo.
 function navTabsHtml(): string {
-  const onConsole = state.page === "console";
   const n = activeDownloads();
-  const badge =
+  const dlBadge =
     n > 0
       ? `<span style="font:700 10px 'Doto';min-width:17px;height:17px;padding:0 4px;border-radius:10px;background:#ff4c38;color:#0c0e0c;display:inline-flex;align-items:center;justify-content:center">${n}</span>`
+      : "";
+  const rv = activeReview();
+  const rvBadge =
+    rv > 0
+      ? `<span style="font:700 10px 'Doto';min-width:17px;height:17px;padding:0 4px;border-radius:10px;background:#ff4c38;color:#0c0e0c;display:inline-flex;align-items:center;justify-content:center">${rv}</span>`
       : "";
   const seg = (active: boolean): string =>
     active ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#99a091";
   return `<nav style="display:flex;align-items:center;gap:3px;background:#131612;border:1px solid #22261f;border-radius:20px;padding:3px;margin-left:4px;flex-shrink:0">
-      <button data-act="gotoConsole" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(onConsole)};transition:.15s">console</button>
-      <button data-act="gotoBulk" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(!onConsole)};transition:.15s">downloads${badge}</button>
+      <button data-act="gotoConsole" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "console")};transition:.15s">console</button>
+      <button data-act="gotoBulk" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "bulk")};transition:.15s">downloads${dlBadge}</button>
+      <button data-act="gotoReview" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "review")};transition:.15s">review${rvBadge}</button>
     </nav>`;
 }
 
@@ -1454,6 +1553,157 @@ function bulkPanelHtml(): string {
     <aside style="position:fixed;top:0;right:0;bottom:0;width:min(440px,94vw);background:#111411;border-left:1px solid #22261f;z-index:55;transform:${open ? "translateX(0)" : "translateX(103%)"};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column">${inner}</aside>`;
 }
 
+// ---------- review tab (user-assisted retry / re-download) ----------
+function reviewStatCardsHtml(): string {
+  const s = state.reviewStats;
+  type Card = [string, string, string, boolean];
+  const cards: Card[] = s
+    ? [
+        ["Needs review", String(s.needs_review), `${s.failed} failed · ${s.lossy} lossy`, true],
+        ["Failed", String(s.failed), "no source produced a file", false],
+        ["Lossy grabs", String(s.lossy), "FLAC upgrade available", false],
+        ["Resolved", String(s.resolved), "via review", false],
+      ]
+    : Array<Card>(4).fill(["—", "—", "", false]);
+  return `<div style="display:grid;grid-template-columns:repeat(${state.isMobile ? 2 : 4},1fr);gap:12px;margin-bottom:16px">${cards
+    .map(([label, value, sub, light]) => {
+      const bg = light ? "#dfe4d6" : "#111411";
+      const bd = light ? "#dfe4d6" : "#22261f";
+      const lc = light ? "#4d5346" : "#5d6456";
+      const vc = light ? "#14170f" : "#e9ede3";
+      return `<div style="background:${bg};border:1px solid ${bd};border-radius:18px;padding:14px 16px">
+        <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:${lc}">${esc(label)}</div>
+        <div style="font:800 27px 'Doto';margin-top:8px;line-height:1;color:${vc}">${esc(value)}</div>
+        <div style="font:400 10.5px 'JetBrains Mono';color:${lc};margin-top:7px">${esc(sub)}</div>
+      </div>`;
+    })
+    .join("")}</div>`;
+}
+
+function reviewCandRowHtml(itemId: string, expected: number | null, c: ReviewCandidate): string {
+  const sel = state.reviewSel[itemId] === c.id;
+  const d = expected != null && c.duration_s != null ? c.duration_s - expected : null;
+  const delta = d == null || d === 0 ? "" : `${d > 0 ? "+" : "−"}${Math.abs(d)}s`;
+  const deltaColor = d != null && Math.abs(d) > 8 ? "#ff6b58" : "#5d6456";
+  const matchColor = c.match >= 90 ? "#e9ede3" : c.match >= 75 ? "#99a091" : "#5d6456";
+  const rowBg = sel ? "rgba(233,237,227,.05)" : "#0c0e0c";
+  const rowBorder = sel ? "#99a091" : "#272c25";
+  const radioBorder = sel ? "#e9ede3" : "#39402f";
+  const dotBg = sel ? "#e9ede3" : "transparent";
+  const qBg = c.lossless ? "rgba(233,237,227,.09)" : "transparent";
+  const qColor = c.lossless ? "#e9ede3" : "#7c8371";
+  const qBorder = c.lossless ? "transparent" : "#272c25";
+  const flags = c.album ? esc(c.album) : "";
+  return `<div data-act="selectCand" data-rid="${esc(itemId)}" data-cid="${esc(c.id)}" style="display:flex;align-items:center;gap:11px;background:${rowBg};border:1px solid ${rowBorder};border-radius:14px;padding:11px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .15s,background .15s">
+    <span style="width:16px;height:16px;border-radius:50%;border:1.5px solid ${radioBorder};display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;transition:border-color .15s"><span style="width:8px;height:8px;border-radius:50%;background:${dotBg};transition:background .15s"></span></span>
+    <span style="font:500 10px 'JetBrains Mono';color:#99a091;padding:2px 8px;background:#181c17;border-radius:10px;flex-shrink:0">${esc(c.source)}</span>
+    <span style="font:800 11px 'Doto';color:${tierColor(c.tier)};flex-shrink:0">T${c.tier}</span>
+    <div style="flex:1;min-width:0">
+      <div style="font:500 12.5px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.title)} <span style="color:#5d6456">· ${esc(c.artist)}</span></div>
+      ${flags ? `<div style="font:400 9.5px 'JetBrains Mono';color:#5d6456;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${flags}</div>` : ""}
+    </div>
+    <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 7px;border-radius:10px;background:${qBg};color:${qColor};border:1px solid ${qBorder};flex-shrink:0">${esc(c.quality_label)}</span>
+    <span style="font:500 10px 'JetBrains Mono';color:#99a091;flex-shrink:0;width:34px;text-align:right">${dur(c.duration_s)}</span>
+    <span style="font:500 10px 'JetBrains Mono';color:${deltaColor};flex-shrink:0;width:32px">${delta}</span>
+    <span style="font:400 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0;width:46px;text-align:right">${bytes(c.size_bytes)}</span>
+    <span style="font:800 16px 'Doto';color:${matchColor};width:46px;text-align:right;flex-shrink:0">${c.match}%</span>
+  </div>`;
+}
+
+function reviewItemHtml(item: ReviewItem): string {
+  const id = item.id;
+  const failed = item.kind === "failed";
+  const expanded = !!state.reviewOpen[id];
+  const searching = !!state.reviewSearching[id];
+  const downloading = !!state.reviewDownloading[id];
+  const cands = state.reviewCands[id] ?? [];
+  const selCand = cands.find((c) => c.id === state.reviewSel[id]);
+  const q = state.reviewQ[id] != null ? state.reviewQ[id] : item.query;
+  const reasonLabel = failed ? "FAILED" : "LOSSY";
+  const reasonColor = failed ? "#ff6b58" : "#99a091";
+  const reasonBg = failed ? "rgba(255,76,56,.08)" : "rgba(153,160,145,.08)";
+  const reasonBorder = failed ? "rgba(255,76,56,.35)" : "#39402f";
+  const sub = failed
+    ? `${esc(item.reason ?? "all tiers missed")} · via ${esc(item.requested_via)}`
+    : `${esc(item.quality_label ?? "lossy")} · ${bytes(item.size_bytes)}${item.source_won ? ` · won by ${esc(item.source_won)}` : ""}`;
+  const cardBorder = expanded ? "#39402f" : "#22261f";
+  const current =
+    !failed && item.quality_label
+      ? `current file · ${esc(item.quality_label)} · ${bytes(item.size_bytes)}`
+      : "";
+
+  const head = `<div data-act="toggleReview" data-id="${esc(id)}" style="display:flex;align-items:center;gap:13px;padding:14px 18px;cursor:pointer;transition:background .12s">
+      <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:3px 9px;border-radius:10px;background:${reasonBg};color:${reasonColor};border:1px solid ${reasonBorder};flex-shrink:0">${reasonLabel}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font:600 13.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(item.query)}</div>
+        <div style="font:400 10.5px 'JetBrains Mono';color:#5d6456;margin-top:3px">${sub}</div>
+      </div>
+      ${
+        downloading
+          ? `<span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:5px 11px;border-radius:14px;background:rgba(233,237,227,.09);flex-shrink:0">✓ re-queued</span>`
+          : `<span style="font:500 10.5px 'JetBrains Mono';color:#99a091;flex-shrink:0">${cands.length} candidates</span><span style="color:#5d6456;font-size:10px;flex-shrink:0">${expanded ? "▴" : "▾"}</span>`
+      }
+    </div>`;
+
+  if (!expanded) {
+    return `<section style="background:#111411;border:1px solid ${cardBorder};border-radius:20px;margin-bottom:12px;overflow:hidden;transition:border-color .2s">${head}</section>`;
+  }
+
+  const dlDisabled = !selCand;
+  const dlBg = selCand ? "#e9ede3" : "#181c17";
+  const dlColor = selCand ? "#14170f" : "#5d6456";
+  const dlCursor = selCand ? "pointer" : "default";
+  const dlLabel = selCand
+    ? `Download from ${esc(selCand.source)} · ${esc(selCand.quality_label)}`
+    : "Select a match to download";
+  const body = `<div style="border-top:1px solid #1a1e19;padding:14px 18px 16px;animation:fadein .2s ease">
+      <div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">
+        <div style="position:relative;flex:1;display:flex;align-items:center">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:11px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+          <input data-inp="reviewq" data-id="${esc(id)}" value="${esc(q)}" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:8px 12px 8px 32px"/>
+        </div>
+        <button data-act="rescanReview" data-id="${esc(id)}" style="display:inline-flex;align-items:center;gap:7px;background:#181c17;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:8px 14px;cursor:pointer;flex-shrink:0;transition:border-color .15s,color .15s">search again</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;font:400 10.5px 'JetBrains Mono';color:#5d6456;margin-bottom:10px;padding:0 2px">
+        <span>expected · ${dur(item.duration_s)}</span>
+        ${current ? `<span style="color:#99a091">${current}</span>` : ""}
+      </div>
+      ${
+        searching
+          ? `<div style="display:flex;align-items:center;gap:10px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:16px 14px;font:400 11.5px 'JetBrains Mono';color:#99a091"><span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0"></span>Searching all sources…</div>`
+          : cands.length
+            ? cands.map((c) => reviewCandRowHtml(id, item.duration_s, c)).join("")
+            : `<div style="background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:16px 14px;font:400 11.5px 'JetBrains Mono';color:#5d6456;text-align:center">No candidates yet — hit “search again”.</div>`
+      }
+      <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+        <button data-act="downloadCand" data-id="${esc(id)}" ${dlDisabled ? "disabled" : ""} style="background:${dlBg};border:none;border-radius:14px;color:${dlColor};font:600 12.5px 'Instrument Sans';padding:11px 18px;cursor:${dlCursor};transition:.15s">${dlLabel}</button>
+        <button data-act="dismissReview" data-id="${esc(id)}" style="background:none;border:1px solid #272c25;border-radius:14px;color:#5d6456;font:600 11px 'JetBrains Mono';padding:11px 15px;cursor:pointer;transition:border-color .15s,color .15s">${failed ? "dismiss" : "keep current"}</button>
+        <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#464d40">match % = title · artist · duration similarity</span>
+      </div>
+    </div>`;
+
+  return `<section style="background:#111411;border:1px solid ${cardBorder};border-radius:20px;margin-bottom:12px;overflow:hidden;transition:border-color .2s">${head}${body}</section>`;
+}
+
+function reviewPageHtml(): string {
+  const items = state.reviewItems.map(reviewItemHtml).join("");
+  const empty = state.reviewItems.length
+    ? ""
+    : `<div style="background:#111411;border:1px dashed #272c25;border-radius:20px;padding:48px 20px;text-align:center">
+        <div style="font:600 14px 'Instrument Sans';color:#99a091">Nothing to review</div>
+        <div style="font:400 12px 'Instrument Sans';color:#5d6456;margin-top:6px">Failed requests and non-FLAC downloads land here for user-assisted retry.</div>
+      </div>`;
+  const pad = state.isMobile ? "16px 16px 96px" : "22px 28px 72px";
+  return `<main style="max-width:1100px;margin:0 auto;padding:${pad};animation:fadein .25s ease">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Review</h1>
+      <p style="margin:0;font:400 12.5px 'Instrument Sans';color:#99a091">Failed requests and lossy grabs. Compare candidates from every source, pick the closest match, re-download.</p>
+    </div>
+    ${reviewStatCardsHtml()}
+    ${items}${empty}
+  </main>`;
+}
+
 // Pure view: State -> HTML. The renderer reconciles it into the DOM (morph), so
 // this can run every tick without wiping the page.
 function view(): string {
@@ -1462,6 +1712,9 @@ function view(): string {
   }
   if (state.page === "bulk") {
     return `${headerHtml()}${bulkPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
+  }
+  if (state.page === "review") {
+    return `${headerHtml()}${reviewPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
   }
   return `${state.isMobile ? viewMobile() : viewDesktop()}${bulkPanelHtml()}`;
 }
@@ -1575,7 +1828,23 @@ function bindEvents(): void {
       state.page = "console";
       window.scrollTo(0, 0);
       render();
-    } else if (act === "openBulkPanel") {
+    } else if (act === "gotoReview") {
+      state.page = "review";
+      state.bulkPanel = false;
+      window.scrollTo(0, 0);
+      render();
+      void loadReview().then(render);
+    } else if (act === "toggleReview") {
+      const id = el.dataset.id!;
+      state.reviewOpen[id] = !state.reviewOpen[id];
+      render();
+    } else if (act === "selectCand") {
+      state.reviewSel[el.dataset.rid!] = el.dataset.cid!;
+      render();
+    } else if (act === "rescanReview") void rescanReview(el.dataset.id!);
+    else if (act === "downloadCand") void downloadCand(el.dataset.id!);
+    else if (act === "dismissReview") void dismissReview(el.dataset.id!);
+    else if (act === "openBulkPanel") {
       state.bulkPanel = true;
       render();
       void loadBatches().then(render);
@@ -1620,6 +1889,8 @@ function bindEvents(): void {
       render(); // reflect Save button state; morph keeps the focused field intact
     } else if (el.dataset.inp === "bulk") {
       state.bulkText = el.value; // capture without re-render so the textarea isn't clobbered
+    } else if (el.dataset.inp === "reviewq") {
+      state.reviewQ[el.dataset.id!] = el.value; // capture without re-render (keep focus)
     }
   });
 
@@ -1780,7 +2051,13 @@ async function boot(): Promise<void> {
         void loadBatches().then(render);
       }
     }, 3000);
+    // review: poll while on the page so completed re-downloads drop out live
+    window.setInterval(() => {
+      if (state.page === "review") void loadReview().then(render);
+    }, 4000);
   });
+  // keep the review badge fresh even when not on the page
+  void loadReview().then(render);
 }
 
 void boot();

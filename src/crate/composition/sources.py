@@ -28,11 +28,17 @@ from typing import TYPE_CHECKING, Any, cast
 from crate.adapters.sources import ytdlp
 from crate.adapters.sources.monochrome import DEFAULT_TIDAL_BASE, monochrome_download
 from crate.application.cascade import MuxStrategy, SourceEntry, TierMux
+from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
 from crate.domain.tiers import SourceRef, Tier
 from crate.infrastructure import http
 from crate.infrastructure.audio.decrypt import mp4decrypt_cenc
+
+# Review-tab candidate source: (search-without-downloading, download-one-candidate).
+SearchCandidatesFn = Callable[[str, "TrackIdentity | None"], list[Candidate]]
+DownloadCandidateFn = Callable[[Candidate, Path, "TrackIdentity | None"], DownloadOutcome]
+CandidateSource = tuple[SearchCandidatesFn, DownloadCandidateFn]
 
 
 def _enabled(name: str) -> bool:
@@ -196,6 +202,146 @@ _FACTORIES: dict[str, Callable[[], SourceEntry]] = {
     "telegram": _telegram_source,
     "ytdlp": _ytdlp_source,
 }
+
+
+# --- Review-tab candidate sources (search without committing + download-by-ref) ---
+# Only sources with a clean search -> ref -> download-by-id path. Soulseek +
+# Telegram are deferred (P2P/bot listings are slow and awkward to enumerate).
+
+
+def _qobuz_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import qobuz
+    from crate.infrastructure.qobuz.client import QobuzClient
+
+    client = QobuzClient(
+        os.environ["CRATE_QOBUZ_APP_ID"],
+        os.environ["CRATE_QOBUZ_APP_SECRET"],
+        os.environ["CRATE_QOBUZ_TOKEN"],
+    )
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return qobuz.search_candidates(query, want, search=client.search)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return qobuz.download_candidate(
+            cand, out_dir, want, get_file_url=client.get_file_url, fetch=client.fetch
+        )
+
+    return search, download
+
+
+def _monochrome_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import monochrome
+    from crate.infrastructure.browser.amz_session import AmzSession
+
+    session = AmzSession()
+
+    def search_json(query: str) -> Any:
+        return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
+
+    def fetch(url: str, dest: Path) -> None:
+        http.stream_to(url, dest)
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return monochrome.search_candidates(query, want, search_json=search_json)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return monochrome.download_candidate(
+            cand, out_dir, want, amz_fetch=session.fetch_amz, fetch=fetch, decrypt=mp4decrypt_cenc
+        )
+
+    return search, download
+
+
+def _deezer_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import deezer
+    from crate.infrastructure.deezer.client import DeezerClient
+
+    client = DeezerClient(os.environ["CRATE_DEEZER_ARL"])
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return deezer.search_candidates(query, want, search=client.search)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return deezer.download_candidate(
+            cand, out_dir, want, resolve_url=client.resolve_url, fetch=client.fetch
+        )
+
+    return search, download
+
+
+def _arcod_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import arcod
+    from crate.infrastructure.arcod.client import ArcodClient
+
+    client = ArcodClient(os.environ.get("CRATE_ARCOD_BASE", "https://arcod.xyz"))
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return arcod.search_candidates(query, want, search=client.search)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return arcod.download_candidate(
+            cand,
+            out_dir,
+            want,
+            create_download=client.create_download,
+            poll=client.poll,
+            fetch=client.fetch,
+        )
+
+    return search, download
+
+
+def _ytdlp_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return ytdlp.search_candidates(query, want)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return ytdlp.download_candidate(cand, out_dir, want)
+
+    return search, download
+
+
+# Candidate-capable factories only (search -> ref -> download-by-id). Soulseek and
+# Telegram are intentionally absent (deferred, v1 non-goal).
+_CANDIDATE_FACTORIES: dict[str, Callable[[], CandidateSource]] = {
+    "qobuz": _qobuz_candidate,
+    "monochrome": _monochrome_candidate,
+    "deezer": _deezer_candidate,
+    "arcod": _arcod_candidate,
+    "ytdlp": _ytdlp_candidate,
+}
+
+
+def _enabled_source_names() -> list[str]:  # pragma: no cover - env + IO wiring
+    """Names of currently-enabled sources, honouring the same rules as build_tiers:
+    the stored layout (CRATE_DB set) wins, else the env enable flags."""
+    from crate.composition.catalog import SOURCES, default_layout
+
+    config = _config_store_if_enabled()
+    if config is not None:
+        layout = config.get_layout() or default_layout()
+        return [name for t in layout["tiers"] for name in t["sources"]]
+    names = [s.name for s in SOURCES if s.enable_flag is None or _enabled(s.enable_flag)]
+    return names
+
+
+def build_candidate_sources() -> dict[str, CandidateSource]:  # pragma: no cover - IO wiring
+    """The review flow's candidate sources: ``{name: (search_fn, download_fn)}``.
+
+    Only enabled, candidate-capable sources are wired (same enable/stored-layout
+    rules as ``build_tiers``); a factory that raises for missing creds is skipped.
+    Soulseek/Telegram are excluded by construction (deferred)."""
+    out: dict[str, CandidateSource] = {}
+    for name in _enabled_source_names():
+        factory = _CANDIDATE_FACTORIES.get(name)
+        if factory is None:
+            continue
+        try:
+            out[name] = factory()
+        except Exception:  # missing creds / unavailable -> skip
+            continue
+    return out
 
 
 def _keyfile() -> Path:  # pragma: no cover - path
@@ -419,21 +565,76 @@ def reap_orphans() -> int:  # pragma: no cover - IO wiring
     return int(build_recorder("serve").reap_orphans())
 
 
+def _review_candidate(row: dict[str, Any]) -> Candidate:  # pragma: no cover - trivial mapping
+    """Reconstruct the stored :class:`Candidate` from a ``review_candidates`` row."""
+    return Candidate(
+        source=str(row["source"]),
+        tier=int(row["tier"]),
+        ref=str(row["ref"]),
+        title=str(row["title"]),
+        artist=str(row["artist"]),
+        album=row["album"],
+        quality_label=str(row["quality_label"]),
+        lossless=bool(row["lossless"]),
+        duration_s=row["duration_s"],
+        size_bytes=row["size_bytes"],
+    )
+
+
 def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cover - IO wiring
-    """A loop that drains console-queued requests through the cascade. Runs in
-    the `serve` process (which owns the NAS mount + full source toolchain), so
-    console downloads share the same downloader as Explo. Attaches to each
-    pre-created ``queued`` row rather than opening a new request, and de-dups on
-    the row's stored identity (reuse a lossless copy; upgrade a lossy one)."""
+    """A loop that drains console-queued requests. Runs in the `serve` process
+    (which owns the NAS mount + full source toolchain), so console downloads share
+    the same downloader as Explo. Attaches to each pre-created ``queued`` row.
+
+    Two kinds of work item: an ordinary request goes through the cascade + de-dup
+    (reuse a lossless copy, upgrade a lossy one); a request armed with a review
+    candidate (``review_candidates`` row) skips the cascade and downloads exactly
+    that candidate, then upgrades in place (lossy) or fulfils (failed)."""
     from crate.application.dedup import resolve_request
+    from crate.application.review import run_review_download
     from crate.infrastructure.audio.probe import probe
 
     store = build_recorder("console")
     current_tiers = _tiers_provider(_config_store_if_enabled())
-    run = _bound_run(probe, build_finalizer())
+    finalizer = build_finalizer()
+    run = _bound_run(probe, finalizer)
     replace = _atomic_replace()
+    candidate_sources = build_candidate_sources()
     out_dir = Path(os.environ.get("CRATE_SERVE_DOWNLOADS", "downloads"))
     poll = float(os.environ.get("CRATE_QUEUE_POLL", "2.0"))
+
+    def handle(claimed: dict[str, Any]) -> None:
+        review = store.get_review_candidate(claimed["id"])
+        if review is not None:
+            candidate = _review_candidate(review)
+            source = candidate_sources.get(candidate.source)
+            if source is None:
+                raise RuntimeError(f"candidate source {candidate.source!r} not available")
+            run_review_download(
+                claimed["id"],
+                out_dir,
+                candidate,
+                want=claimed["identity"],
+                is_upgrade=bool(review["is_upgrade"]),
+                target_path=review["target_path"],
+                download=source[1],
+                prober=probe,
+                finalizer=finalizer,
+                replace=replace,
+                recorder=store,
+            )
+            return
+        resolve_request(
+            claimed["query"],
+            out_dir,
+            claimed["id"],
+            identity=claimed["identity"],
+            tiers=current_tiers(),
+            recorder=store,
+            run=run,
+            exists=lambda p: p.exists(),
+            replace=replace,
+        )
 
     def loop(stop: threading.Event) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -443,17 +644,7 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
                 stop.wait(poll)
                 continue
             try:
-                resolve_request(
-                    claimed["query"],
-                    out_dir,
-                    claimed["id"],
-                    identity=claimed["identity"],
-                    tiers=current_tiers(),
-                    recorder=store,
-                    run=run,
-                    exists=lambda p: p.exists(),
-                    replace=replace,
-                )
+                handle(claimed)
             except Exception as exc:  # never let one bad request kill the loop
                 store.fail_request(claimed["id"], f"queue worker error: {exc}")
 
@@ -677,4 +868,5 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         search=build_spotify_search(),
         spotify=build_spotify_oauth(config, store),
         bulk_resolve=build_bulk_resolver(),
+        candidate_sources=build_candidate_sources,
     )

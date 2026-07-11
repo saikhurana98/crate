@@ -186,6 +186,50 @@ export interface BulkResult {
   total: number;
 }
 
+// --- review tab (user-assisted retry / re-download) ---
+export interface ReviewItem {
+  id: string;
+  query: string;
+  requested_via: string;
+  status: string; // failed | done
+  kind: "failed" | "lossy";
+  reason: string | null; // failure reason (failed items)
+  source_won: string | null;
+  duration_s: number | null; // wanted duration
+  quality_label: string | null; // current file (lossy items)
+  size_bytes: number | null;
+  file_path: string | null;
+  file_duration_s: number | null;
+  lossless: number | null;
+}
+
+export interface ReviewCandidate {
+  id: string;
+  source: string;
+  tier: number;
+  ref: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  quality_label: string;
+  lossless: boolean;
+  duration_s: number | null;
+  size_bytes: number | null;
+  match: number;
+}
+
+export interface ReviewStats {
+  needs_review: number;
+  failed: number;
+  lossy: number;
+  resolved: number;
+}
+
+export interface ReviewResponse {
+  items: ReviewItem[];
+  stats: ReviewStats;
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, { headers: { Accept: "application/json" }, signal });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
@@ -235,6 +279,21 @@ export const api = {
     send<{ id: string }>("POST", `/api/batches/${encodeURIComponent(id)}/cancel`, {}),
   retry: (id: string) =>
     send<{ id: string }>("POST", `/api/requests/${encodeURIComponent(id)}/retry`, {}),
+  review: () => get<ReviewResponse>("/api/review"),
+  reviewSearch: (id: string, q: string) =>
+    send<ReviewCandidate[]>("POST", `/api/review/${encodeURIComponent(id)}/search`, { q }),
+  reviewDownload: (id: string, candidate: ReviewCandidate) =>
+    send<{ id: string; status: string; source: string }>(
+      "POST",
+      `/api/review/${encodeURIComponent(id)}/download`,
+      { candidate },
+    ),
+  reviewDismiss: (id: string) =>
+    send<{ id: string; dismissed: boolean }>(
+      "POST",
+      `/api/review/${encodeURIComponent(id)}/dismiss`,
+      {},
+    ),
   spotifyStatus: () => get<SpotifyStatus>("/api/spotify/status"),
   spotifyPlayer: (signal?: AbortSignal) => get<PlayerState>("/api/spotify/player", signal),
   spotifyLoginUrl: "/api/spotify/login",

@@ -25,20 +25,27 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
 from crate.domain.matching import artist_matches, match_score, title_matches
 
 __all__ = [
+    "Candidate",
     "DownloadOutcome",
     "YtCandidate",
     "build_command",
     "build_search_command",
     "download",
+    "download_candidate",
     "extract_path",
     "parse_candidates",
+    "search_candidates",
     "select_candidate",
 ]
+
+# Nominal bitrate of a YouTube best-audio grab (Opus ~160 kbps) — display only.
+_YTDLP_QUALITY = "opus ~160"
 
 # Runner takes (argv, timeout_s); the default passes the timeout to
 # subprocess.run so a hung yt-dlp is killed. TimeoutExpired is translated to
@@ -260,3 +267,59 @@ def download(
     if result.returncode != 0:
         raise RuntimeError(f"yt-dlp failed ({result.returncode}): {result.stderr.strip()}")
     return _outcome(extract_path(result.stdout), query, elapsed, title=chosen.title)
+
+
+def search_candidates(
+    query: str,
+    want: TrackIdentity | None = None,
+    *,
+    runner: Runner = _default_runner,
+) -> list[Candidate]:
+    """Every title-matching ``ytsearch5:`` candidate as a :class:`Candidate`.
+
+    Runs the metadata-only probe (already ``ytsearch5``), reuses ``parse_candidates``
+    + the shared title gate, and returns them all (no ``select_candidate`` collapse);
+    ``ref`` is the YouTube video id for later download-by-id. A search failure
+    yields an empty list so the review fan-out simply skips this source."""
+    search = _run(runner, build_search_command(query), _SEARCH_TIMEOUT_S)
+    if search.returncode != 0:
+        return []
+    return [
+        Candidate(
+            source="ytdlp",
+            tier=3,
+            ref=c.id,
+            title=c.title,
+            artist=c.channel,
+            album=None,
+            quality_label=_YTDLP_QUALITY,
+            lossless=False,
+            duration_s=c.duration_s,
+            size_bytes=None,
+        )
+        for c in parse_candidates(search.stdout)
+        if title_matches(c.title, query)
+    ]
+
+
+def download_candidate(
+    candidate: Candidate,
+    out_dir: Path,
+    want: TrackIdentity | None = None,
+    *,
+    runner: Runner = _default_runner,
+    clock: Clock = time.monotonic,
+) -> DownloadOutcome:
+    """Fetch exactly ``candidate`` by its YouTube video-id ``ref`` — no search."""
+    start = clock()
+    dl_cmd = build_command(f"https://www.youtube.com/watch?v={candidate.ref}", out_dir)
+    result = _run(runner, dl_cmd, _DOWNLOAD_TIMEOUT_S)
+    elapsed = clock() - start
+    if result.returncode != 0:
+        raise RuntimeError(f"yt-dlp failed ({result.returncode}): {result.stderr.strip()}")
+    return _outcome(
+        extract_path(result.stdout),
+        f"{candidate.artist} {candidate.title}".strip(),
+        elapsed,
+        title=candidate.title,
+    )

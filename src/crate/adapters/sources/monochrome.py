@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
 from crate.domain.matching import artist_matches, duration_prefilter, match_score, title_matches
@@ -207,6 +208,34 @@ def read_kid(path: Path) -> str:
             fh.seek(0)
 
 
+def _download_params(
+    params: dict[str, Any],
+    track_id: int,
+    artist: str,
+    title: str,
+    out_dir: Path,
+    *,
+    amz_fetch: AmzFetch,
+    fetch: Fetch,
+    decrypt: Decrypt,
+) -> Path:
+    """Download-by-params core shared by the cascade path and the review
+    re-download: resolve the Amazon stream for ``params``, stream the CENC fMP4,
+    read its KID from a small head window, and decrypt to native FLAC. No search
+    or TIDAL selection — the amz params fully identify the track."""
+    stream = parse_amz_stream(amz_fetch(params))
+    stem = _UNSAFE.sub("_", f"{artist} - {title} [{track_id}]")
+    enc = out_dir / f"{stem}.enc.mp4"
+    flac = out_dir / f"{stem}.flac"
+    try:
+        fetch(stream.stream_url, enc)
+        kid = read_kid(enc)
+        decrypt(enc, kid, stream.decryption_key, flac)
+    finally:
+        enc.unlink(missing_ok=True)
+    return flac
+
+
 def monochrome_download(
     query: str,
     out_dir: Path,
@@ -235,17 +264,16 @@ def monochrome_download(
     track = select_by_title(
         parse_search(search_json(query)), match_title or query, want_duration, want_artist
     )
-    stream = parse_amz_stream(amz_fetch(build_amz_params(track)))
-
-    stem = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]")
-    enc = out_dir / f"{stem}.enc.mp4"
-    flac = out_dir / f"{stem}.flac"
-    try:
-        fetch(stream.stream_url, enc)
-        kid = read_kid(enc)
-        decrypt(enc, kid, stream.decryption_key, flac)
-    finally:
-        enc.unlink(missing_ok=True)
+    flac = _download_params(
+        build_amz_params(track),
+        track.id,
+        track.artist,
+        track.title,
+        out_dir,
+        amz_fetch=amz_fetch,
+        fetch=fetch,
+        decrypt=decrypt,
+    )
     return DownloadOutcome(
         path=flac,
         tier=1,
@@ -256,4 +284,84 @@ def monochrome_download(
         artist=track.artist,
         album=track.album or None,
         art_url=track.cover_url,
+    )
+
+
+def _candidate_track(candidate: Candidate) -> MonoTrack:
+    """Rebuild the MonoTrack needed for the Amazon lookup from a stored candidate —
+    the amz params are pure metadata (title/artist/album/duration), so no TIDAL
+    re-search is needed to re-download an already-chosen result."""
+    return MonoTrack(
+        id=int(candidate.ref),
+        title=candidate.title,
+        artist=candidate.artist,
+        album=candidate.album or "",
+        duration_s=candidate.duration_s,
+        hires=candidate.lossless,
+        cover_url=None,
+    )
+
+
+def search_candidates(
+    query: str,
+    want: TrackIdentity | None = None,
+    *,
+    search_json: SearchJson,
+) -> list[Candidate]:
+    """Every title-matching Monochrome result as a :class:`Candidate` (no download).
+
+    Reuses ``parse_search`` + the shared title gate (no ``select_by_title``
+    collapse). ``ref`` is the TIDAL track id; the Amazon lookup is driven by the
+    candidate's metadata, so ``download_candidate`` needs no re-search."""
+    tracks = parse_search(search_json(query))
+    return [
+        Candidate(
+            source="monochrome",
+            tier=1,
+            ref=str(t.id),
+            title=t.title,
+            artist=t.artist,
+            album=t.album or None,
+            quality_label="FLAC 24" if t.hires else "FLAC 16",
+            lossless=True,
+            duration_s=t.duration_s,
+            size_bytes=None,
+        )
+        for t in tracks
+        if title_matches(t.title, query)
+    ]
+
+
+def download_candidate(
+    candidate: Candidate,
+    out_dir: Path,
+    want: TrackIdentity | None = None,
+    *,
+    amz_fetch: AmzFetch,
+    fetch: Fetch,
+    decrypt: Decrypt,
+    clock: Clock = time.monotonic,
+) -> DownloadOutcome:
+    """Fetch exactly ``candidate`` via the Amazon path — no TIDAL search."""
+    start = clock()
+    track = _candidate_track(candidate)
+    flac = _download_params(
+        build_amz_params(track),
+        track.id,
+        track.artist,
+        track.title,
+        out_dir,
+        amz_fetch=amz_fetch,
+        fetch=fetch,
+        decrypt=decrypt,
+    )
+    return DownloadOutcome(
+        path=flac,
+        tier=1,
+        source="monochrome",
+        elapsed_s=clock() - start,
+        query=f"{candidate.artist} - {candidate.title}",
+        title=candidate.title,
+        artist=candidate.artist,
+        album=candidate.album,
     )

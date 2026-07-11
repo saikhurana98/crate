@@ -10,11 +10,26 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
+
+if TYPE_CHECKING:
+    from crate.domain.identity import TrackIdentity
 
 # Drop a candidate whose runtime is off the wanted duration by more than this
 # (shared tolerance for the source-side prefilter and the post-download check).
 DURATION_TOLERANCE_S = 7
+
+# How far (seconds) a candidate's runtime may drift from the wanted one before the
+# duration term of candidate_match() reaches zero. Beyond ~half a minute the two
+# are almost certainly different recordings (edit/extended/live), so the term
+# stops distinguishing them.
+_MATCH_DURATION_SPAN_S = 30.0
+
+# candidate_match() term weights (must sum to 1.0). Title carries the song
+# identity, the artist separates same-title songs, duration is the tiebreak.
+_W_TITLE = 0.55
+_W_ARTIST = 0.30
+_W_DURATION = 0.15
 
 _T = TypeVar("_T")
 
@@ -127,3 +142,43 @@ def match_score(title: str, artist: str, query: str) -> float:
     """
     q = set(norm_tokens(query))
     return _overlap(title, q) + _overlap(artist, q)
+
+
+def _jaccard(a: str, b: str) -> float:
+    """Token-set similarity of two strings (0..1), filler-stripped and symmetric.
+
+    Jaccard index (intersection size over union size) over :func:`norm_tokens`.
+    Empty on either side is 0."""
+    ta, tb = set(norm_tokens(a)), set(norm_tokens(b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def candidate_match(
+    cand_title: str,
+    cand_artist: str,
+    cand_duration_s: int | None,
+    want: TrackIdentity,
+) -> int:
+    """Score a review candidate against the wanted track: 0..100 (higher = closer).
+
+    A weighted blend of three symmetric similarities — title-token overlap,
+    artist overlap, and duration proximity — exactly the design's "match % =
+    title · artist · duration similarity". Terms whose inputs are unknown (no
+    wanted artist, no duration on either side) are dropped and the remaining
+    weights renormalised, so a candidate is never penalised for data the request
+    simply doesn't carry. Pure and dependency-free.
+    """
+    want_title = want.title or want.display()
+    terms: list[tuple[float, float]] = [(_W_TITLE, _jaccard(cand_title, want_title))]
+    if want.artist:
+        terms.append((_W_ARTIST, _jaccard(cand_artist, want.artist)))
+    if want.duration_s is not None and cand_duration_s is not None:
+        delta = abs(cand_duration_s - want.duration_s)
+        terms.append((_W_DURATION, max(0.0, 1.0 - delta / _MATCH_DURATION_SPAN_S)))
+    total_weight = sum(w for w, _ in terms)
+    if total_weight == 0:
+        return 0
+    score = sum(w * s for w, s in terms) / total_weight
+    return max(0, min(100, round(score * 100)))

@@ -106,3 +106,53 @@ def test_artist_matches_zero_overlap_lenient_threshold() -> None:
     # only a completely-disjoint channel is rejected
     assert artist_matches("Alfaaz Official", "Alfaaz", threshold=1e-9) is True
     assert artist_matches("SonyMusic", "Alfaaz", threshold=1e-9) is False
+
+
+# --- candidate_match (review-tab scoring) -------------------------------------
+from crate.domain.identity import TrackIdentity  # noqa: E402
+from crate.domain.matching import candidate_match  # noqa: E402
+
+
+def test_candidate_match_perfect_is_100() -> None:
+    want = TrackIdentity(artist="Mount Kimbie", title="Made to Stray", duration_s=237)
+    assert candidate_match("Made to Stray", "Mount Kimbie", 237, want) == 100
+
+
+def test_candidate_match_wrong_artist_same_title_scores_low() -> None:
+    want = TrackIdentity(artist="Mount Kimbie", title="Made to Stray", duration_s=237)
+    good = candidate_match("Made to Stray", "Mount Kimbie", 237, want)
+    wrong = candidate_match("Made to Stray", "Some Other Band", 237, want)
+    assert wrong < good  # artist term drags it down
+
+
+def test_candidate_match_duration_off_lowers_score() -> None:
+    want = TrackIdentity(artist="Aphex Twin", title="Rhubarb", duration_s=451)
+    exact = candidate_match("Rhubarb", "Aphex Twin", 451, want)
+    off = candidate_match("Rhubarb", "Aphex Twin", 481, want)  # 30s off -> duration term 0
+    assert off < exact
+
+
+def test_candidate_match_ignores_missing_artist_term() -> None:
+    # title-only identity: artist term is dropped, weights renormalise, so a title
+    # match still scores high rather than being penalised for absent data.
+    want = TrackIdentity(title="Gosh", duration_s=311)
+    assert candidate_match("Gosh", "Jamie xx", 311, want) == 100
+
+
+def test_candidate_match_drops_duration_term_when_unknown() -> None:
+    want = TrackIdentity(artist="Jai Paul", title="Str8 Outta Mumbai")  # no duration
+    # candidate duration unknown too -> only title+artist counted
+    assert candidate_match("Str8 Outta Mumbai", "Jai Paul", None, want) == 100
+
+
+def test_candidate_match_uses_display_when_no_title() -> None:
+    # identity with only artist falls back to display() tokens for the title term.
+    want = TrackIdentity(artist="Daft Punk")
+    score = candidate_match("Daft Punk", "Daft Punk", None, want)
+    assert score > 0
+
+
+def test_candidate_match_partial_title_overlap_between_0_and_100() -> None:
+    want = TrackIdentity(artist="Mount Kimbie", title="Made to Stray", duration_s=237)
+    score = candidate_match("Made to Stray Extended Club Edit", "Mount Kimbie", 237, want)
+    assert 0 < score < 100

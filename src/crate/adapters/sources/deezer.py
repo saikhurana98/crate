@@ -21,6 +21,7 @@ from typing import Any
 
 from Crypto.Cipher import Blowfish
 
+from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
 from crate.domain.matching import artist_matches, duration_prefilter, match_score, title_matches
@@ -132,6 +133,32 @@ def select_track(
     return max(pool, key=lambda t: match_score(t.title, t.artist, query))
 
 
+def _download_ref(
+    track_id: int,
+    artist: str,
+    title: str,
+    out_dir: Path,
+    *,
+    resolve_url: ResolveUrl,
+    fetch: Fetch,
+) -> Path:
+    """Download-by-id core shared by the cascade path and the review re-download:
+    resolve the encrypted stream for ``track_id``, stream it to disk, and
+    Blowfish-decrypt stripe-by-stripe — skipping search + selection."""
+    name = _UNSAFE.sub("_", f"{artist} - {title} [{track_id}]") + ".flac"
+    dest = out_dir / name
+    enc = dest.with_name(dest.name + ".enc.part")
+    part = dest.with_name(dest.name + ".part")
+    try:
+        fetch(resolve_url(track_id), enc)
+        decrypt_stream(enc, part, blowfish_key(track_id))
+        part.replace(dest)
+    finally:
+        enc.unlink(missing_ok=True)
+        part.unlink(missing_ok=True)
+    return dest
+
+
 def deezer_download(
     query: str,
     out_dir: Path,
@@ -156,17 +183,9 @@ def deezer_download(
     want_artist = want.artist if want else None
     track = select_track(parse_search(search(query)), query, want_isrc, want_duration, want_artist)
 
-    name = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]") + ".flac"
-    dest = out_dir / name
-    enc = dest.with_name(dest.name + ".enc.part")
-    part = dest.with_name(dest.name + ".part")
-    try:
-        fetch(resolve_url(track.id), enc)
-        decrypt_stream(enc, part, blowfish_key(track.id))
-        part.replace(dest)
-    finally:
-        enc.unlink(missing_ok=True)
-        part.unlink(missing_ok=True)
+    dest = _download_ref(
+        track.id, track.artist, track.title, out_dir, resolve_url=resolve_url, fetch=fetch
+    )
     return DownloadOutcome(
         path=dest,
         tier=2,
@@ -177,4 +196,64 @@ def deezer_download(
         artist=track.artist,
         album=track.album or None,
         art_url=track.cover_url,
+    )
+
+
+def search_candidates(
+    query: str,
+    want: TrackIdentity | None = None,
+    *,
+    search: Search,
+) -> list[Candidate]:
+    """Every title-matching Deezer result as a :class:`Candidate` (no download).
+
+    Reuses ``parse_search`` + the shared title gate (no ``select_track`` collapse);
+    each candidate's ``ref`` is the Deezer track id for later download-by-id."""
+    tracks = parse_search(search(query))
+    return [
+        Candidate(
+            source="deezer",
+            tier=2,
+            ref=str(t.id),
+            title=t.title,
+            artist=t.artist,
+            album=t.album or None,
+            quality_label="FLAC 16/44",
+            lossless=True,
+            duration_s=t.duration_s,
+            size_bytes=None,
+        )
+        for t in tracks
+        if title_matches(t.title, query)
+    ]
+
+
+def download_candidate(
+    candidate: Candidate,
+    out_dir: Path,
+    want: TrackIdentity | None = None,
+    *,
+    resolve_url: ResolveUrl,
+    fetch: Fetch,
+    clock: Clock = time.monotonic,
+) -> DownloadOutcome:
+    """Fetch exactly ``candidate`` (by its Deezer track-id ``ref``) — no search."""
+    start = clock()
+    dest = _download_ref(
+        int(candidate.ref),
+        candidate.artist,
+        candidate.title,
+        out_dir,
+        resolve_url=resolve_url,
+        fetch=fetch,
+    )
+    return DownloadOutcome(
+        path=dest,
+        tier=2,
+        source="deezer",
+        elapsed_s=clock() - start,
+        query=f"{candidate.artist} - {candidate.title}",
+        title=candidate.title,
+        artist=candidate.artist,
+        album=candidate.album,
     )

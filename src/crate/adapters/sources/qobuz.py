@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
 from crate.domain.matching import artist_matches, duration_prefilter, match_score, title_matches
@@ -107,6 +108,36 @@ def select_track(
     return max(pool, key=lambda t: match_score(t.title, t.artist, query))
 
 
+def _quality_label(track: QobuzTrack) -> str:
+    """Human-readable quality badge for a candidate row (e.g. ``FLAC 24/96``)."""
+    if track.bit_depth and track.sample_rate_khz:
+        return f"FLAC {track.bit_depth}/{track.sample_rate_khz:g}"
+    return "FLAC"
+
+
+def _download_ref(
+    track_id: int,
+    artist: str,
+    title: str,
+    out_dir: Path,
+    *,
+    get_file_url: GetFileUrl,
+    fetch: Fetch,
+) -> Path:
+    """Download-by-id core shared by the cascade path and the review re-download:
+    resolve the signed url for ``track_id`` and stream it to disk (already FLAC),
+    skipping search + selection."""
+    name = _UNSAFE.sub("_", f"{artist} - {title} [{track_id}]") + ".flac"
+    dest = out_dir / name
+    part = dest.with_name(dest.name + ".part")
+    try:
+        fetch(get_file_url(track_id), part)
+        part.replace(dest)
+    finally:
+        part.unlink(missing_ok=True)
+    return dest
+
+
 def qobuz_download(
     query: str,
     out_dir: Path,
@@ -130,14 +161,9 @@ def qobuz_download(
     want_artist = want.artist if want else None
     track = select_track(parse_search(search(query)), query, want_isrc, want_duration, want_artist)
 
-    name = _UNSAFE.sub("_", f"{track.artist} - {track.title} [{track.id}]") + ".flac"
-    dest = out_dir / name
-    part = dest.with_name(dest.name + ".part")
-    try:
-        fetch(get_file_url(track.id), part)
-        part.replace(dest)
-    finally:
-        part.unlink(missing_ok=True)
+    dest = _download_ref(
+        track.id, track.artist, track.title, out_dir, get_file_url=get_file_url, fetch=fetch
+    )
     return DownloadOutcome(
         path=dest,
         tier=1,
@@ -148,4 +174,66 @@ def qobuz_download(
         artist=track.artist,
         album=track.album or None,
         art_url=track.cover_url,
+    )
+
+
+def search_candidates(
+    query: str,
+    want: TrackIdentity | None = None,
+    *,
+    search: Search,
+) -> list[Candidate]:
+    """Every title-matching Qobuz result as a :class:`Candidate` (no download).
+
+    Reuses ``parse_search`` + the shared title gate but does NOT collapse to one
+    via ``select_track`` — ranking is left to the API's ``candidate_match``. Each
+    candidate's ``ref`` is the Qobuz track id, enough for ``download_candidate``
+    to fetch it later without re-searching."""
+    tracks = parse_search(search(query))
+    return [
+        Candidate(
+            source="qobuz",
+            tier=1,
+            ref=str(t.id),
+            title=t.title,
+            artist=t.artist,
+            album=t.album or None,
+            quality_label=_quality_label(t),
+            lossless=True,
+            duration_s=t.duration_s,
+            size_bytes=None,
+        )
+        for t in tracks
+        if title_matches(t.title, query)
+    ]
+
+
+def download_candidate(
+    candidate: Candidate,
+    out_dir: Path,
+    want: TrackIdentity | None = None,
+    *,
+    get_file_url: GetFileUrl,
+    fetch: Fetch,
+    clock: Clock = time.monotonic,
+) -> DownloadOutcome:
+    """Fetch exactly ``candidate`` (by its Qobuz track-id ``ref``) — no search."""
+    start = clock()
+    dest = _download_ref(
+        int(candidate.ref),
+        candidate.artist,
+        candidate.title,
+        out_dir,
+        get_file_url=get_file_url,
+        fetch=fetch,
+    )
+    return DownloadOutcome(
+        path=dest,
+        tier=1,
+        source="qobuz",
+        elapsed_s=clock() - start,
+        query=f"{candidate.artist} - {candidate.title}",
+        title=candidate.title,
+        artist=candidate.artist,
+        album=candidate.album,
     )
