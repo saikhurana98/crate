@@ -1776,7 +1776,15 @@ function reviewCandRowHtml(itemId: string, expected: number | null, c: ReviewCan
     <span style="font:500 10px 'JetBrains Mono';color:#99a091;flex-shrink:0;width:34px;text-align:right">${dur(c.duration_s)}</span>
     <span style="font:500 10px 'JetBrains Mono';color:${deltaColor};flex-shrink:0;width:32px">${delta}</span>
     <span style="font:400 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0;width:46px;text-align:right">${bytes(c.size_bytes)}</span>
-    ${c.preview_url ? playBtn(`cand:${itemId}:${c.id}`, c.preview_url, 26) : ""}
+    ${
+      c.preview_url || c.streamable
+        ? playBtn(
+            `cand:${itemId}:${c.id}`,
+            c.preview_url ?? api.reviewCandidateStreamUrl(c.source, c.ref),
+            26,
+          )
+        : ""
+    }
     <span style="font:800 16px 'Doto';color:${matchColor};width:46px;text-align:right;flex-shrink:0">${c.match}%</span>
   </div>`;
 }

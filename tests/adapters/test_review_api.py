@@ -278,3 +278,102 @@ def test_search_rows_carry_preview_url(tmp_path: Path) -> None:
     client = TestClient(create_app(store, candidate_sources=_cand_source([cand])))
     rows = client.post(f"/api/review/{rid}/search", json={}).json()
     assert rows[0]["preview_url"] == "https://cdn.deezer.example/clip.mp3"
+
+
+# --- candidate audition stream proxy (Range) ---
+
+
+def _streamers(mapping: dict[str, Any]) -> Any:
+    def provider() -> dict[str, Any]:
+        return mapping
+
+    return provider
+
+
+def test_candidate_stream_404_for_unstreamable_source(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    client = TestClient(create_app(store, candidate_streamers=_streamers({})))
+    r = client.get("/api/review/candidate-stream", params={"source": "monochrome", "ref": "9"})
+    assert r.status_code == 404
+
+
+def test_candidate_stream_502_when_resolver_fails(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+
+    def boom(ref: str) -> str:
+        raise ValueError("bad ref")
+
+    client = TestClient(create_app(store, candidate_streamers=_streamers({"ytdlp": boom})))
+    r = client.get("/api/review/candidate-stream", params={"source": "ytdlp", "ref": "x"})
+    assert r.status_code == 502
+
+
+def test_candidate_stream_proxies_upstream_with_range(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    # A resolver returns a URL our proxy will fetch; monkeypatch is unnecessary —
+    # we point the proxy at a local httpbin-like route served by a second app.
+    import httpx
+
+    body = b"AUDIOAUDIOAUDIO"
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        rng = request.headers.get("range")
+        if rng == "bytes=0-4":
+            return httpx.Response(
+                206,
+                content=body[0:5],
+                headers={
+                    "content-type": "audio/flac",
+                    "content-range": f"bytes 0-4/{len(body)}",
+                    "accept-ranges": "bytes",
+                },
+            )
+        return httpx.Response(200, content=body, headers={"content-type": "audio/flac"})
+
+    # Patch httpx.AsyncClient used inside the endpoint to route to our handler.
+    real = httpx.AsyncClient
+
+    def patched(*a: Any, **k: Any) -> httpx.AsyncClient:
+        k["transport"] = httpx.MockTransport(upstream)
+        k.pop("timeout", None)
+        return real(*a, **k)
+
+    import crate.adapters.inbound.ops_api as ops
+
+    ops.httpx.AsyncClient = patched  # type: ignore[misc]
+    try:
+        client = TestClient(
+            create_app(
+                store, candidate_streamers=_streamers({"qobuz": lambda ref: "https://cdn/x"})
+            )
+        )
+        r = client.get(
+            "/api/review/candidate-stream",
+            params={"source": "qobuz", "ref": "42"},
+            headers={"Range": "bytes=0-4"},
+        )
+        assert r.status_code == 206
+        assert r.content == b"AUDIO"
+        assert r.headers.get("content-range") == f"bytes 0-4/{len(body)}"
+        assert r.headers.get("accept-ranges") == "bytes"
+    finally:
+        ops.httpx.AsyncClient = real  # type: ignore[misc]
+
+
+def test_search_rows_mark_streamable(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+    cands = [
+        Candidate("qobuz", 1, "1", "Gosh", "Jamie xx", None, "FLAC", True, 311, None),
+        Candidate("monochrome", 1, "2", "Gosh", "Jamie xx", None, "FLAC", True, 311, None),
+    ]
+    client = TestClient(
+        create_app(
+            store,
+            candidate_sources=_cand_source(cands),
+            candidate_streamers=_streamers({"qobuz": lambda ref: "https://cdn/x"}),
+        )
+    )
+    rows = {r["source"]: r for r in client.post(f"/api/review/{rid}/search", json={}).json()}
+    assert rows["qobuz"]["streamable"] is True
+    assert rows["monochrome"]["streamable"] is False

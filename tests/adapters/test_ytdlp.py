@@ -10,9 +10,11 @@ from crate.adapters.sources.ytdlp import (
     YtCandidate,
     build_command,
     build_search_command,
+    build_stream_url_command,
     download,
     extract_path,
     parse_candidates,
+    parse_stream_url,
     select_candidate,
 )
 
@@ -24,6 +26,28 @@ def _cp(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.Compl
 # ---------------------------------------------------------------------------
 # command building
 # ---------------------------------------------------------------------------
+
+
+def test_build_stream_url_command_builds_watch_url_from_valid_id() -> None:
+    cmd = build_stream_url_command("dQw4w9WgXcQ")
+    assert cmd[0] == "yt-dlp" and "-g" in cmd
+    assert cmd[-1] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+
+def test_build_stream_url_command_rejects_non_id_refs() -> None:
+    # SSRF/injection guard: only the exact 11-char id grammar is accepted, so a
+    # ref can never smuggle a full URL or shell meta into yt-dlp.
+    for bad in ("https://evil.example/x", "abc; rm -rf", "short", "toolongvideoid00"):
+        with pytest.raises(ValueError, match="invalid youtube video id"):
+            build_stream_url_command(bad)
+
+
+def test_parse_stream_url_takes_first_http_line() -> None:
+    assert (
+        parse_stream_url("WARNING: x\nhttps://cdn.example/a.m4a\n") == "https://cdn.example/a.m4a"
+    )
+    with pytest.raises(RuntimeError, match="no stream url"):
+        parse_stream_url("WARNING: nothing here\n")
 
 
 def test_build_command_uses_ytsearch_for_free_text() -> None:
