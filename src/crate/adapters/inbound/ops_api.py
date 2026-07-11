@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from crate.application.bulk import ResolvedBatch
@@ -35,7 +35,7 @@ from crate.composition.catalog import (
     validate_layout,
 )
 from crate.domain.candidate import Candidate
-from crate.domain.identity import TrackIdentity
+from crate.domain.identity import IdentityHint, TrackIdentity
 from crate.domain.matching import candidate_match
 from crate.infrastructure.sqlite.config_store import ConfigStore
 from crate.infrastructure.sqlite.store import RequestStore
@@ -47,6 +47,9 @@ BulkResolveFn = Callable[[str], ResolvedBatch]
 # Only the search half is used by the console; the serve worker does downloads.
 CandidateSearchFn = Callable[[str, "TrackIdentity | None"], list[Candidate]]
 CandidateSourcesFn = Callable[[], dict[str, tuple[CandidateSearchFn, Any]]]
+# Advisory review hint: existing file path -> IdentityHint (or None). None when the
+# feature is off (no fpcalc binary / no CRATE_ACOUSTID_KEY) — the endpoint returns {}.
+IdentifyFn = Callable[[Path], "IdentityHint | None"]
 
 _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
@@ -85,6 +88,7 @@ def create_app(
     spotify: SpotifyPort | None = None,
     bulk_resolve: BulkResolveFn | None = None,
     candidate_sources: CandidateSourcesFn | None = None,
+    identify_hint: IdentifyFn | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     app = FastAPI(title="crate console", docs_url=None, redoc_url=None, openapi_url=None)
@@ -258,13 +262,61 @@ def create_app(
         if candidate is None:
             raise HTTPException(status_code=400, detail="candidate required")
         download = record.get("download") or {}
-        is_upgrade = record["status"] == "done" and int(download.get("lossless") or 0) == 0
-        target_path = str(download["path"]) if is_upgrade and download.get("path") else None
+        # An upgrade if the current file is lossy OR the item was parked by the
+        # gate (needs_confirm) — in both cases there's an existing file to replace.
+        has_file = bool(download.get("path"))
+        is_upgrade = has_file and record["status"] in ("done", "needs_confirm")
+        target_path = str(download["path"]) if is_upgrade else None
+        force = bool(body.get("force"))
         if not store.queue_review_download(
-            request_id, candidate, is_upgrade=is_upgrade, target_path=target_path
+            request_id, candidate, is_upgrade=is_upgrade, target_path=target_path, force=force
         ):
             raise HTTPException(status_code=404, detail="request not found")
         return {"id": request_id, "status": "queued", "source": candidate.source}
+
+    @api.post("/review/{request_id}/identify")
+    async def review_identify(request_id: str) -> dict[str, Any]:
+        """Advisory: fingerprint the item's current file and say what it looks like.
+
+        Returns ``{}`` when there's no file, the feature is off, or AcoustID has no
+        answer — it never fails the request (ADR-0019)."""
+        record = store.get_request(request_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="request not found")
+        path = (record.get("download") or {}).get("path")
+        if not path or identify_hint is None:
+            return {}
+        try:
+            hint = await asyncio.to_thread(identify_hint, Path(str(path)))
+        except Exception:  # fingerprint/network hiccup — advisory only, degrade quietly
+            return {}
+        if hint is None:
+            return {}
+        store.set_identity_hint(
+            request_id,
+            artist=hint.canonical_artist,
+            title=hint.canonical_title,
+            mbid=hint.mbid,
+        )
+        return {
+            "canonical_artist": hint.canonical_artist,
+            "canonical_title": hint.canonical_title,
+            "mbid": hint.mbid,
+        }
+
+    @api.get("/review/{request_id}/audio")
+    def review_audio(request_id: str) -> FileResponse:
+        """Stream the item's current library file (HTTP Range) for the A/B ear test.
+
+        Path comes from the review row's download, never a query param — no
+        directory traversal. FileResponse serves 206 partials so ``<audio>`` seeks."""
+        record = store.get_request(request_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="request not found")
+        path = (record.get("download") or {}).get("path")
+        if not path or not Path(str(path)).is_file():
+            raise HTTPException(status_code=404, detail="no audio for this request")
+        return FileResponse(str(path))
 
     @api.post("/review/{request_id}/dismiss")
     def review_dismiss(request_id: str) -> dict[str, Any]:
@@ -432,6 +484,7 @@ def _candidate_row(index: int, c: Candidate, match: int) -> dict[str, Any]:
         "lossless": c.lossless,
         "duration_s": c.duration_s,
         "size_bytes": c.size_bytes,
+        "preview_url": c.preview_url,
         "match": match,
     }
 
@@ -458,6 +511,7 @@ def _candidate_from_body(body: Any) -> Candidate | None:
         lossless=bool(body.get("lossless")),
         duration_s=int(duration) if duration is not None else None,
         size_bytes=int(size) if size is not None else None,
+        preview_url=_clean(body.get("preview_url")),
     )
 
 
