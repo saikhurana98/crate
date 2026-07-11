@@ -38,6 +38,17 @@ def parse_fpcalc(data: dict[str, Any]) -> tuple[int, list[int]]:
     return int(data.get("duration", 0)), [int(x) for x in fp]
 
 
+def parse_fpcalc_compressed(data: dict[str, Any]) -> tuple[int, str]:
+    """Turn plain ``fpcalc -json`` output into ``(duration_s, fingerprint_b64)``.
+
+    Without ``-raw`` the ``fingerprint`` field is the compressed base64 string —
+    the form the AcoustID lookup API expects (the advisory hint, ADR-0019)."""
+    fp = data.get("fingerprint")
+    if not isinstance(fp, str):
+        raise ValueError("fpcalc did not return a base64 fingerprint string")
+    return int(data.get("duration", 0)), fp
+
+
 def _default_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:  # pragma: no cover
     return subprocess.run(
         cmd, capture_output=True, text=True, check=True, timeout=_FPCALC_TIMEOUT_S
@@ -69,3 +80,16 @@ def fingerprint(path: Path, *, runner: Runner = _default_runner) -> tuple[int, l
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("fpcalc timed out after 30s") from exc
     return parse_fpcalc(json.loads(result.stdout))
+
+
+def fingerprint_compressed(path: Path, *, runner: Runner = _default_runner) -> tuple[int, str]:
+    """Fingerprint ``path`` → ``(duration_s, fingerprint_b64)`` for the AcoustID hint.
+
+    Same bounded subprocess as :func:`fingerprint`, minus ``-raw`` so the result is
+    the compressed base64 string the lookup API wants."""
+    cmd = ["fpcalc", "-length", str(_FPCALC_LENGTH_S), "-json", str(path)]
+    try:
+        result = runner(cmd)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("fpcalc timed out after 30s") from exc
+    return parse_fpcalc_compressed(json.loads(result.stdout))

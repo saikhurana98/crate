@@ -37,6 +37,20 @@ class TrackIdentity:
         return " ".join(parts)
 
 
+@dataclass(frozen=True, slots=True)
+class IdentityHint:
+    """What an acoustic fingerprint *suggests* a file actually is (ADR-0019).
+
+    Advisory only — recovered from AcoustID for ~half the review queue and
+    sometimes wrong, so it flags wrong-version grabs (``… (acoustic)``) but never
+    drives selection. Carries no ISRC on purpose: the spike proved 0% ISRC
+    resolution on the real library, so nothing downstream may depend on one."""
+
+    canonical_artist: str | None = None
+    canonical_title: str | None = None
+    mbid: str | None = None
+
+
 def from_query(query: str) -> TrackIdentity:
     """Best-effort parse of a free-text query into an identity.
 

@@ -8,11 +8,14 @@ import pytest
 
 from crate.infrastructure.audio.fingerprint import (
     fingerprint,
+    fingerprint_compressed,
     fpcalc_available,
     parse_fpcalc,
+    parse_fpcalc_compressed,
 )
 
 RAW_JSON = {"duration": 201, "fingerprint": [1, 2, 3, 4]}
+COMPRESSED_JSON = {"duration": 201, "fingerprint": "AQAAB64=="}
 
 
 def _completed(stdout: str) -> subprocess.CompletedProcess[str]:
@@ -41,6 +44,29 @@ def test_fingerprint_runs_fpcalc_and_parses() -> None:
     assert (duration, fp) == (201, [1, 2, 3, 4])
     assert seen[0][0] == "fpcalc"
     assert "-raw" in seen[0] and "/x/song.flac" in seen[0]
+
+
+def test_parse_compressed_returns_base64_string() -> None:
+    duration, fp = parse_fpcalc_compressed(COMPRESSED_JSON)
+    assert duration == 201
+    assert fp == "AQAAB64=="
+
+
+def test_parse_compressed_rejects_array() -> None:
+    with pytest.raises(ValueError, match="base64 fingerprint"):
+        parse_fpcalc_compressed(RAW_JSON)
+
+
+def test_fingerprint_compressed_omits_raw_flag() -> None:
+    seen: list[list[str]] = []
+
+    def runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return _completed(json.dumps(COMPRESSED_JSON))
+
+    duration, fp = fingerprint_compressed(Path("/x/song.m4a"), runner=runner)
+    assert (duration, fp) == (201, "AQAAB64==")
+    assert "-raw" not in seen[0]  # compressed form for the AcoustID hint
 
 
 def test_fingerprint_translates_timeout() -> None:
