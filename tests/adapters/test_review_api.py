@@ -58,7 +58,13 @@ def test_review_list_returns_items_and_stats(tmp_path: Path) -> None:
     client = TestClient(create_app(store))
 
     body = client.get("/api/review").json()
-    assert body["stats"] == {"needs_review": 2, "failed": 1, "lossy": 1, "resolved": 0}
+    assert body["stats"] == {
+        "needs_review": 2,
+        "failed": 1,
+        "lossy": 1,
+        "needs_confirm": 0,
+        "resolved": 0,
+    }
     kinds = sorted(i["kind"] for i in body["items"])
     assert kinds == ["failed", "lossy"]
 

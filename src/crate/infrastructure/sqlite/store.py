@@ -489,11 +489,12 @@ class RequestStore:
     _REVIEW_SELECT = (
         "SELECT r.id, r.query, r.requested_via, r.status, r.error, r.created_at, "
         "r.finished_at, r.artist, r.title, r.isrc, r.duration_s, r.tier_won, r.source_won, "
+        "r.acoustid_artist, r.acoustid_title, r.acoustid_mbid, r.match_similarity, "
         "d.quality_label, d.size_bytes, d.lossless, d.duration_s AS file_duration_s, "
         "d.path AS file_path, d.codec, d.bitrate "
         "FROM requests r LEFT JOIN downloads d ON d.request_id = r.id "
         "WHERE r.dismissed = 0 AND ("
-        "  r.status = 'failed' OR (r.status = 'done' AND d.lossless = 0)"
+        "  r.status IN ('failed', 'needs_confirm') OR (r.status = 'done' AND d.lossless = 0)"
         ") ORDER BY r.created_at DESC LIMIT ?"
     )
 
@@ -501,24 +502,30 @@ class RequestStore:
         """Items worth a second look: failed requests + lossy `done` downloads.
 
         Excludes ``dismissed`` rows. Each item is tagged ``kind`` (``failed`` /
-        ``lossy``); a lossy item carries its current file's quality/path, a failed
-        item its error reason."""
+        ``lossy`` / ``needs_confirm``); a lossy or needs_confirm item carries its
+        current file's quality/path, a failed item its error reason. A
+        ``needs_confirm`` item is a review upgrade parked by the fingerprint gate —
+        it carries ``match_similarity`` (ADR-0019)."""
         with self._lock:
             rows = [dict(r) for r in self._conn.execute(self._REVIEW_SELECT, (limit,))]
         out: list[dict[str, Any]] = []
         for row in rows:
-            kind = "failed" if row["status"] == "failed" else "lossy"
+            status = row["status"]
+            kind = status if status in ("failed", "needs_confirm") else "lossy"
             row["kind"] = kind
             row["reason"] = row["error"] if kind == "failed" else None
+            row["has_audio"] = bool(row.get("file_path"))
             out.append(row)
         return out
 
     def review_stats(self) -> dict[str, int]:
-        """The four review stat-card figures: pending (needs review), failed,
-        lossy, and resolved-via-review (targeted re-downloads that completed)."""
+        """The review stat-card figures: failed, lossy, needs_confirm (parked by
+        the fingerprint gate), pending (their sum), and resolved-via-review
+        (targeted re-downloads that completed)."""
         items = self.list_review()
         failed = sum(1 for i in items if i["kind"] == "failed")
         lossy = sum(1 for i in items if i["kind"] == "lossy")
+        needs_confirm = sum(1 for i in items if i["kind"] == "needs_confirm")
         with self._lock:
             row = self._conn.execute(
                 "SELECT COUNT(*) FROM review_candidates rc "
@@ -526,9 +533,10 @@ class RequestStore:
             ).fetchone()
             resolved = int(row[0]) if row and row[0] is not None else 0
         return {
-            "needs_review": failed + lossy,
+            "needs_review": failed + lossy + needs_confirm,
             "failed": failed,
             "lossy": lossy,
+            "needs_confirm": needs_confirm,
             "resolved": resolved,
         }
 
@@ -549,6 +557,7 @@ class RequestStore:
         *,
         is_upgrade: bool,
         target_path: str | None,
+        force: bool = False,
     ) -> bool:
         """Arm a targeted re-download of ``request_id`` from a chosen candidate.
 
@@ -557,7 +566,9 @@ class RequestStore:
         downloads exactly this candidate instead of running the cascade. Reusing the
         same request row means a lossy upgrade updates *its* download row in place
         and a fulfilled failure simply becomes ``done`` — both drop out of
-        ``list_review`` naturally. Returns False when the request no longer exists."""
+        ``list_review`` naturally. ``force`` carries the user's "replace anyway" so
+        the worker skips the fingerprint gate for a re-armed ``needs_confirm`` item.
+        Returns False when the request no longer exists."""
         with self._lock:
             exists = self._conn.execute(
                 "SELECT 1 FROM requests WHERE id=?", (request_id,)
@@ -567,8 +578,8 @@ class RequestStore:
             self._conn.execute(
                 "INSERT OR REPLACE INTO review_candidates("
                 "request_id, source, tier, ref, title, artist, album, quality_label, "
-                "lossless, duration_s, size_bytes, is_upgrade, target_path, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "lossless, duration_s, size_bytes, is_upgrade, target_path, force, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     request_id,
                     candidate.source,
@@ -583,6 +594,7 @@ class RequestStore:
                     candidate.size_bytes,
                     1 if is_upgrade else 0,
                     target_path,
+                    1 if force else 0,
                     now_iso(),
                 ),
             )
@@ -593,6 +605,46 @@ class RequestStore:
             )
             self._invalidate_stats()
         return True
+
+    def set_match_similarity(self, request_id: str, score: float) -> None:
+        """Record the fingerprint similarity of a completed review upgrade."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET match_similarity=? WHERE id=?", (score, request_id)
+            )
+            self._invalidate_stats()
+
+    def mark_needs_confirm(self, request_id: str, score: float) -> None:
+        """Park a review upgrade the fingerprint gate rejected (ADR-0019).
+
+        The new file was *not* written; the request keeps its existing (lossy) file
+        and moves to ``needs_confirm`` carrying the low ``score`` so the review UI
+        can offer "replace anyway" (a ``force`` re-arm) or "keep current"."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET status='needs_confirm', match_similarity=?, "
+                "finished_at=? WHERE id=?",
+                (score, now_iso(), request_id),
+            )
+            self._invalidate_stats()
+
+    def set_identity_hint(
+        self,
+        request_id: str,
+        *,
+        artist: str | None,
+        title: str | None,
+        mbid: str | None,
+        fingerprint: str | None = None,
+    ) -> None:
+        """Cache the advisory AcoustID hint (+ optional raw fingerprint) on a request."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET acoustid_artist=?, acoustid_title=?, acoustid_mbid=?, "
+                "ref_fingerprint=COALESCE(?, ref_fingerprint) WHERE id=?",
+                (artist, title, mbid, fingerprint, request_id),
+            )
+            self._invalidate_stats()
 
     def get_review_candidate(self, request_id: str) -> dict[str, Any] | None:
         """The armed candidate for a claimed request (or ``None`` for an ordinary
