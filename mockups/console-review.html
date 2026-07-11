@@ -1,0 +1,1826 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Doto:wght@600;700;800;900&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:#0c0e0c}
+  ::selection{background:rgba(233,237,227,.2)}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#272c25;border-radius:6px;border:2px solid #0c0e0c}
+  ::-webkit-scrollbar-thumb:hover{background:#39402f}
+  input,select,button{font-family:inherit}
+  input:focus,select:focus,button:focus-visible{outline:1.5px solid #e9ede3;outline-offset:1px}
+  input::placeholder{color:#5d6456}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes shake{10%,90%{transform:translateX(-2px)}20%,80%{transform:translateX(4px)}30%,50%,70%{transform:translateX(-7px)}40%,60%{transform:translateX(7px)}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  @keyframes flowpulse{0%,100%{opacity:1}50%{opacity:.4}}
+  @keyframes toastin{from{transform:translate(-50%,14px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+  @keyframes fadein{from{opacity:0}to{opacity:1}}
+  @keyframes eq1{0%,100%{height:5px}50%{height:12px}}
+  @keyframes eq2{0%,100%{height:11px}40%{height:4px}80%{height:9px}}
+  @keyframes eq3{0%,100%{height:7px}30%{height:12px}70%{height:5px}}
+</style>
+</helmet>
+<div style="min-height:100vh;background:#0c0e0c;color:#e9ede3;font-family:'Instrument Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased">
+
+  <header style="position:sticky;top:0;z-index:40;background:rgba(12,14,12,.85);backdrop-filter:blur(14px);border-bottom:1px solid #1d211c">
+    <div style="max-width:1560px;margin:0 auto;padding:0 28px;display:flex;align-items:center;gap:16px">
+      <div style="display:flex;align-items:center;gap:12px;padding:15px 0">
+        <span style="width:10px;height:10px;border-radius:50%;background:#ff4c38"></span>
+        <span style="font:800 17px 'Doto';letter-spacing:.08em">crate</span>
+        <span style="font:500 11px 'JetBrains Mono';color:#5d6456;letter-spacing:.14em;text-transform:uppercase;margin-top:1px">console</span>
+      </div>
+
+      <nav style="display:flex;align-items:center;gap:3px;background:#131612;border:1px solid #22261f;border-radius:20px;padding:3px;margin-left:4px;flex-shrink:0">
+        <button onClick="{{ gotoConsole }}" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;background:{{ navConsoleBg }};color:{{ navConsoleColor }};transition:.15s">console</button>
+        <button onClick="{{ gotoBulk }}" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;background:{{ navBulkBg }};color:{{ navBulkColor }};transition:.15s">downloads<sc-if value="{{ activeBadge }}" hint-placeholder-val="{{ false }}"><span style="font:700 10px 'Doto';min-width:17px;height:17px;padding:0 4px;border-radius:10px;background:#ff4c38;color:#0c0e0c;display:inline-flex;align-items:center;justify-content:center">{{ activeCount }}</span></sc-if></button>
+        <button onClick="{{ gotoReview }}" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;background:{{ navReviewBg }};color:{{ navReviewColor }};transition:.15s">review<sc-if value="{{ reviewBadge }}" hint-placeholder-val="{{ false }}"><span style="font:700 10px 'Doto';min-width:17px;height:17px;padding:0 4px;border-radius:10px;background:#99a091;color:#0c0e0c;display:inline-flex;align-items:center;justify-content:center">{{ reviewCount }}</span></sc-if></button>
+      </nav>
+
+      <!-- search → download -->
+      <sc-if value="{{ searchVisible }}" hint-placeholder-val="{{ true }}">
+        <div style="position:relative;flex:1;max-width:460px;margin-left:16px">
+          <div style="display:flex;align-items:center;position:relative">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:13px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+            <input value="{{ searchQ }}" onInput="{{ onSearchInput }}" onFocus="{{ onSearchFocus }}" onBlur="{{ onSearchBlur }}" placeholder="Search tracks or paste a Spotify / YouTube playlist link…" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:8px 14px 8px 34px;transition:border-color .15s" style-hover="border-color:#39402f"/>
+          </div>
+          <sc-if value="{{ searchOpen }}" hint-placeholder-val="{{ false }}">
+            <div style="position:absolute;top:calc(100% + 8px);left:0;right:0;background:#111411;border:1px solid #272c25;border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.65);overflow:hidden;animation:fadein .15s ease;z-index:70">
+              <sc-if value="{{ searchLoading }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:10px;padding:16px 18px;font:400 12px 'Instrument Sans';color:#99a091"><span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>Searching…</div>
+              </sc-if>
+              <sc-if value="{{ searchEmpty }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:18px;text-align:center;font:400 12px 'Instrument Sans';color:#5d6456">No tracks or playlists match.</div>
+              </sc-if>
+              <sc-if value="{{ searchHasPlaylists }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:10px 14px 5px;font:600 9px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#464d40">Public playlists · bulk download</div>
+                <sc-for list="{{ searchPlaylists }}" as="pl" hint-placeholder-count="2">
+                  <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-top:1px solid #1a1e19">
+                    <span style="width:44px;height:44px;border-radius:10px;border:1px solid #272c25;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;overflow:hidden;flex-shrink:0">
+                      <span style="display:flex;align-items:center;justify-content:center;font:800 10px 'Doto';color:#99a091;background:#181c17">{{ pl.g1 }}</span>
+                      <span style="display:flex;align-items:center;justify-content:center;font:800 10px 'Doto';color:#7c8371;background:#141814">{{ pl.g2 }}</span>
+                      <span style="display:flex;align-items:center;justify-content:center;font:800 10px 'Doto';color:#7c8371;background:#101410">{{ pl.g3 }}</span>
+                      <span style="display:flex;align-items:center;justify-content:center;font:800 10px 'Doto';color:#99a091;background:#171b16">{{ pl.g4 }}</span>
+                    </span>
+                    <div style="flex:1;min-width:0">
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <span style="font:600 13px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ pl.name }}</span>
+                        <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 7px;border-radius:10px;border:1px solid #272c25;color:#99a091;flex-shrink:0">{{ pl.originLabel }}</span>
+                      </div>
+                      <div style="font:400 10.5px 'JetBrains Mono';color:#5d6456;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ pl.sub }}</div>
+                    </div>
+                    <sc-if value="{{ pl.queued }}" hint-placeholder-val="{{ false }}">
+                      <span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:5px 10px;border-radius:14px;background:rgba(233,237,227,.09);flex-shrink:0">{{ pl.queuedLabel }}</span>
+                    </sc-if>
+                    <sc-if value="{{ pl.canQueue }}" hint-placeholder-val="{{ true }}">
+                      <button data-id="{{ pl.id }}" onMouseDown="{{ queuePlaylist }}" style="background:#e9ede3;border:none;border-radius:14px;color:#14170f;font:600 10px 'JetBrains Mono';padding:7px 13px;cursor:pointer;flex-shrink:0;transition:.15s">{{ pl.queueLabel }}</button>
+                    </sc-if>
+                  </div>
+                </sc-for>
+              </sc-if>
+              <sc-if value="{{ searchHasResults }}" hint-placeholder-val="{{ false }}">
+                <div style="max-height:400px;overflow-y:auto">
+                  <sc-for list="{{ searchResults }}" as="r" hint-placeholder-count="4">
+                    <div data-id="{{ r.id }}" onMouseDown="{{ queueTrack }}" style="display:flex;align-items:center;gap:12px;padding:10px 14px;cursor:pointer;border-top:1px solid #1a1e19;transition:background .12s" style-hover="background:#181c17">
+                      <span style="width:44px;height:44px;border-radius:10px;background:#181c17;border:1px solid #272c25;display:flex;align-items:center;justify-content:center;font:800 16px 'Doto';color:#99a091;flex-shrink:0">{{ r.letter }}</span>
+                      <div style="flex:1;min-width:0">
+                        <div style="font:600 13px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</div>
+                        <div style="font:400 11px 'Instrument Sans';color:#99a091;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.artist }}</div>
+                        <div style="font:400 9.5px 'JetBrains Mono';color:#5d6456;margin-top:3px">{{ r.albumYear }}</div>
+                      </div>
+                      <span style="font:500 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0">{{ r.dur }}</span>
+                      <sc-if value="{{ r.queued }}" hint-placeholder-val="{{ false }}">
+                        <span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:5px 10px;border-radius:14px;background:rgba(233,237,227,.09);flex-shrink:0">✓ queued</span>
+                      </sc-if>
+                      <sc-if value="{{ r.notQueued }}" hint-placeholder-val="{{ true }}">
+                        <span title="Queue download" style="width:28px;height:28px;border-radius:50%;border:1px solid #272c25;display:inline-flex;align-items:center;justify-content:center;color:#99a091;flex-shrink:0;transition:border-color .15s,color .15s" style-hover="border-color:#e9ede3;color:#e9ede3">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>
+                        </span>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+        <button onClick="{{ openBulkPanel }}" title="Bulk downloads panel" style="display:flex;align-items:center;gap:8px;padding:7px 13px;background:#131612;border:1px solid #272c25;border-radius:20px;cursor:pointer;color:#99a091;font:500 11px 'JetBrains Mono';letter-spacing:.06em;transition:border-color .15s" style-hover="border-color:#39402f">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>
+          bulk
+          <span style="font:800 12px 'Doto';color:#e9ede3">{{ activeCount }}</span>
+        </button>
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 14px;border-radius:20px;background:{{ saveBg }};border:1px solid {{ saveBorder }};transition:.2s">
+          <sc-if value="{{ saveSpinning }}" hint-placeholder-val="{{ false }}"><span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span></sc-if>
+          <span style="font:600 11px 'JetBrains Mono';color:{{ saveColor }}">{{ saveText }}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding:7px 13px;background:#131612;border:1px solid #272c25;border-radius:20px">
+          <span style="width:7px;height:7px;border-radius:50%;background:{{ connDotColor }};animation:pulse 2s ease-in-out infinite"></span>
+          <span style="font:500 11px 'JetBrains Mono';color:#99a091;letter-spacing:.06em">{{ connLabel }}</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <sc-if value="{{ pageConsole }}" hint-placeholder-val="{{ true }}">
+  <main data-screen-label="Console" style="max-width:1560px;margin:0 auto;padding:22px 28px 72px;animation:fadein .25s ease">
+
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:16px">
+      <sc-for list="{{ statCards }}" as="c" hint-placeholder-count="6">
+        <div style="background:{{ c.bg }};border:1px solid {{ c.border }};border-radius:18px;padding:14px 16px;transition:border-color .2s" style-hover="border-color:{{ c.hoverBorder }}">
+          <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:{{ c.labelColor }}">{{ c.label }}</div>
+          <div style="font:800 27px 'Doto';margin-top:8px;line-height:1;color:{{ c.valueColor }}">{{ c.value }}</div>
+          <div style="font:400 10.5px 'JetBrains Mono';color:{{ c.subColor }};margin-top:7px">{{ c.sub }}</div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start">
+
+      <!-- ============ CASCADE MAP ============ -->
+      <section style="background:#111411;border:1px solid #22261f;border-radius:22px;padding:20px 22px 22px">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:6px">
+          <div>
+            <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Cascade</h1>
+            <p style="margin:4px 0 0;font:400 12.5px 'Instrument Sans';color:#99a091">Requests fall through tiers until a source produces a verified file. Drag sources between tiers; toggles set each tier's fan-out strategy.</p>
+          </div>
+        </div>
+
+        <!-- rail + ladder -->
+        <div style="position:relative;margin-top:14px">
+          <span style="position:absolute;left:13px;top:14px;bottom:14px;width:1px;background:#2c332a"></span>
+
+          <!-- entry node -->
+          <div style="display:flex;align-items:center;gap:12px;position:relative">
+            <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="width:11px;height:11px;border-radius:50%;background:#ff4c38;border:4px solid #111411;box-sizing:content-box;animation:pulse 1.6s ease-in-out infinite"></span></span>
+            <span style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;background:#181c17;border:1px solid #272c25;font:600 11px 'JetBrains Mono';letter-spacing:.05em;color:#e9ede3">request in</span>
+          </div>
+
+        <sc-for list="{{ tiers }}" as="t" hint-placeholder-count="3">
+          <div style="position:relative">
+            <div style="display:flex;align-items:flex-start;margin-top:12px">
+            <span style="width:27px;display:flex;justify-content:center;flex-shrink:0;margin-top:10px;position:relative;z-index:1"><span style="width:27px;height:27px;border-radius:50%;background:#0c0e0c;border:1px solid {{ t.accent }};display:inline-flex;align-items:center;justify-content:center;font:800 11px 'Doto';color:{{ t.accent }}">{{ t.num }}</span></span>
+            <span style="width:14px;height:1px;background:#2c332a;flex-shrink:0;margin-top:23px"></span>
+            <div data-tier="{{ t.key }}" onDragOver="{{ onColDragOver }}" onDrop="{{ onColDrop }}" style="flex:1;min-width:0;border:1px solid {{ t.border }};border-radius:18px;background:{{ t.bg }};padding:13px 16px 15px;transition:border-color .15s,background .15s">
+              <div style="display:flex;align-items:center;gap:11px;flex-wrap:wrap">
+                <span style="font:800 15px 'Doto';color:{{ t.accent }};letter-spacing:.06em">{{ t.num }}</span>
+                <span style="font:600 13px 'Instrument Sans';letter-spacing:.01em">{{ t.label }}</span>
+                <span style="font:500 10.5px 'JetBrains Mono';color:#5d6456">{{ t.count }}</span>
+                <div style="margin-left:auto;display:flex;align-items:center;gap:11px">
+                  <span style="font:400 10px 'JetBrains Mono';color:#5d6456">{{ t.strategyCaption }}</span>
+                  <div style="display:flex;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;padding:2px">
+                    <button data-tier="{{ t.key }}" data-strategy="all" onClick="{{ setStrategy }}" title="Parallel: fan out to every source at once, first verified file wins" style="display:inline-flex;align-items:center;gap:5px;border:none;border-radius:16px;cursor:pointer;font:600 10px 'JetBrains Mono';letter-spacing:.04em;padding:5px 11px;background:{{ t.allBg }};color:{{ t.allColor }};transition:.15s"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"></path><path d="M12 8l-6 5v8"></path><path d="M12 8l6 5v8"></path><path d="M12 8v13"></path></svg>parallel</button>
+                    <button data-tier="{{ t.key }}" data-strategy="uniform" onClick="{{ setStrategy }}" title="Uniform: one source per request, rotating — spreads load, dodges rate limits" style="display:inline-flex;align-items:center;gap:5px;border:none;border-radius:16px;cursor:pointer;font:600 10px 'JetBrains Mono';letter-spacing:.04em;padding:5px 11px;background:{{ t.rrBg }};color:{{ t.rrColor }};transition:.15s"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>uniform</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- threaded rail: hub + cards strung on one line -->
+              <div style="position:relative;margin-top:13px">
+                <span style="position:absolute;left:0;right:6px;top:50%;height:1px;background:{{ t.railColor }}"></span>
+                <div style="position:relative;display:flex;align-items:center;gap:12px;min-height:64px">
+                <span title="{{ t.hubTitle }}" style="width:26px;height:26px;border-radius:50%;background:#0c0e0c;border:1px solid {{ t.accent }};display:inline-flex;align-items:center;justify-content:center;color:{{ t.accent }};flex-shrink:0"><sc-if value="{{ t.isAll }}" hint-placeholder-val="{{ true }}"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"></path><path d="M12 8l-6 5v8"></path><path d="M12 8l6 5v8"></path><path d="M12 8v13"></path></svg></sc-if><sc-if value="{{ t.isUniform }}" hint-placeholder-val="{{ false }}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg></sc-if></span>
+                <sc-for list="{{ t.items }}" as="it" hint-placeholder-count="2">
+                  <sc-if value="{{ it.isPlaceholder }}" hint-placeholder-val="{{ false }}">
+                    <div style="flex:0 0 130px;min-height:56px;border:1px dashed #99a091;border-radius:14px;background:rgba(233,237,227,.04)"></div>
+                  </sc-if>
+                  <sc-if value="{{ it.isCard }}" hint-placeholder-val="{{ true }}">
+                      <div draggable="{{ it.draggable }}" data-source="{{ it.name }}" data-tier="{{ t.key }}" data-index="{{ it.index }}" onDragStart="{{ onCardDragStart }}" onDragEnd="{{ onCardDragEnd }}" onDragOver="{{ onCardDragOver }}" style="flex:0 1 240px;min-width:168px;display:flex;align-items:center;gap:9px;background:#181c17;border:1px solid {{ it.cardBorder }};border-radius:14px;padding:11px 12px;position:relative;z-index:1;cursor:{{ it.cursor }};opacity:{{ it.opacity }};transition:border-color .15s,box-shadow .15s;{{ it.shakeStyle }}" style-hover="border-color:#39402f;box-shadow:0 2px 12px rgba(0,0,0,.4)">
+                        <span style="width:6px;height:6px;border-radius:50%;background:{{ it.stubColor }};box-shadow:{{ it.stubGlow }};animation:{{ it.stubAnim }};flex-shrink:0"></span>
+                        <span style="color:{{ it.handleColor }};font:600 12px 'JetBrains Mono';letter-spacing:-2px;cursor:{{ it.handleCursor }};user-select:none">{{ it.handle }}</span>
+                        <div style="flex:1;min-width:0">
+                          <div style="display:flex;align-items:center;gap:7px">
+                            <span style="font:600 13px 'JetBrains Mono';color:#e9ede3">{{ it.name }}</span>
+                            <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 7px;border-radius:10px;background:{{ it.badgeBg }};color:{{ it.badgeColor }};border:1px solid {{ it.badgeBorder }}">{{ it.qualityBadge }}</span>
+                          </div>
+                          <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+                            <span style="width:5px;height:5px;border-radius:50%;background:{{ it.credColor }};flex-shrink:0"></span>
+                            <span style="font:500 10px 'JetBrains Mono';color:{{ it.credColor }}">{{ it.credText }}</span>
+                            <sc-if value="{{ it.warn }}" hint-placeholder-val="{{ false }}"><span style="font:400 10px 'JetBrains Mono';color:#ff4c38">· unconfigured</span></sc-if>
+                          </div>
+                        </div>
+                        <sc-if value="{{ it.locked }}" hint-placeholder-val="{{ false }}">
+                          <svg title="Pinned final fallback — locked" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>
+                        </sc-if>
+                        <sc-if value="{{ it.gear }}" hint-placeholder-val="{{ true }}">
+                          <button data-source="{{ it.name }}" onClick="{{ openPanel }}" title="Configure" style="background:none;border:none;cursor:pointer;color:#5d6456;padding:3px;border-radius:8px;display:inline-flex;transition:color .15s,background .15s" style-hover="color:#e9ede3;background:#22261f">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="transition:transform .45s cubic-bezier(.3,.8,.3,1)" style-hover="transform:rotate(90deg)"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2"></path></svg>
+                          </button>
+                        </sc-if>
+                      </div>
+                  </sc-if>
+                </sc-for>
+                <sc-if value="{{ t.empty }}" hint-placeholder-val="{{ false }}">
+                  <div style="position:relative;z-index:1;background:{{ t.bg }};padding:8px 10px;font:400 11px 'JetBrains Mono';color:#464d40">Drop sources here</div>
+                </sc-if>
+                </div>
+              </div>
+            </div>
+            </div>
+
+            <!-- fall-through label on the rail -->
+            <sc-if value="{{ t.showFall }}" hint-placeholder-val="{{ true }}">
+              <div style="display:flex;align-items:center;gap:11px;margin-top:12px;position:relative">
+                <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="color:#464d40;font-size:9px;line-height:1;background:#111411;padding:3px 0">▼</span></span>
+                <span style="font:500 9.5px 'JetBrains Mono';letter-spacing:.05em;color:#5d6456">no verified file · falls through</span>
+              </div>
+            </sc-if>
+          </div>
+        </sc-for>
+
+        <!-- library node -->
+        <div style="display:flex;align-items:center;gap:12px;margin-top:12px;position:relative">
+          <span style="width:27px;display:flex;justify-content:center;flex-shrink:0"><span style="width:19px;height:19px;border-radius:50%;background:#dfe4d6;display:inline-flex;align-items:center;justify-content:center;font:700 10px 'JetBrains Mono';color:#14170f;border:4px solid #111411;box-sizing:content-box">✓</span></span>
+          <span style="display:inline-flex;align-items:center;padding:6px 14px;border-radius:20px;background:#dfe4d6;font:600 11px 'JetBrains Mono';letter-spacing:.05em;color:#14170f">verified file → library</span>
+        </div>
+        </div>
+
+        <!-- disabled tray -->
+        <div data-tier="disabled" onDragOver="{{ onColDragOver }}" onDrop="{{ onColDrop }}" style="margin-top:18px;border:1px dashed {{ trayBorder }};border-radius:18px;background:{{ trayBg }};padding:12px 16px;transition:border-color .15s">
+          <div style="display:flex;align-items:center;gap:9px;margin-bottom:9px">
+            <span style="font:600 12px 'Instrument Sans';color:#99a091">Available / Disabled</span>
+            <span style="font:500 10.5px 'JetBrains Mono';color:#5d6456">{{ trayCount }}</span>
+            <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#464d40">not in the cascade</span>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;min-height:56px">
+            <sc-for list="{{ trayItems }}" as="it" hint-placeholder-count="1">
+              <sc-if value="{{ it.isPlaceholder }}" hint-placeholder-val="{{ false }}">
+                <div style="flex:0 0 130px;border:1px dashed #99a091;border-radius:14px;background:rgba(233,237,227,.04)"></div>
+              </sc-if>
+              <sc-if value="{{ it.isCard }}" hint-placeholder-val="{{ true }}">
+                <div draggable="{{ it.draggable }}" data-source="{{ it.name }}" data-tier="disabled" data-index="{{ it.index }}" onDragStart="{{ onCardDragStart }}" onDragEnd="{{ onCardDragEnd }}" onDragOver="{{ onCardDragOver }}" style="flex:0 1 240px;min-width:168px;display:flex;align-items:center;gap:9px;background:#181c17;border:1px solid {{ it.cardBorder }};border-radius:14px;padding:11px 12px;cursor:{{ it.cursor }};opacity:{{ it.opacity }};transition:border-color .15s;{{ it.shakeStyle }}" style-hover="border-color:#39402f">
+                  <span style="color:{{ it.handleColor }};font:600 12px 'JetBrains Mono';letter-spacing:-2px;cursor:{{ it.handleCursor }};user-select:none">{{ it.handle }}</span>
+                  <div style="flex:1;min-width:0">
+                    <div style="display:flex;align-items:center;gap:7px">
+                      <span style="font:600 13px 'JetBrains Mono';color:#e9ede3">{{ it.name }}</span>
+                      <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 7px;border-radius:10px;background:{{ it.badgeBg }};color:{{ it.badgeColor }};border:1px solid {{ it.badgeBorder }}">{{ it.qualityBadge }}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+                      <span style="width:5px;height:5px;border-radius:50%;background:{{ it.credColor }};flex-shrink:0"></span>
+                      <span style="font:500 10px 'JetBrains Mono';color:{{ it.credColor }}">{{ it.credText }}</span>
+                      <sc-if value="{{ it.warn }}" hint-placeholder-val="{{ false }}"><span style="font:400 10px 'JetBrains Mono';color:#ff4c38">· unconfigured</span></sc-if>
+                    </div>
+                  </div>
+                  <button data-source="{{ it.name }}" onClick="{{ openPanel }}" title="Configure" style="background:none;border:none;cursor:pointer;color:#5d6456;padding:3px;border-radius:8px;display:inline-flex;transition:color .15s,background .15s" style-hover="color:#e9ede3;background:#22261f">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="transition:transform .45s cubic-bezier(.3,.8,.3,1)" style-hover="transform:rotate(90deg)"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2"></path></svg>
+                  </button>
+                </div>
+              </sc-if>
+            </sc-for>
+            <sc-if value="{{ trayEmpty }}" hint-placeholder-val="{{ false }}">
+              <div style="align-self:center;font:400 11px 'JetBrains Mono';color:#464d40;padding:12px 4px">Every source is in a tier</div>
+            </sc-if>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ RIGHT RAIL ============ -->
+      <div style="display:flex;flex-direction:column;gap:14px">
+
+        <!-- spotify listening -->
+        <div style="background:#111411;border:1px solid #22261f;border-radius:18px;padding:15px 17px">
+          <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px">
+            <span style="font:600 13px 'Instrument Sans'">Listening</span>
+            <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">spotify · connected</span>
+            <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#464d40">grab what you're playing</span>
+          </div>
+
+          <!-- now playing -->
+          <div style="display:flex;align-items:center;gap:12px;background:#181c17;border:1px solid #272c25;border-radius:14px;padding:11px 12px">
+            <span style="width:40px;height:40px;border-radius:10px;background:#0c0e0c;border:1px solid #272c25;display:flex;align-items:flex-end;justify-content:center;gap:2.5px;padding-bottom:10px;flex-shrink:0">
+              <span style="width:2.5px;background:#e9ede3;border-radius:2px;animation:eq1 .9s ease-in-out infinite"></span>
+              <span style="width:2.5px;background:#e9ede3;border-radius:2px;animation:eq2 1.1s ease-in-out infinite"></span>
+              <span style="width:2.5px;background:#e9ede3;border-radius:2px;animation:eq3 .8s ease-in-out infinite"></span>
+            </span>
+            <div style="flex:1;min-width:0">
+              <div style="font:600 13px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ npTitle }}</div>
+              <div style="font:400 11px 'Instrument Sans';color:#99a091;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ npArtist }}</div>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                <div style="flex:1;height:3px;background:#272c25;border-radius:3px;overflow:hidden"><div style="height:100%;width:{{ npProgress }};background:#e9ede3;border-radius:3px;transition:width 1s linear"></div></div>
+                <span style="font:700 11px 'Doto';color:#99a091;flex-shrink:0">{{ npTime }}</span>
+              </div>
+            </div>
+            <sc-if value="{{ npQueued }}" hint-placeholder-val="{{ false }}">
+              <span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:5px 10px;border-radius:14px;background:rgba(233,237,227,.09);flex-shrink:0">✓ queued</span>
+            </sc-if>
+            <sc-if value="{{ npCanQueue }}" hint-placeholder-val="{{ true }}">
+              <button data-id="{{ npId }}" onClick="{{ queueTrack }}" title="Download this track" style="width:30px;height:30px;border-radius:50%;border:1px solid #272c25;background:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#99a091;flex-shrink:0;transition:border-color .15s,color .15s" style-hover="border-color:#e9ede3;color:#e9ede3">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>
+              </button>
+            </sc-if>
+          </div>
+
+          <!-- recently played -->
+          <div style="font:600 9px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#464d40;margin:12px 2px 4px">Recently played</div>
+          <sc-for list="{{ recentPlays }}" as="p" hint-placeholder-count="3">
+            <div style="display:flex;align-items:center;gap:10px;padding:8px 2px;border-top:1px solid #1a1e19">
+              <span style="width:30px;height:30px;border-radius:8px;background:#181c17;border:1px solid #272c25;display:flex;align-items:center;justify-content:center;font:800 12px 'Doto';color:#5d6456;flex-shrink:0">{{ p.letter }}</span>
+              <div style="flex:1;min-width:0">
+                <div style="font:500 12px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.title }}</div>
+                <div style="font:400 10px 'Instrument Sans';color:#5d6456;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.artist }}</div>
+              </div>
+              <span style="font:400 9.5px 'JetBrains Mono';color:#464d40;flex-shrink:0">{{ p.when }}</span>
+              <sc-if value="{{ p.inLibrary }}" hint-placeholder-val="{{ false }}">
+                <span title="Already in library" style="font:500 9.5px 'JetBrains Mono';color:#5d6456;padding:4px 9px;border-radius:12px;border:1px solid #272c25;flex-shrink:0">in library</span>
+              </sc-if>
+              <sc-if value="{{ p.queued }}" hint-placeholder-val="{{ false }}">
+                <span style="font:600 9.5px 'JetBrains Mono';color:#e9ede3;padding:4px 9px;border-radius:12px;background:rgba(233,237,227,.09);flex-shrink:0">✓ queued</span>
+              </sc-if>
+              <sc-if value="{{ p.canQueue }}" hint-placeholder-val="{{ true }}">
+                <button data-id="{{ p.id }}" onClick="{{ queueTrack }}" title="Download this track" style="width:26px;height:26px;border-radius:50%;border:1px solid #272c25;background:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#99a091;flex-shrink:0;transition:border-color .15s,color .15s" style-hover="border-color:#e9ede3;color:#e9ede3">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M6 10l6 6 6-6M5 20h14"></path></svg>
+                </button>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="background:#111411;border:1px solid #22261f;border-radius:18px;padding:15px 17px">
+          <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+            <span style="font:600 13px 'Instrument Sans'">Live</span>
+            <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">{{ liveSummary }}</span>
+          </div>
+          <sc-for list="{{ inflight }}" as="d" hint-placeholder-count="1">
+            <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #1a1e19">
+              <sc-if value="{{ d.spin }}" hint-placeholder-val="{{ true }}"><span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0"></span></sc-if>
+              <sc-if value="{{ d.queuedDot }}" hint-placeholder-val="{{ false }}"><span title="Queued" style="width:12px;height:12px;border:1.5px dashed #5d6456;border-radius:50%;flex-shrink:0"></span></sc-if>
+              <span style="flex:1;min-width:0;font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.query }}</span>
+              <span style="font:500 10px 'JetBrains Mono';color:#99a091;padding:2px 8px;background:#181c17;border-radius:10px">{{ d.via }}</span>
+              <span style="font:700 13px 'Doto';color:#e9ede3">{{ d.elapsed }}</span>
+            </div>
+          </sc-for>
+          <sc-if value="{{ liveEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="padding:14px 0 6px;text-align:center;color:#5d6456;font:400 12px 'Instrument Sans'">Nothing downloading right now.</div>
+          </sc-if>
+        </div>
+
+        <div style="background:#dfe4d6;border:1px solid #dfe4d6;border-radius:18px;padding:15px 17px">
+          <div style="font:600 13px 'Instrument Sans';color:#14170f;margin-bottom:10px">Wins by tier</div>
+          <sc-for list="{{ winsByTier }}" as="bar" hint-placeholder-count="3">
+            <div style="display:flex;align-items:center;gap:12px;padding:4px 0">
+              <span style="width:56px;font:500 10.5px 'JetBrains Mono';color:#4d5346;text-align:right;flex-shrink:0">{{ bar.name }}</span>
+              <div style="flex:1;height:6px;background:rgba(20,23,15,.12);border-radius:6px;overflow:hidden"><div style="height:100%;width:{{ bar.width }};background:#14170f;opacity:{{ bar.opacity }};border-radius:6px;transition:width .5s cubic-bezier(.2,.8,.2,1)"></div></div>
+              <span style="width:24px;font:800 14px 'Doto';color:#14170f;text-align:right;flex-shrink:0">{{ bar.value }}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="background:#111411;border:1px solid #22261f;border-radius:18px;overflow:hidden;display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 17px 11px">
+            <span style="font:600 13px 'Instrument Sans';flex-shrink:0">History</span>
+            <div style="position:relative;flex:1;min-width:100px;display:flex;align-items:center">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:10px"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+              <input value="{{ histSearch }}" onInput="{{ onSearch }}" placeholder="Search…" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:400 12px 'Instrument Sans';padding:7px 10px 7px 29px"/>
+            </div>
+            <select value="{{ histStatus }}" onChange="{{ onStatus }}" style="background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:500 11px 'Instrument Sans';padding:7px 8px;cursor:pointer">
+              <option value="all">All</option>
+              <option value="done">Done</option>
+              <option value="failed">Failed</option>
+              <option value="downloading">Downloading</option>
+              <option value="queued">Queued</option>
+            </select>
+          </div>
+          <div style="max-height:430px;overflow-y:auto">
+            <sc-for list="{{ historyRows }}" as="r" hint-placeholder-count="8">
+              <div data-id="{{ r.id }}" onClick="{{ openDetail }}" style="display:flex;align-items:center;gap:10px;padding:10px 17px;border-top:1px solid #1a1e19;cursor:pointer;transition:background .12s" style-hover="background:#181c17">
+                <span title="{{ r.statusLabel }}" style="width:6px;height:6px;border-radius:50%;background:{{ r.statusColor }};flex-shrink:0;{{ r.statusPulse }}"></span>
+                <div style="flex:1;min-width:0">
+                  <div style="font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.query }}</div>
+                  <div style="font:400 10px 'JetBrains Mono';color:#5d6456;margin-top:2px">{{ r.quality }} · {{ r.size }}</div>
+                </div>
+                <span style="font:500 10px 'JetBrains Mono';color:{{ r.wonColor }};flex-shrink:0">{{ r.won }}</span>
+                <span style="font:400 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0;width:52px;text-align:right">{{ r.when }}</span>
+              </div>
+            </sc-for>
+            <sc-if value="{{ historyEmpty }}" hint-placeholder-val="{{ false }}">
+              <div style="padding:32px 16px;text-align:center;color:#5d6456;font:400 13px 'Instrument Sans'">No requests match.</div>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+  </sc-if>
+
+  <!-- ============ BULK DOWNLOADS PAGE ============ -->
+  <sc-if value="{{ pageBulk }}" hint-placeholder-val="{{ false }}">
+  <main data-screen-label="Bulk downloads" style="max-width:1560px;margin:0 auto;padding:22px 28px 72px;animation:fadein .25s ease">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Downloads</h1>
+      <p style="margin:0;font:400 12.5px 'Instrument Sans';color:#99a091">Everything in flight — every source, every origin, combined.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:14px">
+      <sc-for list="{{ bulkStats }}" as="c" hint-placeholder-count="5">
+        <div style="background:{{ c.bg }};border:1px solid {{ c.border }};border-radius:18px;padding:14px 16px">
+          <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:{{ c.labelColor }}">{{ c.label }}</div>
+          <div style="font:800 27px 'Doto';margin-top:8px;line-height:1;color:{{ c.valueColor }}">{{ c.value }}</div>
+          <div style="font:400 10.5px 'JetBrains Mono';color:{{ c.subColor }};margin-top:7px">{{ c.sub }}</div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+      <sc-for list="{{ sourceLanes }}" as="ln" hint-placeholder-count="5">
+        <div style="display:flex;align-items:center;gap:9px;background:#111411;border:1px solid #22261f;border-radius:14px;padding:9px 14px">
+          <span style="width:6px;height:6px;border-radius:50%;background:{{ ln.dotColor }};animation:{{ ln.dotAnim }}"></span>
+          <span style="font:600 12px 'JetBrains Mono';color:{{ ln.nameColor }}">{{ ln.name }}</span>
+          <span style="font:400 10px 'JetBrains Mono';color:#5d6456">{{ ln.active }}</span>
+          <span style="font:800 13px 'Doto';color:{{ ln.nameColor }}">{{ ln.speed }}</span>
+        </div>
+      </sc-for>
+    </div>
+
+    <sc-for list="{{ bulkBatches }}" as="b" hint-placeholder-count="1">
+      <section style="background:#111411;border:1px solid #22261f;border-radius:20px;margin-bottom:14px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:14px;padding:15px 18px 13px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+              <span style="font:600 14px 'Instrument Sans'">{{ b.name }}</span>
+              <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 8px;border-radius:10px;border:1px solid #272c25;color:#99a091">{{ b.originLabel }}</span>
+              <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">{{ b.owner }}</span>
+              <span style="margin-left:auto;font:500 10.5px 'JetBrains Mono';color:#99a091">{{ b.eta }}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:9px">
+              <div style="flex:1;height:4px;background:#272c25;border-radius:4px;overflow:hidden"><div style="height:100%;width:{{ b.pctW }};background:#e9ede3;border-radius:4px;transition:width .6s cubic-bezier(.2,.8,.2,1)"></div></div>
+              <span style="font:400 10.5px 'JetBrains Mono';color:#99a091;flex-shrink:0">{{ b.counts }}</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-shrink:0">
+            <sc-if value="{{ b.active }}" hint-placeholder-val="{{ true }}">
+              <button data-id="{{ b.id }}" onClick="{{ pauseBatch }}" style="background:#181c17;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:7px 13px;cursor:pointer;transition:border-color .15s,color .15s" style-hover="border-color:#39402f;color:#e9ede3">{{ b.pauseLabel }}</button>
+            </sc-if>
+            <button data-id="{{ b.id }}" onClick="{{ cancelBatch }}" style="background:none;border:1px solid #272c25;border-radius:12px;color:#5d6456;font:600 10.5px 'JetBrains Mono';padding:7px 13px;cursor:pointer;transition:border-color .15s,color .15s" style-hover="border-color:rgba(255,76,56,.5);color:#ff6b58">{{ b.cancelLabel }}</button>
+          </div>
+        </div>
+        <sc-for list="{{ b.rows }}" as="r" hint-placeholder-count="4">
+          <div style="display:flex;align-items:center;gap:11px;padding:8px 18px;border-top:1px solid #1a1e19">
+            <span style="width:14px;display:flex;justify-content:center;flex-shrink:0">
+              <sc-if value="{{ r.spin }}" hint-placeholder-val="{{ true }}"><span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span></sc-if>
+              <sc-if value="{{ r.queuedDot }}" hint-placeholder-val="{{ false }}"><span style="width:11px;height:11px;border:1.5px dashed #5d6456;border-radius:50%"></span></sc-if>
+              <sc-if value="{{ r.isDone }}" hint-placeholder-val="{{ false }}"><span style="font:600 11px 'JetBrains Mono';color:#99a091">✓</span></sc-if>
+              <sc-if value="{{ r.isFailed }}" hint-placeholder-val="{{ false }}"><span style="font:600 11px 'JetBrains Mono';color:#ff4c38">✗</span></sc-if>
+              <sc-if value="{{ r.pausedGlyph }}" hint-placeholder-val="{{ false }}"><span style="font:600 10px 'JetBrains Mono';color:#5d6456">‖</span></sc-if>
+            </span>
+            <span style="flex:1;min-width:0;font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:{{ r.titleColor }}">{{ r.title }}</span>
+            <span style="font:500 10px 'JetBrains Mono';color:#99a091;padding:2px 8px;background:#181c17;border-radius:10px;flex-shrink:0">{{ r.source }}</span>
+            <span style="font:800 11px 'Doto';color:{{ r.tierColor }};flex-shrink:0">{{ r.tierLabel }}</span>
+            <div style="width:130px;height:3px;background:#272c25;border-radius:3px;overflow:hidden;flex-shrink:0"><div style="height:100%;width:{{ r.barW }};background:{{ r.barColor }};border-radius:3px;transition:width .9s linear"></div></div>
+            <span style="width:38px;text-align:right;font:700 12px 'Doto';color:#e9ede3;flex-shrink:0">{{ r.pct }}</span>
+            <span style="width:74px;text-align:right;font:400 10px 'JetBrains Mono';color:{{ r.speedColor }};flex-shrink:0">{{ r.speed }}</span>
+            <sc-if value="{{ r.isFailed }}" hint-placeholder-val="{{ false }}">
+              <button data-bid="{{ r.bid }}" data-tid="{{ r.tid }}" onClick="{{ retryTrack }}" style="background:none;border:1px solid #272c25;border-radius:10px;color:#99a091;font:600 9.5px 'JetBrains Mono';padding:4px 10px;cursor:pointer;flex-shrink:0;transition:border-color .15s,color .15s" style-hover="border-color:#e9ede3;color:#e9ede3">retry</button>
+            </sc-if>
+          </div>
+        </sc-for>
+        <sc-if value="{{ b.showFooter }}" hint-placeholder-val="{{ false }}">
+          <button data-id="{{ b.id }}" onClick="{{ toggleBatch }}" style="width:100%;background:#0e100d;border:none;border-top:1px solid #1a1e19;color:#5d6456;font:500 10.5px 'JetBrains Mono';padding:9px;cursor:pointer;transition:color .15s" style-hover="color:#e9ede3">{{ b.footerLabel }}</button>
+        </sc-if>
+      </section>
+    </sc-for>
+
+    <sc-if value="{{ bulkHasSingles }}" hint-placeholder-val="{{ true }}">
+      <section style="background:#111411;border:1px solid #22261f;border-radius:20px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:15px 18px 12px">
+          <span style="font:600 14px 'Instrument Sans'">Individual requests</span>
+          <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">search · explo · cli · listening</span>
+        </div>
+        <sc-for list="{{ bulkSingles }}" as="r" hint-placeholder-count="1">
+          <div data-id="{{ r.id }}" onClick="{{ openDetail }}" style="display:flex;align-items:center;gap:11px;padding:9px 18px;border-top:1px solid #1a1e19;cursor:pointer;transition:background .12s" style-hover="background:#181c17">
+            <span style="width:14px;display:flex;justify-content:center;flex-shrink:0">
+              <sc-if value="{{ r.spin }}" hint-placeholder-val="{{ true }}"><span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span></sc-if>
+              <sc-if value="{{ r.queuedDot }}" hint-placeholder-val="{{ false }}"><span style="width:11px;height:11px;border:1.5px dashed #5d6456;border-radius:50%"></span></sc-if>
+            </span>
+            <span style="flex:1;min-width:0;font:500 12.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.query }}</span>
+            <span style="font:500 10px 'JetBrains Mono';color:#99a091;padding:2px 8px;background:#181c17;border-radius:10px;flex-shrink:0">via {{ r.via }}</span>
+            <sc-if value="{{ r.srcShow }}" hint-placeholder-val="{{ true }}"><span style="font:500 10px 'JetBrains Mono';color:#e9ede3;flex-shrink:0">{{ r.source }}</span></sc-if>
+            <span style="width:74px;text-align:right;font:400 10px 'JetBrains Mono';color:#99a091;flex-shrink:0">{{ r.speed }}</span>
+          </div>
+        </sc-for>
+      </section>
+    </sc-if>
+
+    <sc-if value="{{ bulkEmpty }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#111411;border:1px dashed #272c25;border-radius:20px;padding:48px 20px;text-align:center">
+        <div style="font:600 14px 'Instrument Sans';color:#99a091">Nothing downloading</div>
+        <div style="font:400 12px 'Instrument Sans';color:#5d6456;margin-top:6px">Search a track, grab from Listening, or paste a Spotify / YouTube playlist link to queue in bulk.</div>
+      </div>
+    </sc-if>
+  </main>
+  </sc-if>
+
+  <!-- ============ REVIEW PAGE ============ -->
+  <sc-if value="{{ pageReview }}" hint-placeholder-val="{{ false }}">
+  <main data-screen-label="Review" style="max-width:1100px;margin:0 auto;padding:22px 28px 72px;animation:fadein .25s ease">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Review</h1>
+      <p style="margin:0;font:400 12.5px 'Instrument Sans';color:#99a091">Failed requests and lossy grabs. Compare candidates from every source, pick the closest match, re-download.</p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+      <sc-for list="{{ reviewStats }}" as="c" hint-placeholder-count="4">
+        <div style="background:{{ c.bg }};border:1px solid {{ c.border }};border-radius:18px;padding:14px 16px">
+          <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:{{ c.labelColor }}">{{ c.label }}</div>
+          <div style="font:800 27px 'Doto';margin-top:8px;line-height:1;color:{{ c.valueColor }}">{{ c.value }}</div>
+          <div style="font:400 10.5px 'JetBrains Mono';color:{{ c.subColor }};margin-top:7px">{{ c.sub }}</div>
+        </div>
+      </sc-for>
+    </div>
+
+    <sc-for list="{{ reviewItems }}" as="ri" hint-placeholder-count="2">
+      <section style="background:#111411;border:1px solid {{ ri.cardBorder }};border-radius:20px;margin-bottom:12px;overflow:hidden;transition:border-color .2s">
+        <div data-id="{{ ri.id }}" onClick="{{ toggleReview }}" style="display:flex;align-items:center;gap:13px;padding:14px 18px;cursor:pointer;transition:background .12s" style-hover="background:#131612">
+          <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:3px 9px;border-radius:10px;background:{{ ri.reasonBg }};color:{{ ri.reasonColor }};border:1px solid {{ ri.reasonBorder }};flex-shrink:0">{{ ri.reasonLabel }}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font:600 13.5px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ri.query }}</div>
+            <div style="font:400 10.5px 'JetBrains Mono';color:#5d6456;margin-top:3px">{{ ri.sub }}</div>
+          </div>
+          <sc-if value="{{ ri.resolved }}" hint-placeholder-val="{{ false }}">
+            <span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:5px 11px;border-radius:14px;background:rgba(233,237,227,.09);flex-shrink:0">{{ ri.resolvedLabel }}</span>
+          </sc-if>
+          <sc-if value="{{ ri.canReview }}" hint-placeholder-val="{{ true }}">
+            <span style="font:500 10.5px 'JetBrains Mono';color:#99a091;flex-shrink:0">{{ ri.candCount }}</span>
+            <span style="color:#5d6456;font-size:10px;flex-shrink:0">{{ ri.chev }}</span>
+          </sc-if>
+        </div>
+
+        <sc-if value="{{ ri.expanded }}" hint-placeholder-val="{{ false }}">
+          <div style="border-top:1px solid #1a1e19;padding:14px 18px 16px;animation:fadein .2s ease">
+
+            <div style="display:flex;align-items:center;gap:9px;margin-bottom:12px">
+              <div style="position:relative;flex:1;display:flex;align-items:center">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:11px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+                <input value="{{ ri.q }}" data-id="{{ ri.id }}" onInput="{{ onReviewQuery }}" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:8px 12px 8px 32px"/>
+              </div>
+              <button data-id="{{ ri.id }}" onClick="{{ rescanReview }}" style="display:inline-flex;align-items:center;gap:7px;background:#181c17;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:8px 14px;cursor:pointer;flex-shrink:0;transition:border-color .15s,color .15s" style-hover="border-color:#39402f;color:#e9ede3">search again</button>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:16px;font:400 10.5px 'JetBrains Mono';color:#5d6456;margin-bottom:10px;padding:0 2px">
+              <span>{{ ri.expectLine }}</span>
+              <sc-if value="{{ ri.hasCurrent }}" hint-placeholder-val="{{ false }}"><span style="color:#99a091">{{ ri.currentLine }}</span></sc-if>
+            </div>
+
+            <sc-if value="{{ ri.searching }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:10px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:16px 14px;font:400 11.5px 'JetBrains Mono';color:#99a091"><span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0"></span>Searching all sources…</div>
+            </sc-if>
+            <sc-if value="{{ ri.showCands }}" hint-placeholder-val="{{ true }}">
+              <sc-for list="{{ ri.cands }}" as="c" hint-placeholder-count="3">
+                <div data-rid="{{ ri.id }}" data-cid="{{ c.id }}" onClick="{{ selectCand }}" style="display:flex;align-items:center;gap:11px;background:{{ c.rowBg }};border:1px solid {{ c.rowBorder }};border-radius:14px;padding:11px 14px;margin-bottom:8px;cursor:pointer;transition:border-color .15s,background .15s" style-hover="border-color:#39402f">
+                  <span style="width:16px;height:16px;border-radius:50%;border:1.5px solid {{ c.radioBorder }};display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;transition:border-color .15s"><span style="width:8px;height:8px;border-radius:50%;background:{{ c.dotBg }};transition:background .15s"></span></span>
+                  <span style="font:500 10px 'JetBrains Mono';color:#99a091;padding:2px 8px;background:#181c17;border-radius:10px;flex-shrink:0">{{ c.source }}</span>
+                  <span style="font:800 11px 'Doto';color:{{ c.tierColor }};flex-shrink:0">{{ c.tierLabel }}</span>
+                  <div style="flex:1;min-width:0">
+                    <div style="font:500 12.5px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.title }}</div>
+                    <sc-if value="{{ c.hasFlags }}" hint-placeholder-val="{{ false }}"><div style="font:400 9.5px 'JetBrains Mono';color:#5d6456;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.flags }}</div></sc-if>
+                  </div>
+                  <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 7px;border-radius:10px;background:{{ c.qBg }};color:{{ c.qColor }};border:1px solid {{ c.qBorder }};flex-shrink:0">{{ c.quality }}</span>
+                  <span style="font:500 10px 'JetBrains Mono';color:#99a091;flex-shrink:0;width:34px;text-align:right">{{ c.dur }}</span>
+                  <span style="font:500 10px 'JetBrains Mono';color:{{ c.deltaColor }};flex-shrink:0;width:32px">{{ c.delta }}</span>
+                  <span style="font:400 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0;width:46px;text-align:right">{{ c.size }}</span>
+                  <span style="font:800 16px 'Doto';color:{{ c.matchColor }};width:46px;text-align:right;flex-shrink:0">{{ c.match }}</span>
+                </div>
+              </sc-for>
+            </sc-if>
+
+            <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+              <button data-id="{{ ri.id }}" onClick="{{ downloadCand }}" disabled="{{ ri.dlDisabled }}" style="background:{{ ri.dlBg }};border:none;border-radius:14px;color:{{ ri.dlColor }};font:600 12.5px 'Instrument Sans';padding:11px 18px;cursor:{{ ri.dlCursor }};transition:.15s">{{ ri.dlLabel }}</button>
+              <button data-id="{{ ri.id }}" onClick="{{ dismissReview }}" style="background:none;border:1px solid #272c25;border-radius:14px;color:#5d6456;font:600 11px 'JetBrains Mono';padding:11px 15px;cursor:pointer;transition:border-color .15s,color .15s" style-hover="border-color:#39402f;color:#99a091">{{ ri.dismissLabel }}</button>
+              <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#464d40">match % = title · artist · duration similarity</span>
+            </div>
+          </div>
+        </sc-if>
+      </section>
+    </sc-for>
+
+    <sc-if value="{{ reviewEmpty }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#111411;border:1px dashed #272c25;border-radius:20px;padding:48px 20px;text-align:center">
+        <div style="font:600 14px 'Instrument Sans';color:#99a091">Nothing to review</div>
+        <div style="font:400 12px 'Instrument Sans';color:#5d6456;margin-top:6px">Failed requests and non-FLAC downloads land here for user-assisted retry.</div>
+      </div>
+    </sc-if>
+  </main>
+  </sc-if>
+
+  <!-- ============ HISTORY DETAIL DRAWER ============ -->
+  <div onClick="{{ closeDetail }}" style="position:fixed;inset:0;background:rgba(5,7,5,.6);z-index:50;transition:opacity .28s;opacity:{{ drawerScrimOpacity }};pointer-events:{{ drawerScrimPE }}"></div>
+  <aside style="position:fixed;top:0;right:0;bottom:0;width:min(470px,94vw);background:#111411;border-left:1px solid #22261f;z-index:51;transform:{{ drawerTransform }};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column">
+    <sc-if value="{{ detail }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:20px 22px;border-bottom:1px solid #1d211c">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+          <div style="min-width:0">
+            <div style="font:600 17px 'Instrument Sans';letter-spacing:-.01em;line-height:1.25">{{ detail.query }}</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-top:9px">
+              <span style="display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:20px;background:{{ detail.statusBg }};font:600 10.5px 'JetBrains Mono';letter-spacing:.04em;color:{{ detail.statusColor }}"><span style="width:5px;height:5px;border-radius:50%;background:{{ detail.statusColor }}"></span>{{ detail.statusLabel }}</span>
+              <span style="font:500 10.5px 'JetBrains Mono';color:#99a091;padding:2px 9px;background:#181c17;border-radius:10px">{{ detail.via }}</span>
+              <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">{{ detail.when }}</span>
+            </div>
+          </div>
+          <button onClick="{{ closeDetail }}" style="background:#181c17;border:1px solid #272c25;border-radius:10px;color:#99a091;cursor:pointer;padding:6px 9px;flex-shrink:0;display:inline-flex;transition:color .15s" style-hover="color:#e9ede3">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="transition:transform .35s cubic-bezier(.3,.8,.3,1)" style-hover="transform:rotate(90deg)"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:20px 22px">
+        <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin-bottom:12px">Cascade trail</div>
+        <div style="position:relative">
+          <sc-for list="{{ detail.attempts }}" as="a" hint-placeholder-count="3">
+            <div style="display:flex;gap:12px;padding-bottom:16px;position:relative">
+              <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">
+                <span style="width:24px;height:24px;border-radius:50%;background:{{ a.iconBg }};border:1px solid {{ a.iconColor }};display:flex;align-items:center;justify-content:center;font:700 11px 'JetBrains Mono';color:{{ a.iconColor }};z-index:1">{{ a.icon }}</span>
+                <sc-if value="{{ a.connector }}" hint-placeholder-val="{{ true }}"><span style="width:1px;flex:1;background:#272c25;margin-top:2px;min-height:14px"></span></sc-if>
+              </div>
+              <div style="flex:1;min-width:0;padding-bottom:2px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="font:600 13px 'JetBrains Mono';color:#e9ede3">{{ a.source }}</span>
+                  <span style="font:800 11px 'Doto';color:{{ a.tierColor }}">{{ a.tierLabel }}</span>
+                </div>
+                <div style="font:400 11.5px 'JetBrains Mono';color:{{ a.detailColor }};margin-top:3px;line-height:1.4">{{ a.detail }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin:8px 0 12px">{{ detail.factsTitle }}</div>
+        <sc-if value="{{ detail.hasWinner }}" hint-placeholder-val="{{ true }}">
+          <div style="background:#0c0e0c;border:1px solid #272c25;border-radius:14px;overflow:hidden">
+            <sc-for list="{{ detail.facts }}" as="f" hint-placeholder-count="6">
+              <div style="display:flex;justify-content:space-between;gap:14px;padding:10px 14px;border-bottom:1px solid #171b16">
+                <span style="font:500 10.5px 'JetBrains Mono';color:#5d6456;flex-shrink:0">{{ f.k }}</span>
+                <span style="font:500 11.5px 'JetBrains Mono';color:#e9ede3;text-align:right;word-break:break-all">{{ f.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ detail.isFailed }}" hint-placeholder-val="{{ false }}">
+          <div style="background:rgba(255,76,56,.07);border:1px solid rgba(255,76,56,.35);border-radius:14px;padding:14px;font:400 11.5px 'JetBrains Mono';color:#ff6b58;line-height:1.5">{{ detail.error }}</div>
+        </sc-if>
+        <sc-if value="{{ detail.isInflight }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:10px;background:#181c17;border:1px solid #272c25;border-radius:14px;padding:14px;font:500 11.5px 'JetBrains Mono';color:#e9ede3"><span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>In progress — cascade still running.</div>
+        </sc-if>
+        <sc-if value="{{ detail.isQueued }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;align-items:center;gap:10px;background:#181c17;border:1px solid #272c25;border-radius:14px;padding:14px;font:500 11.5px 'JetBrains Mono';color:#99a091"><span style="width:12px;height:12px;border:1.5px dashed #5d6456;border-radius:50%"></span>Queued — waiting for dispatch into Tier 1.</div>
+        </sc-if>
+
+        <button onClick="{{ toggleLogs }}" style="margin-top:16px;width:100%;display:flex;align-items:center;justify-content:space-between;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:11px 14px;cursor:pointer;color:#99a091;transition:border-color .15s" style-hover="border-color:#39402f">
+          <span style="display:flex;align-items:center;gap:9px;font:600 10px 'JetBrains Mono';letter-spacing:.12em;text-transform:uppercase">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"></path></svg>
+            Download log
+          </span>
+          <span style="font:500 10.5px 'JetBrains Mono';color:#5d6456">{{ logsChevron }}</span>
+        </button>
+        <sc-if value="{{ showLogs }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top:8px;background:#090b09;border:1px solid #1d211c;border-radius:14px;padding:12px 14px;overflow-x:auto;animation:fadein .2s ease">
+            <sc-for list="{{ detail.logs }}" as="l" hint-placeholder-count="6">
+              <div style="display:flex;gap:10px;font:400 11px 'JetBrains Mono';line-height:1.9;white-space:nowrap">
+                <span style="color:#464d40;flex-shrink:0">{{ l.time }}</span>
+                <span style="color:{{ l.levelColor }};flex-shrink:0;width:38px;font-weight:600">{{ l.level }}</span>
+                <span style="color:{{ l.msgColor }}">{{ l.msg }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+    </sc-if>
+  </aside>
+
+  <!-- ============ SOURCE CONFIG PANEL ============ -->
+  <div onClick="{{ closePanel }}" style="position:fixed;inset:0;background:rgba(5,7,5,.6);z-index:52;transition:opacity .28s;opacity:{{ panelScrimOpacity }};pointer-events:{{ panelScrimPE }}"></div>
+  <aside style="position:fixed;top:0;right:0;bottom:0;width:min(440px,94vw);background:#111411;border-left:1px solid #22261f;z-index:53;transform:{{ panelTransform }};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column">
+    <sc-if value="{{ panel }}" hint-placeholder-val="{{ false }}">
+      <div style="padding:20px 22px;border-bottom:1px solid #1d211c">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+          <div>
+            <div style="display:flex;align-items:center;gap:9px">
+              <span style="font:600 18px 'JetBrains Mono';letter-spacing:-.01em">{{ panel.name }}</span>
+              <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 8px;border-radius:10px;background:{{ panel.badgeBg }};color:{{ panel.badgeColor }};border:1px solid {{ panel.badgeBorder }}">{{ panel.qualityBadge }}</span>
+            </div>
+            <div style="font:500 10.5px 'JetBrains Mono';color:{{ panel.tierColor }};margin-top:7px">{{ panel.tierLabel }}</div>
+          </div>
+          <button onClick="{{ closePanel }}" style="background:#181c17;border:1px solid #272c25;border-radius:10px;color:#99a091;cursor:pointer;padding:6px 9px;display:inline-flex;transition:color .15s" style-hover="color:#e9ede3">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="transition:transform .35s cubic-bezier(.3,.8,.3,1)" style-hover="transform:rotate(90deg)"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+      </div>
+      <div style="flex:1;overflow-y:auto;padding:20px 22px">
+        <div style="display:flex;align-items:center;justify-content:space-between;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:13px 15px;margin-bottom:20px">
+          <div>
+            <div style="font:600 13px 'Instrument Sans'">Enabled</div>
+            <div style="font:400 10.5px 'JetBrains Mono';color:#5d6456;margin-top:3px">{{ panel.enabledSub }}</div>
+          </div>
+          <button onClick="{{ togglePanelEnabled }}" disabled="{{ panel.pinned }}" style="width:42px;height:24px;border-radius:14px;border:none;cursor:{{ panel.toggleCursor }};background:{{ panel.toggleBg }};position:relative;transition:background .2s;flex-shrink:0"><span style="position:absolute;top:2px;left:{{ panel.knobLeft }};width:20px;height:20px;border-radius:50%;background:{{ panel.knobBg }};transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.4)"></span></button>
+        </div>
+
+        <sc-if value="{{ panel.note }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:13px 15px;font:400 11.5px 'JetBrains Mono';color:#99a091;line-height:1.55;margin-bottom:20px">{{ panel.note }}</div>
+        </sc-if>
+
+        <sc-if value="{{ panel.hasSettings }}" hint-placeholder-val="{{ false }}">
+          <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin-bottom:11px">Settings</div>
+          <sc-for list="{{ panel.settings }}" as="s" hint-placeholder-count="1">
+            <div style="margin-bottom:16px">
+              <label style="display:block;font:500 12px 'JetBrains Mono';color:#e9ede3;margin-bottom:6px">{{ s.label }}</label>
+              <input value="{{ s.value }}" data-key="{{ s.key }}" onInput="{{ onPanelField }}" type="{{ s.type }}" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:500 13px 'JetBrains Mono';padding:10px 13px"/>
+            </div>
+          </sc-for>
+        </sc-if>
+
+        <sc-if value="{{ panel.hasCreds }}" hint-placeholder-val="{{ false }}">
+          <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin:4px 0 11px;display:flex;align-items:center;gap:8px">Credentials <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#464d40">· encrypted at rest, never displayed</span></div>
+          <sc-for list="{{ panel.creds }}" as="c" hint-placeholder-count="3">
+            <div style="margin-bottom:15px">
+              <label style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+                <span style="font:500 12px 'JetBrains Mono';color:#e9ede3">{{ c.label }}</span>
+                <span style="display:inline-flex;align-items:center;gap:5px;font:500 10px 'JetBrains Mono';color:{{ c.statusColor }}"><span style="width:5px;height:5px;border-radius:50%;background:{{ c.statusColor }}"></span>{{ c.statusText }}</span>
+              </label>
+              <input value="{{ c.value }}" data-key="{{ c.key }}" onInput="{{ onPanelField }}" type="password" placeholder="{{ c.placeholder }}" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:500 13px 'JetBrains Mono';padding:10px 13px"/>
+              <div style="font:400 10px 'JetBrains Mono';color:#464d40;margin-top:5px">{{ c.env }}</div>
+            </div>
+          </sc-for>
+        </sc-if>
+      </div>
+      <div style="padding:16px 22px;border-top:1px solid #1d211c;display:flex;align-items:center;gap:12px">
+        <button onClick="{{ savePanel }}" disabled="{{ panel.saveDisabled }}" style="flex:1;background:{{ panel.saveBtnBg }};border:none;border-radius:14px;color:{{ panel.saveBtnColor }};font:600 13px 'Instrument Sans';padding:12px;cursor:{{ panel.saveCursor }};transition:.15s;display:flex;align-items:center;justify-content:center;gap:8px">
+          <sc-if value="{{ panel.saving }}" hint-placeholder-val="{{ false }}"><span style="width:12px;height:12px;border:1.5px solid rgba(12,14,12,.3);border-top-color:#0c0e0c;border-radius:50%;animation:spin .8s linear infinite"></span></sc-if>
+          {{ panel.saveBtnText }}
+        </button>
+        <sc-if value="{{ panel.canValidate }}" hint-placeholder-val="{{ false }}">
+          <button onClick="{{ validatePanel }}" style="background:#181c17;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:600 13px 'Instrument Sans';padding:12px 16px;cursor:pointer;transition:border-color .15s" style-hover="border-color:#39402f">Test</button>
+        </sc-if>
+      </div>
+    </sc-if>
+  </aside>
+
+  <!-- ============ BULK DOWNLOADS PANEL ============ -->
+  <div onClick="{{ closeBulkPanel }}" style="position:fixed;inset:0;background:rgba(5,7,5,.6);z-index:54;transition:opacity .28s;opacity:{{ bpScrimOpacity }};pointer-events:{{ bpScrimPE }}"></div>
+  <aside data-screen-label="Bulk panel" style="position:fixed;top:0;right:0;bottom:0;width:min(420px,94vw);background:#111411;border-left:1px solid #22261f;z-index:55;transform:{{ bpTransform }};transition:transform .3s cubic-bezier(.3,.8,.3,1);box-shadow:-24px 0 60px rgba(0,0,0,.55);display:flex;flex-direction:column">
+    <div style="padding:20px 22px;border-bottom:1px solid #1d211c;display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+      <div>
+        <div style="font:600 17px 'Instrument Sans';letter-spacing:-.01em">Bulk downloads</div>
+        <div style="font:500 10.5px 'JetBrains Mono';color:#99a091;margin-top:7px">{{ bpSummary }}</div>
+      </div>
+      <button onClick="{{ closeBulkPanel }}" style="background:#181c17;border:1px solid #272c25;border-radius:10px;color:#99a091;cursor:pointer;padding:6px 9px;flex-shrink:0;display:inline-flex;transition:color .15s" style-hover="color:#e9ede3">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" style="transition:transform .35s cubic-bezier(.3,.8,.3,1)" style-hover="transform:rotate(90deg)"><path d="M18 6L6 18M6 6l12 12"></path></svg>
+      </button>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:18px 22px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+        <div style="background:#dfe4d6;border-radius:14px;padding:12px 14px">
+          <div style="font:600 9px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#4d5346">Combined speed</div>
+          <div style="font:800 24px 'Doto';color:#14170f;margin-top:6px">{{ bpSpeed }} <span style="font-size:12px">MB/s</span></div>
+        </div>
+        <div style="background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:12px 14px">
+          <div style="font:600 9px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456">Active now</div>
+          <div style="font:800 24px 'Doto';color:#e9ede3;margin-top:6px">{{ activeCount }}</div>
+        </div>
+      </div>
+      <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin-bottom:10px">Batches</div>
+      <sc-for list="{{ bulkBatches }}" as="b" hint-placeholder-count="1">
+        <div style="background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:12px 14px;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font:600 12.5px 'Instrument Sans';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ b.name }}</span>
+            <span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.1em;padding:2px 7px;border-radius:10px;border:1px solid #272c25;color:#99a091;flex-shrink:0">{{ b.originLabel }}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:9px">
+            <div style="flex:1;height:4px;background:#272c25;border-radius:4px;overflow:hidden"><div style="height:100%;width:{{ b.pctW }};background:#e9ede3;border-radius:4px;transition:width .6s"></div></div>
+            <span style="font:400 10px 'JetBrains Mono';color:#99a091;flex-shrink:0">{{ b.eta }}</span>
+          </div>
+          <div style="font:400 10px 'JetBrains Mono';color:#5d6456;margin-top:7px">{{ b.counts }}</div>
+        </div>
+      </sc-for>
+      <sc-if value="{{ bpEmpty }}" hint-placeholder-val="{{ false }}">
+        <div style="padding:20px 0;text-align:center;font:400 12px 'Instrument Sans';color:#5d6456">No bulk batches yet — search a playlist name or paste a Spotify / YouTube link.</div>
+      </sc-if>
+      <sc-if value="{{ bpSinglesLine }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:9px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:11px 14px;font:400 11px 'JetBrains Mono';color:#99a091">
+          <span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0"></span>{{ bpSinglesLine }}
+        </div>
+      </sc-if>
+    </div>
+    <div style="padding:16px 22px;border-top:1px solid #1d211c">
+      <button onClick="{{ gotoBulk }}" style="width:100%;background:#e9ede3;border:none;border-radius:14px;color:#14170f;font:600 13px 'Instrument Sans';padding:12px;cursor:pointer">Open downloads page</button>
+    </div>
+  </aside>
+
+  <!-- ============ TOAST ============ -->
+  <sc-if value="{{ toast }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:10px;background:#dfe4d6;border-radius:14px;padding:12px 19px;box-shadow:0 12px 40px rgba(0,0,0,.5);animation:toastin .3s cubic-bezier(.3,.8,.3,1)">
+      <span style="width:7px;height:7px;border-radius:50%;background:#14170f"></span>
+      <span style="font:600 12.5px 'JetBrains Mono';color:#14170f">{{ toast }}</span>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;animateFlow&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Cascade map&quot;},&quot;searchAvailable&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Search&quot;,&quot;description&quot;:&quot;Off simulates the 503 'search not configured' response — the search UI hides entirely&quot;},&quot;bulkConcurrency&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:4,&quot;min&quot;:1,&quot;max&quot;:10,&quot;step&quot;:1,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Bulk downloads&quot;,&quot;description&quot;:&quot;Parallel downloads per batch&quot;}}">
+class Component extends DCLogic {
+  constructor(props){
+    super(props);
+    this.NOW = Date.parse('2026-07-05T18:05:00Z');
+    // Monolithic sage-on-black palette. Tier hierarchy = brightness steps of the same hue.
+    this.C = { good:'#e9ede3', warn:'#99a091', bad:'#ff4c38', accent:'#e9ede3', t1:'#e9ede3', t2:'#aeb5a3', t3:'#7c8371', muted:'#99a091', faint:'#5d6456' };
+    this.META = {
+      qobuz:{lossless:true, credentials:'ok'},
+      monochrome:{lossless:true, credentials:'none'},
+      deezer:{lossless:true, credentials:'ok'},
+      soulseek:{lossless:false, credentials:'ok'},
+      telegram:{lossless:false, credentials:'missing'},
+      ytdlp:{lossless:false, credentials:'none'},
+    };
+    this.PANELDEF = {
+      qobuz:{ creds:[['CRATE_QOBUZ_APP_ID','App ID',1],['CRATE_QOBUZ_APP_SECRET','App Secret',1],['CRATE_QOBUZ_TOKEN','Token',1]], settings:[], validate:true },
+      monochrome:{ creds:[], settings:[], note:'Browser-based source — no credentials required. Toggle to enable and crate drives a headless session.' },
+      deezer:{ creds:[['CRATE_DEEZER_ARL','ARL cookie',1]], settings:[], validate:true },
+      soulseek:{ creds:[['CRATE_SLSKD_URL','slskd URL',1],['CRATE_SLSKD_API_KEY','API key',1],['CRATE_SLSKD_DOWNLOADS','Downloads dir',1]], settings:[['min_bitrate_kbps','Minimum bitrate (kbps)','number','256']], validate:true },
+      telegram:{ creds:[['CRATE_TG_API_ID','API ID',0],['CRATE_TG_API_HASH','API hash',0],['CRATE_TG_SESSION','Session string',0],['CRATE_TG_BOT','Bot handle',0]], settings:[], validate:true },
+      ytdlp:{ creds:[], settings:[], note:'Pinned final fallback — always enabled, cannot be moved or disabled. No credentials needed.', pinned:true },
+    };
+    this.REQUESTS = this.buildRequests();
+    this.REVIEW = this.buildReview();
+    // mock of GET /api/search?q= — same shape the live endpoint returns
+    this.CATALOG = [
+      {id:'sp1', title:'Get Lucky', artist:'Daft Punk, Pharrell Williams', album:'Random Access Memories', year:'2013', duration_ms:369000, query:'Daft Punk Get Lucky'},
+      {id:'sp2', title:'Instant Crush', artist:'Daft Punk, Julian Casablancas', album:'Random Access Memories', year:'2013', duration_ms:337000, query:'Daft Punk Instant Crush'},
+      {id:'sp3', title:'Baby', artist:'Four Tet', album:'Sixteen Oceans', year:'2020', duration_ms:214000, query:'Four Tet Baby'},
+      {id:'sp4', title:'Teenage Birdsong', artist:'Four Tet', album:'Sixteen Oceans', year:'2020', duration_ms:229000, query:'Four Tet Teenage Birdsong'},
+      {id:'sp5', title:'Archangel', artist:'Burial', album:'Untrue', year:'2007', duration_ms:238000, query:'Burial Archangel'},
+      {id:'sp6', title:'Weird Fishes / Arpeggi', artist:'Radiohead', album:'In Rainbows', year:'2007', duration_ms:318000, query:'Radiohead Weird Fishes Arpeggi'},
+      {id:'sp7', title:'Silhouettes (I, II & III)', artist:'Floating Points', album:'Elaenia', year:'2015', duration_ms:582000, query:'Floating Points Silhouettes'},
+      {id:'sp8', title:'Glue', artist:'Bicep', album:'Bicep', year:'2017', duration_ms:328000, query:'Bicep Glue'},
+      {id:'sp9', title:'Kerala', artist:'Bonobo', album:'Migration', year:'2017', duration_ms:213000, query:'Bonobo Kerala'},
+      {id:'sp10', title:'Gosh', artist:'Jamie xx', album:'In Colour', year:'2015', duration_ms:311000, query:'Jamie xx Gosh'},
+      {id:'sp11', title:'Odessa', artist:'Caribou', album:'Swim', year:'2010', duration_ms:275000, query:'Caribou Odessa'},
+      {id:'sp12', title:'Rhubarb', artist:'Aphex Twin', album:'Selected Ambient Works Vol. II', year:'1994', duration_ms:451000, query:'Aphex Twin Rhubarb'},
+      {id:'sp13', title:'Marilyn', artist:'Mount Kimbie, Micachu', album:'Love What Survives', year:'2017', duration_ms:258000, query:'Mount Kimbie Marilyn'},
+      {id:'sp14', title:'Opal', artist:'Bicep', album:'Bicep', year:'2017', duration_ms:346000, query:'Bicep Opal'},
+      {id:'sp15', title:'Loud Places', artist:'Jamie xx, Romy', album:'In Colour', year:'2015', duration_ms:283000, query:'Jamie xx Loud Places'},
+      {id:'sp16', title:'CURRENTS', artist:'Tame Impala', album:'Currents', year:'2015', duration_ms:288000, query:'Tame Impala Currents'},
+    ];
+    // mock of GET /api/spotify/player — now playing + recently played
+    this.SPOTIFY = {
+      nowId:'sp15',
+      recent:[
+        {id:'sp13', when:'4m'},
+        {id:'sp8',  when:'9m'},   // Bicep — Glue: already in library
+        {id:'sp16', when:'14m'},
+        {id:'sp5',  when:'21m'},  // Burial — Archangel: already in library
+      ],
+    };
+    this.IN_LIBRARY = {sp1:1, sp5:1, sp6:1, sp7:1, sp8:1, sp9:1, sp10:1, sp11:1, sp12:1};
+    // public playlists resolvable by name or pasted link (spotify / youtube)
+    this.PLAYLISTS=[
+      {id:'pl1', origin:'spotify', name:'Late Night Electronic', owner:'Spotify', tracks:34, seed:3},
+      {id:'pl2', origin:'youtube', name:'Ambient Essentials', owner:'Deep Focus', tracks:26, seed:11},
+      {id:'pl3', origin:'spotify', name:'Warehouse Cuts', owner:'k.works', tracks:18, seed:7},
+      {id:'pl4', origin:'youtube', name:'UKG Classics', owner:'garagearchive', tracks:41, seed:17},
+    ];
+    this.LINKPL={
+      spotify:{id:'plsp', origin:'spotify', name:'State of Flux', owner:'flux.fm', tracks:27, seed:5, resolved:true},
+      youtube:{id:'plyt', origin:'youtube', name:'4×4 Sessions', owner:'boiler archive', tracks:22, seed:9, resolved:true},
+    };
+    // per-source bulk behavior: tier, progress rate (%/s), nominal throughput
+    this.SRC={
+      qobuz:{tier:1, rate:23, mbps:6.4},
+      monochrome:{tier:1, rate:15, mbps:3.8},
+      deezer:{tier:2, rate:19, mbps:5.2},
+      soulseek:{tier:2, rate:7, mbps:1.6},
+      ytdlp:{tier:3, rate:11, mbps:2.4},
+    };
+    this.ARTPOOL=['Overmono','Skee Mask','Djrum','Loraine James','Actress','Peverelist','Objekt','Batu','Koreless','Leif','Pangaea','Blawan','Shed','Forest Swords','Andy Stott','Huerco S.','Pole','Rrose'];
+    this.TITLEPOOL=['So U Kno','Res','Corner Dance','Glas','Marsh','Fugue','Vapour','Cascade','Tilt','Mirror','Aperture','Sift','Plume','Arc','Static','Umbra','Lattice','Karst','Brace','Halide','Vellum','Drift','Moss','Quarry','Signal','Ferric','Loam','Cinder','Tessellate','Gauze','Rime','Sill','Petrichor','Bloom','Etch','Weft'];
+    this.BATCHES=[]; this._bseq=0; this._batchFor={};
+    this.state = {
+      tick: 0,
+      searchQ:'', searchState:'idle', searchResults:[], searchPls:[], searchFocus:false, queuedIds:{}, queuedPls:{},
+      page:'console', bulkPanel:false, expandedBatches:{},
+      histSearch:'', histStatus:'all',
+      reviewOpen:{}, reviewSel:{}, reviewSearching:{}, reviewDone:{}, reviewDismissed:{}, reviewQ:{},
+      selectedId:null, showLogs:false,
+      config:{
+        tiers:[
+          {tier:1, strategy:'all',     sources:['qobuz','monochrome']},
+          {tier:2, strategy:'uniform', sources:['deezer','soulseek']},
+          {tier:3, strategy:'all',     sources:['ytdlp']},
+        ],
+        disabled:['telegram'],
+      },
+      dragSource:null, dragOverTier:null, dragOverIndex:null, rejectShake:null,
+      saveState:'idle', toast:null, toastKind:'ok',
+      panelSource:null, panelValues:{}, panelSave:'idle',
+    };
+  }
+
+  componentDidMount(){
+    this._iv = setInterval(()=>{ this.tickBatches(); this.setState(s=>({tick:s.tick+1})); }, 1000);
+  }
+  componentWillUnmount(){
+    clearInterval(this._iv);
+    clearTimeout(this._saveT); clearTimeout(this._toastT); clearTimeout(this._shakeT); clearTimeout(this._panelT);
+    clearTimeout(this._searchT); clearTimeout(this._searchLatT); clearTimeout(this._blurT);
+    (this._queueTimers||[]).forEach(clearTimeout);
+  }
+
+  // ---------- search → download ----------
+  runSearch(q){
+    // debounced caller: mimics GET /api/search?q={q}&limit=20 with ~400ms latency; superseded calls are dropped
+    clearTimeout(this._searchLatT);
+    const trimmed=q.trim().toLowerCase();
+    if(!trimmed){ this.setState({searchState:'idle', searchResults:[], searchPls:[]}); return; }
+    this.setState({searchState:'loading'});
+    const seq = (this._searchSeq=(this._searchSeq||0)+1);
+    this._searchLatT=setTimeout(()=>{
+      if(seq!==this._searchSeq) return; // aborted / superseded
+      const hits=this.CATALOG.filter(t=> (t.title+' '+t.artist+' '+t.album).toLowerCase().includes(trimmed)).slice(0,12);
+      const pls=this.matchPlaylists(trimmed);
+      this.setState({searchState:(hits.length||pls.length)?'results':'empty', searchResults:hits, searchPls:pls});
+    }, 400);
+  }
+  queueDownload(track){
+    if(this.state.queuedIds[track.id]) return;
+    // POST /api/download {query: track.query} → {id, query, status:'queued'}
+    const req={
+      id:'req_'+track.id, query: track.artist.split(',')[0]+' — '+track.title, via:'search',
+      status:'queued', tier:null, source:null, quality:'Queued', qshort:'—', size_bytes:0, lossless:0,
+      created_at:new Date(this.NOW).toISOString(), attempts:[], download:null, error:null, _startTick:this.state.tick,
+    };
+    this.REQUESTS.unshift(req);
+    this._queueTimers=this._queueTimers||[];
+    this._queueTimers.push(setTimeout(()=>{
+      req.status='downloading'; req.quality='In progress';
+      req.attempts.push({source:'qobuz', tier:1, ok:1, detail:'downloading…'});
+      req._startTick=this.state.tick;
+      this.forceUpdate();
+    },1800));
+    clearTimeout(this._toastT);
+    this.setState(st=>({queuedIds:Object.assign({},st.queuedIds,{[track.id]:true}), toast:'Queued: '+track.title, toastKind:'ok'}));
+    this._toastT=setTimeout(()=>this.setState({toast:null}),2600);
+  }
+
+  // ---------- bulk downloads ----------
+  matchPlaylists(q){
+    // pasted link → resolve playlist metadata (mimics POST /api/playlist/resolve {url})
+    if(/spotify\.com\/playlist/.test(q)) return [this.LINKPL.spotify];
+    if(/youtube\.com\/playlist|[?&]list=|youtu\.be/.test(q)) return [this.LINKPL.youtube];
+    return this.PLAYLISTS.filter(p=> p.name.toLowerCase().includes(q) || p.owner.toLowerCase().includes(q) || 'playlist'.includes(q)&&q.length>3 );
+  }
+  genTracks(pl){
+    const A=this.ARTPOOL, T=this.TITLEPOOL;
+    const srcs=['qobuz','deezer','qobuz','soulseek','deezer','qobuz','ytdlp','monochrome','deezer','qobuz','soulseek','ytdlp'];
+    const out=[];
+    for(let i=0;i<pl.tracks;i++){
+      const source=srcs[(pl.seed+i)%srcs.length];
+      out.push({
+        id:pl.id+'_t'+i,
+        title:T[(pl.seed+i*3)%T.length],
+        artist:A[(pl.seed+i*7)%A.length],
+        status:'queued', source, tier:this.SRC[source].tier,
+        progress:0, willFail:(i%11===7),
+      });
+    }
+    return out;
+  }
+  startBatch(pl){
+    if(this._batchFor[pl.id]) return;
+    const b={id:'b'+(++this._bseq), plId:pl.id, name:pl.name, origin:pl.origin, owner:pl.owner, total:pl.tracks, tracks:this.genTracks(pl), paused:false};
+    this.BATCHES.unshift(b);
+    this._batchFor[pl.id]=b.id;
+    this.tickBatches();
+  }
+  tickBatches(){
+    const conc=(this.props.bulkConcurrency ?? 4);
+    this.BATCHES.forEach(b=>{
+      if(b.paused) return;
+      b.tracks.forEach(t=>{
+        if(t.status!=='downloading') return;
+        t.progress+=this.SRC[t.source].rate;
+        if(t.willFail && t.progress>=60){ t.status='failed'; return; }
+        if(t.progress>=100){ t.progress=100; t.status='done'; }
+      });
+      let active=b.tracks.filter(t=>t.status==='downloading').length;
+      for(const t of b.tracks){ if(active>=conc) break; if(t.status==='queued'){ t.status='downloading'; active++; } }
+    });
+  }
+
+  // ---------- data ----------
+  buildRequests(){
+    const iso=(hhmm)=>'2026-07-05T'+hhmm+':00Z';
+    const D=(query,via,status,tier,source,quality,qshort,mb,lossless,elapsed,created,attempts,dl,error)=>({
+      id:query.replace(/[^a-z0-9]/gi,'').slice(0,10).toLowerCase(), query, via, status, tier, source, quality, qshort,
+      size_bytes:Math.round(mb*1e6), lossless, elapsed, created_at:iso(created), attempts, download:dl, error:error||null
+    });
+    const at=(source,tier,ok,detail)=>({source,tier,ok,detail});
+    return [
+      D('Four Tet — Baby','explo','downloading',null,null,'In progress','—',0,0,null,'18:04',[
+        at('qobuz',1,0,'not found in catalogue'), at('monochrome',1,0,'Turnstile JWT required'), at('deezer',2,1,'downloading…')
+      ], null),
+      D('Daft Punk — Get Lucky','explo','done',1,'qobuz','lossless 24-bit / 96 kHz FLAC','FLAC 24/96',94,1,5.1,'18:00',[
+        at('monochrome',1,0,'Turnstile JWT required'), at('qobuz',1,1,'lossless 24-bit / 96 kHz FLAC')
+      ], {path:'/nas/music/flac/daft_punk-get_lucky.flac',size_bytes:94e6,codec:'flac',bit_depth:24,sample_rate:96000,bitrate:2100000,duration_s:369,elapsed_s:5.1}),
+      D('Radiohead — Weird Fishes / Arpeggi','explo','done',1,'qobuz','lossless 16-bit / 44.1 kHz FLAC','FLAC 16/44',42,1,3.2,'17:52',[
+        at('qobuz',1,1,'lossless 16-bit / 44.1 kHz FLAC')
+      ], {path:'/nas/music/flac/radiohead-weird_fishes.flac',size_bytes:42e6,codec:'flac',bit_depth:16,sample_rate:44100,bitrate:940000,duration_s:318,elapsed_s:3.2}),
+      D('Burial — Archangel','explo','done',2,'deezer','lossless 16-bit / 44.1 kHz FLAC','FLAC 16/44',38,1,4.8,'17:40',[
+        at('qobuz',1,0,'not found in catalogue'), at('monochrome',1,0,'Turnstile JWT required'), at('deezer',2,1,'lossless 16-bit / 44.1 kHz FLAC')
+      ], {path:'/nas/music/flac/burial-archangel.flac',size_bytes:38e6,codec:'flac',bit_depth:16,sample_rate:44100,bitrate:900000,duration_s:236,elapsed_s:4.8}),
+      D('Aphex Twin — Rhubarb','explo','done',3,'ytdlp','lossy opus 160 kbps','opus 160',6.2,0,7.9,'17:20',[
+        at('qobuz',1,0,'not found in catalogue'), at('monochrome',1,0,'Turnstile JWT required'), at('deezer',2,0,'not found'), at('soulseek',2,0,'no result ≥ 256 kbps'), at('ytdlp',3,1,'lossy opus 160 kbps')
+      ], {path:'/nas/music/opus/aphex_twin-rhubarb.opus',size_bytes:6.2e6,codec:'opus',bit_depth:null,sample_rate:48000,bitrate:160000,duration_s:451,elapsed_s:7.9}),
+      D('Floating Points — Silhouettes','explo','done',1,'qobuz','lossless 24-bit / 44.1 kHz FLAC','FLAC 24/44',61,1,4.1,'16:58',[
+        at('qobuz',1,1,'lossless 24-bit / 44.1 kHz FLAC')
+      ], {path:'/nas/music/flac/floating_points-silhouettes.flac',size_bytes:61e6,codec:'flac',bit_depth:24,sample_rate:44100,bitrate:1400000,duration_s:582,elapsed_s:4.1}),
+      D('Jai Paul — Str8 Outta Mumbai','cli','failed',null,null,'—','—',0,0,null,'16:30',[
+        at('qobuz',1,0,'not found in catalogue'), at('monochrome',1,0,'Turnstile JWT required'), at('deezer',2,0,'not found'), at('soulseek',2,0,'no peers with file'), at('ytdlp',3,0,'no results')
+      ], null, 'No source produced a verified file. All 5 attempts across 3 tiers failed.'),
+      D('Caribou — Odessa','explo','done',2,'soulseek','lossless 16-bit / 44.1 kHz FLAC','FLAC 16/44',40,1,6.2,'15:10',[
+        at('qobuz',1,0,'not found in catalogue'), at('deezer',2,0,'not found'), at('soulseek',2,1,'lossless 16-bit / 44.1 kHz FLAC (peer: hifi_seeder)')
+      ], {path:'/nas/music/flac/caribou-odessa.flac',size_bytes:40e6,codec:'flac',bit_depth:16,sample_rate:44100,bitrate:910000,duration_s:275,elapsed_s:6.2}),
+      D('Bicep — Glue','explo','done',1,'qobuz','lossless 24-bit / 96 kHz FLAC','FLAC 24/96',88,1,5.0,'14:22',[
+        at('qobuz',1,1,'lossless 24-bit / 96 kHz FLAC')
+      ], {path:'/nas/music/flac/bicep-glue.flac',size_bytes:88e6,codec:'flac',bit_depth:24,sample_rate:96000,bitrate:2000000,duration_s:328,elapsed_s:5.0}),
+      D('Bonobo — Kerala','explo','done',2,'deezer','lossless 16-bit / 44.1 kHz FLAC','FLAC 16/44',44,1,3.6,'13:05',[
+        at('qobuz',1,0,'not found in catalogue'), at('deezer',2,1,'lossless 16-bit / 44.1 kHz FLAC')
+      ], {path:'/nas/music/flac/bonobo-kerala.flac',size_bytes:44e6,codec:'flac',bit_depth:16,sample_rate:44100,bitrate:930000,duration_s:213,elapsed_s:3.6}),
+      D('Jamie xx — Gosh','explo','done',3,'ytdlp','lossy opus 160 kbps','opus 160',5.8,0,8.1,'11:40',[
+        at('qobuz',1,0,'not found'), at('deezer',2,0,'not found'), at('soulseek',2,0,'no result ≥ 256 kbps'), at('ytdlp',3,1,'lossy opus 160 kbps')
+      ], {path:'/nas/music/opus/jamie_xx-gosh.opus',size_bytes:5.8e6,codec:'opus',bit_depth:null,sample_rate:48000,bitrate:160000,duration_s:311,elapsed_s:8.1}),
+      D('Mount Kimbie — Made to Stray','cli','failed',null,null,'—','—',0,0,null,'10:15',[
+        at('qobuz',1,0,'not found in catalogue'), at('monochrome',1,0,'Turnstile JWT required'), at('deezer',2,0,'not found'), at('soulseek',2,0,'no peers with file'), at('ytdlp',3,0,'age-gated, no results')
+      ], null, 'No source produced a verified file. All 5 attempts across 3 tiers failed.'),
+    ];
+  }
+
+  // ---------- review: user-assisted re-download ----------
+  buildReview(){
+    // failed requests + non-FLAC wins, with per-source candidate matches (mimics GET /api/review + POST /api/review/{id}/candidates)
+    return [
+      {id:'rv1', kind:'failed', query:'Jai Paul — Str8 Outta Mumbai', expected:319, sub:'all 5 attempts across 3 tiers failed · via cli · 2h ago',
+       cands:[
+         {id:'c1', source:'soulseek', tier:2, title:'Jai Paul - Str8 Outta Mumbai (Leak 04)', quality:'FLAC 16/44', lossless:1, dur:321, mb:38, match:91, flags:'leak rip · peer: rare_grooves'},
+         {id:'c2', source:'soulseek', tier:2, title:'jai paul - str8 outta mumbai', quality:'MP3 320', lossless:0, dur:319, mb:12, match:84, flags:'peer: uk_bass_arc'},
+         {id:'c3', source:'ytdlp', tier:3, title:'Str8 Outta Mumbai (Official Audio)', quality:'opus 160', lossless:0, dur:324, mb:6.1, match:71, flags:'audio ripped from video'},
+       ]},
+      {id:'rv2', kind:'failed', query:'Mount Kimbie — Made to Stray', expected:237, sub:'all 5 attempts across 3 tiers failed · via cli · 8h ago',
+       cands:[
+         {id:'c1', source:'deezer', tier:2, title:'Made to Stray', quality:'FLAC 16/44', lossless:1, dur:237, mb:27, match:97, flags:''},
+         {id:'c2', source:'soulseek', tier:2, title:'Mount Kimbie - Made To Stray [CSLP]', quality:'FLAC 16/44', lossless:1, dur:238, mb:28, match:90, flags:'peer: post_dub'},
+         {id:'c3', source:'ytdlp', tier:3, title:'Made to Stray (Official Video)', quality:'opus 160', lossless:0, dur:252, mb:6.4, match:66, flags:'video intro adds 15s'},
+       ]},
+      {id:'rv3', kind:'lossy', query:'Aphex Twin — Rhubarb', expected:451, current:'opus 160 · 6.2 MB · won by ytdlp (T3)',
+       cands:[
+         {id:'c1', source:'soulseek', tier:2, title:'Aphex Twin - Rhubarb [SAW Vol II]', quality:'FLAC 16/44', lossless:1, dur:451, mb:45, match:95, flags:'peer: ambient_vault'},
+         {id:'c2', source:'soulseek', tier:2, title:'aphex twin - #3 (rhubarb)', quality:'MP3 320', lossless:0, dur:450, mb:17, match:87, flags:'peer: braindance_lib'},
+         {id:'c3', source:'deezer', tier:2, title:'Rhubarb (Remastered)', quality:'FLAC 16/44', lossless:1, dur:464, mb:46, match:78, flags:'2019 remaster'},
+       ]},
+      {id:'rv4', kind:'lossy', query:'Jamie xx — Gosh', expected:311, current:'opus 160 · 5.8 MB · won by ytdlp (T3)',
+       cands:[
+         {id:'c1', source:'deezer', tier:2, title:'Gosh', quality:'FLAC 16/44', lossless:1, dur:311, mb:36, match:96, flags:''},
+         {id:'c2', source:'soulseek', tier:2, title:'Jamie xx - Gosh (In Colour LP)', quality:'FLAC 16/44', lossless:1, dur:312, mb:37, match:91, flags:'peer: uk_bass_arc'},
+         {id:'c3', source:'soulseek', tier:2, title:'Jamie xx - Gosh (Radio Edit)', quality:'MP3 320', lossless:0, dur:288, mb:11, match:70, flags:'radio edit'},
+       ]},
+    ];
+  }
+  buildReviewItems(s){
+    const items=[];
+    let pendingFailed=0, pendingLossy=0, resolved=0;
+    this.REVIEW.forEach(r=>{
+      if(s.reviewDismissed[r.id]) return;
+      const done=s.reviewDone[r.id];
+      if(done) resolved++;
+      else (r.kind==='failed'?pendingFailed++:pendingLossy++);
+      const expanded=!!s.reviewOpen[r.id] && !done;
+      const sel=s.reviewSel[r.id];
+      const searching=!!s.reviewSearching[r.id];
+      const selCand=r.cands.find(c=>c.id===sel);
+      const cands=r.cands.map(c=>{
+        const isSel=c.id===sel;
+        const d=c.dur-r.expected;
+        return {
+          id:c.id, source:c.source, tierLabel:'T'+c.tier, tierColor:this.tierColor(c.tier),
+          title:c.title, hasFlags:!!c.flags, flags:c.flags,
+          quality:c.quality,
+          qBg:c.lossless?'rgba(233,237,227,.09)':'transparent',
+          qColor:c.lossless?'#e9ede3':'#7c8371',
+          qBorder:c.lossless?'transparent':'#272c25',
+          dur:this.fmtDur(c.dur),
+          delta:d===0?'':((d>0?'+':'−')+Math.abs(d)+'s'),
+          deltaColor:Math.abs(d)>8?'#ff6b58':'#5d6456',
+          size:(c.mb>=10?Math.round(c.mb):c.mb)+' MB',
+          match:c.match+'%',
+          matchColor:c.match>=90?'#e9ede3':(c.match>=75?'#99a091':'#5d6456'),
+          rowBg:isSel?'rgba(233,237,227,.05)':'#0c0e0c',
+          rowBorder:isSel?'#99a091':'#272c25',
+          radioBorder:isSel?'#e9ede3':'#39402f',
+          dotBg:isSel?'#e9ede3':'transparent',
+        };
+      });
+      const failed=r.kind==='failed';
+      items.push({
+        id:r.id,
+        reasonLabel: failed?'FAILED':'LOSSY',
+        reasonColor: failed?'#ff6b58':'#99a091',
+        reasonBg: failed?'rgba(255,76,56,.08)':'rgba(153,160,145,.08)',
+        reasonBorder: failed?'rgba(255,76,56,.35)':'#39402f',
+        query:r.query,
+        sub: done?('re-queued from '+done.source+' · '+done.quality):r.sub,
+        cardBorder: expanded?'#39402f':'#22261f',
+        resolved:!!done, resolvedLabel:'✓ re-queued · '+(done?done.source:''),
+        canReview:!done,
+        candCount:r.cands.length+' candidates',
+        chev:expanded?'▴':'▾',
+        expanded,
+        q: s.reviewQ[r.id]!=null?s.reviewQ[r.id]:r.query,
+        searching, showCands:!searching,
+        expectLine:'expected · '+this.fmtDur(r.expected),
+        hasCurrent:!!r.current, currentLine:r.current?('current file · '+r.current):'',
+        cands,
+        dlDisabled:!selCand,
+        dlBg:selCand?'#e9ede3':'#181c17',
+        dlColor:selCand?'#14170f':'#5d6456',
+        dlCursor:selCand?'pointer':'default',
+        dlLabel:selCand?('Download from '+selCand.source+' · '+selCand.quality):'Select a match to download',
+        dismissLabel: failed?'dismiss':'keep current',
+      });
+    });
+    return {items, pendingFailed, pendingLossy, resolved};
+  }
+
+  // ---------- helpers ----------
+  fmtBytes(n){
+    if(!n) return '—';
+    if(n>=1e9) return (n/1e9).toFixed(1)+' GB';
+    if(n>=1e6) return Math.round(n/1e6)+' MB';
+    if(n>=1e3) return Math.round(n/1e3)+' KB';
+    return n+' B';
+  }
+  relTime(iso){
+    const d = Math.max(0,(this.NOW - Date.parse(iso))/1000);
+    if(d<45) return Math.round(d)+'s ago';
+    if(d<3600) return Math.round(d/60)+'m ago';
+    if(d<86400) return Math.round(d/3600)+'h ago';
+    return Math.round(d/86400)+'d ago';
+  }
+  fmtDur(s){ if(s==null) return '—'; const m=Math.floor(s/60), ss=Math.round(s%60); return m+':'+String(ss).padStart(2,'0'); }
+  statusMeta(st){
+    if(st==='done') return {label:'Done', color:this.C.good, bg:'rgba(233,237,227,.1)'};
+    if(st==='failed') return {label:'Failed', color:this.C.bad, bg:'rgba(255,76,56,.1)'};
+    if(st==='queued') return {label:'Queued', color:this.C.muted, bg:'rgba(153,160,145,.12)'};
+    return {label:'Downloading', color:this.C.good, bg:'rgba(233,237,227,.1)'};
+  }
+  tierColor(t){ return t===1?this.C.t1 : t===2?this.C.t2 : t===3?this.C.t3 : this.C.faint; }
+  credMeta(c){
+    if(c==='ok') return {color:this.C.good, text:'ready'};
+    if(c==='partial') return {color:this.C.warn, text:'partial'};
+    if(c==='missing') return {color:this.C.bad, text:'missing'};
+    return {color:this.C.faint, text:'no auth'};
+  }
+  tierOfSource(name){
+    for(const t of this.state.config.tiers){ if(t.sources.includes(name)) return t.tier; }
+    return null;
+  }
+
+  // ---------- board actions ----------
+  reject(name){
+    clearTimeout(this._shakeT);
+    this.setState({rejectShake:name});
+    this._shakeT = setTimeout(()=>this.setState({rejectShake:null}), 480);
+  }
+  clearDrag(){ this.setState({dragSource:null, dragOverTier:null, dragOverIndex:null}); }
+  autosave(){
+    clearTimeout(this._saveT); clearTimeout(this._toastT);
+    this.setState({saveState:'saving', toast:null});
+    this._saveT = setTimeout(()=>{
+      this.setState({saveState:'saved', toast:'Applied — cascade hot-reloaded', toastKind:'ok'});
+      this._toastT = setTimeout(()=>this.setState({toast:null, saveState:'idle'}), 2600);
+    }, 750);
+  }
+  moveSource(name, targetKey, index){
+    const cfg = JSON.parse(JSON.stringify(this.state.config));
+    let origKey=null, origIdx=-1;
+    cfg.tiers.forEach(t=>{ const i=t.sources.indexOf(name); if(i>=0){origKey=String(t.tier); origIdx=i;} });
+    { const i=cfg.disabled.indexOf(name); if(i>=0){origKey='disabled'; origIdx=i;} }
+    cfg.tiers.forEach(t=> t.sources = t.sources.filter(s=>s!==name));
+    cfg.disabled = cfg.disabled.filter(s=>s!==name);
+    let idx = (index==null||!isFinite(index)) ? Infinity : index;
+    if(origKey===String(targetKey) && origIdx>=0 && origIdx<idx) idx = idx-1;
+    if(targetKey==='disabled'){
+      const arr=cfg.disabled; arr.splice(Math.min(idx,arr.length),0,name);
+    } else {
+      const t=cfg.tiers.find(t=>String(t.tier)===String(targetKey));
+      t.sources.splice(Math.min(idx,t.sources.length),0,name);
+    }
+    const changed = JSON.stringify(cfg)!==JSON.stringify(this.state.config);
+    this.setState({config:cfg});
+    if(changed) this.autosave();
+  }
+
+  mkCard(name, key, index, s){
+    const meta=this.META[name]; const cm=this.credMeta(meta.credentials);
+    const locked = name==='ytdlp';
+    const drag=s.dragSource;
+    return {
+      isCard:true, isPlaceholder:false, name, index,
+      qualityBadge: meta.lossless?'FLAC':'ANY',
+      badgeBg: meta.lossless?'rgba(233,237,227,.09)':'transparent',
+      badgeColor: meta.lossless?'#e9ede3':'#7c8371',
+      badgeBorder: meta.lossless?'transparent':'#272c25',
+      credColor: cm.color, credText: cm.text,
+      warn: meta.credentials==='missing',
+      locked, gear: !locked,
+      draggable: !locked,
+      cursor: locked?'default':'grab',
+      handle: locked?'':'⣿', handleColor: locked?'#22261f':'#5d6456', handleCursor: locked?'default':'grab',
+      opacity: drag===name?'0.4':'1',
+      cardBorder: (meta.credentials==='missing')?'rgba(255,76,56,.4)':'#272c25',
+      shakeStyle: s.rejectShake===name?'animation:shake .48s':'',
+      stubColor:'#272c25', stubGlow:'none', stubAnim:'none',
+    };
+  }
+
+  buildTiers(s){
+    const drag=s.dragSource;
+    const animate = this.props.animateFlow ?? true;
+    const nTiers = s.config.tiers.length;
+    return s.config.tiers.map((t,ti)=>{
+      const key=t.tier; const list=t.sources;
+      const over = String(s.dragOverTier)===String(key) && drag;
+      const accent=this.tierColor(key);
+      const items=[];
+      for(let i=0;i<=list.length;i++){
+        if(over && s.dragOverIndex===i) items.push({isPlaceholder:true, isCard:false});
+        if(i<list.length) items.push(this.mkCard(list[i], key, i, s));
+      }
+      const cards=items.filter(x=>x.isCard);
+      const n=cards.length;
+      const isAll = t.strategy==='all';
+      const activeIdx = isAll ? -1 : (n>0 ? (animate ? s.tick%n : 0) : -1);
+      cards.forEach((it,ci)=>{
+        const active = isAll || ci===activeIdx;
+        it.stubColor = active?accent:'#272c25';
+        it.stubGlow = active?('0 0 8px '+accent):'none';
+        it.stubAnim = (active&&animate)?'flowpulse 1s ease-in-out infinite':'none';
+      });
+      const nextName = (!isAll && n>0) ? cards[(activeIdx+1)%n].name : null;
+      const caption = isAll
+        ? (n<=1 ? 'parallel · single source, first verified file wins' : 'parallel · all '+n+' fired at once, first verified file wins')
+        : 'uniform · one per request, rotating'+(nextName&&n>1?(' · next: '+nextName):'');
+      return {
+        key:String(key), num:'0'+key, label:'Tier '+key, accent,
+        count:list.length+(list.length===1?' source':' sources'),
+        border: over?'#99a091':'#22261f', bg: over?'rgba(233,237,227,.03)':'#0e100d',
+        items, empty:list.length===0,
+        allBg: isAll?'#e9ede3':'transparent', allColor: isAll?'#14170f':this.C.faint,
+        rrBg: !isAll?'#e9ede3':'transparent', rrColor: !isAll?'#14170f':this.C.faint,
+        isAll: isAll, isUniform: !isAll,
+        hubTitle: isAll?'Dispatch: broadcast to all sources in parallel':'Dispatch: round-robin, uniformly distributed',
+        strategyCaption: caption,
+        railColor: isAll?'rgba(233,237,227,.3)':'#272c25',
+        showFall: ti<nTiers-1,
+      };
+    });
+  }
+
+  buildDetail(s){
+    if(!s.selectedId) return null;
+    const r = this.REQUESTS.find(x=>x.id===s.selectedId);
+    if(!r) return null;
+    const sm=this.statusMeta(r.status);
+    const n=r.attempts.length;
+    const attempts = r.attempts.map((a,i)=>{
+      const inprog = a.detail==='downloading…';
+      const okColor = inprog?this.C.good : (a.ok?this.C.good:this.C.bad);
+      return {
+        source:a.source, tierLabel:'T'+a.tier, tierColor:this.tierColor(a.tier),
+        icon: inprog?'…':(a.ok?'✓':'✗'),
+        iconColor: okColor, iconBg: inprog?'rgba(233,237,227,.07)':(a.ok?'rgba(233,237,227,.07)':'rgba(255,76,56,.07)'),
+        detail:a.detail, detailColor: a.ok?'#e9ede3':(inprog?this.C.good:this.C.muted),
+        connector: i<n-1,
+      };
+    });
+    const facts=[]; const dl=r.download;
+    if(dl){
+      facts.push({k:'Path', v:dl.path});
+      facts.push({k:'Quality', v:r.quality});
+      const codecLine = dl.bit_depth? (dl.codec+' · '+dl.bit_depth+'-bit / '+(dl.sample_rate/1000)+' kHz') : (dl.codec+' · '+Math.round(dl.bitrate/1000)+' kbps');
+      facts.push({k:'Codec', v:codecLine});
+      facts.push({k:'Size', v:this.fmtBytes(dl.size_bytes)});
+      facts.push({k:'Duration', v:this.fmtDur(dl.duration_s)});
+      facts.push({k:'Download time', v:dl.elapsed_s+'s'});
+    }
+    // synthetic download log
+    const C=this.C;
+    let t0 = Date.parse(r.created_at);
+    const fmtT=(ms)=>{ const d=new Date(ms); return String(d.getUTCHours()).padStart(2,'0')+':'+String(d.getUTCMinutes()).padStart(2,'0')+':'+String(d.getUTCSeconds()).padStart(2,'0'); };
+    const logs=[];
+    const push=(level,msg)=>{
+      const lc = level==='ERROR'?C.bad : level==='WARN'?C.muted : level==='OK'?C.good : C.faint;
+      logs.push({time:fmtT(t0), level, levelColor:lc, msg, msgColor: level==='ERROR'?C.bad:(level==='OK'?'#e9ede3':'#99a091')});
+      t0 += 900 + (logs.length*347)%1300;
+    };
+    push('INFO','request accepted via '+r.via+' — "'+r.query+'"');
+    let lastTier=null;
+    r.attempts.forEach(a=>{
+      if(a.tier!==lastTier){
+        const tierCfg=this.state.config.tiers.find(t=>t.tier===a.tier);
+        const strat=tierCfg?tierCfg.strategy:'all';
+        push('INFO','tier '+a.tier+' dispatch · strategy='+(strat==='all'?'parallel (all sources)':'uniform (round-robin)'));
+        lastTier=a.tier;
+      }
+      if(a.detail==='downloading…'){ push('INFO',a.source+': download started'); }
+      else if(a.ok){ push('OK',a.source+': verified file — '+a.detail); }
+      else { push('WARN',a.source+': '+a.detail); }
+    });
+    if(r.status==='failed'){ push('ERROR','cascade exhausted — '+r.attempts.length+' attempts across '+(new Set(r.attempts.map(a=>a.tier)).size)+' tiers, no verified file'); }
+    else if(r.status==='done' && dl){ push('INFO','wrote '+dl.path+' ('+this.fmtBytes(dl.size_bytes)+') in '+dl.elapsed_s+'s'); push('INFO','library index updated'); }
+
+    return {
+      query:r.query, via:r.via, when:r.status==='downloading'?'live':this.relTime(r.created_at),
+      statusLabel:sm.label, statusColor:sm.color, statusBg:sm.bg,
+      attempts, logs,
+      factsTitle: r.status==='done'?'Winner':(r.status==='failed'?'Result':'Status'),
+      hasWinner: !!dl, facts,
+      isFailed: r.status==='failed', error:r.error,
+      isInflight: r.status==='downloading',
+      isQueued: r.status==='queued',
+    };
+  }
+
+  buildPanel(s){
+    if(!s.panelSource) return null;
+    const name=s.panelSource; const def=this.PANELDEF[name]; const meta=this.META[name];
+    const tier=this.tierOfSource(name);
+    const disabled = s.config.disabled.includes(name);
+    const enabled = !disabled;
+    const cm=this.credMeta(meta.credentials);
+    const v=s.panelValues;
+    const creds = def.creds.map(([env,label,configured])=>({
+      key:env, label, env,
+      value: v[env]||'',
+      statusColor: configured?this.C.good:this.C.bad,
+      statusText: configured?'configured':'not set',
+      placeholder: configured?'•••••••• configured — type to replace':'not set',
+    }));
+    const settings = def.settings.map(([key,label,type,def2])=>({key,label,type,value: v[key]!=null?v[key]:def2}));
+    const pinned = !!def.pinned;
+    const dirty = s.panelSave==='dirty';
+    const saving = s.panelSave==='saving';
+    const saved = s.panelSave==='saved';
+    return {
+      name, qualityBadge: meta.lossless?'FLAC':'ANY',
+      badgeBg: meta.lossless?'rgba(233,237,227,.09)':'transparent',
+      badgeColor: meta.lossless?'#e9ede3':'#7c8371',
+      badgeBorder: meta.lossless?'transparent':'#272c25',
+      tierLabel: pinned?'Tier 3 · pinned fallback':(tier?('Tier '+tier):'Disabled')+' · '+cm.text+' credentials',
+      tierColor: this.tierColor(tier),
+      enabledSub: pinned?'Locked on':(enabled?'Active in the cascade':'Held in the tray'),
+      pinned, toggleCursor: pinned?'not-allowed':'pointer',
+      toggleBg: enabled?'#e9ede3':'#272c25', knobLeft: enabled?'20px':'2px',
+      knobBg: enabled?'#14170f':'#99a091',
+      note: def.note||null,
+      hasSettings: settings.length>0, settings,
+      hasCreds: creds.length>0, creds,
+      canValidate: !!def.validate,
+      saving,
+      saveDisabled: saving||pinned&&creds.length===0&&settings.length===0&&!dirty,
+      saveCursor: saving?'default':'pointer',
+      saveBtnBg: saved?'rgba(233,237,227,.14)':(saving?'#272c25':'#e9ede3'),
+      saveBtnColor: saved?'#e9ede3':(saving?this.C.muted:'#14170f'),
+      saveBtnText: saving?'Saving…':(saved?'Saved ✓':'Save changes'),
+    };
+  }
+
+  renderVals(){
+    const s=this.state; const C=this.C;
+    const connLabel='live'; const connDotColor='#ff4c38';
+
+    const mkStat=(label,value,sub,light)=>({
+      label, value, sub,
+      bg: light?'#dfe4d6':'#111411',
+      border: light?'#dfe4d6':'#22261f',
+      hoverBorder: light?'#dfe4d6':'#39402f',
+      labelColor: light?'#4d5346':'#5d6456',
+      valueColor: light?'#14170f':'#e9ede3',
+      subColor: light?'#4d5346':'#5d6456',
+    });
+    const statCards=[
+      mkStat('Requests','12','9 done · 2 failed · 1 live',true),
+      mkStat('Success rate','82%','9 of 11 completed',false),
+      mkStat('In flight','1','via explo',false),
+      mkStat('Lossless','78%','7 of 9 downloads',false),
+      mkStat('Downloaded','419 MB','across 9 files',false),
+      mkStat('Avg time','5.2s','per completed',false),
+    ];
+    const wsMax=4;
+    const winsByTier=[['Tier 1',4,1],['Tier 2',3,.6],['Tier 3',2,.35]].map(([name,c,op])=>({name,value:String(c),width:Math.round(c/wsMax*100)+'%',opacity:String(op)}));
+
+    // live
+    const inflightReq = this.REQUESTS.filter(r=>r.status==='downloading'||r.status==='queued');
+    const inflight = inflightReq.map(r=>{
+      const queued=r.status==='queued';
+      const el = r._startTick!=null ? Math.max(0,s.tick-r._startTick) : 12+s.tick;
+      return {query:r.query, via:r.via, spin:!queued, queuedDot:queued, elapsed: queued?'queued':this.fmtDur(el)};
+    });
+    const liveEmpty = inflight.length===0;
+    const liveSummary = inflight.length+' in-flight · SSE';
+
+    // history
+    const q=s.histSearch.trim().toLowerCase();
+    const rows = this.REQUESTS.filter(r=>{
+      if(s.histStatus!=='all' && r.status!==s.histStatus) return false;
+      if(q && !r.query.toLowerCase().includes(q)) return false;
+      return true;
+    });
+    const historyRows=rows.map(r=>{
+      const sm=this.statusMeta(r.status);
+      return {id:r.id, query:r.query, statusLabel:sm.label, statusColor:sm.color,
+        statusPulse: r.status==='downloading'?'animation:pulse 1.4s ease-in-out infinite':'',
+        won: r.status==='done'?('T'+r.tier+' · '+r.source):(r.status==='failed'?'failed':(r.status==='queued'?'queued':'live')), wonColor: r.status==='done'?this.tierColor(r.tier):(r.status==='failed'?C.bad:(r.status==='queued'?C.muted:C.good)),
+        quality: r.status==='downloading'?'In progress':(r.status==='queued'?'Queued':(r.qshort==='—'?'no file':r.qshort)),
+        size: this.fmtBytes(r.size_bytes),
+        when: (r.status==='downloading'||r.status==='queued')?'live':this.relTime(r.created_at)};
+    });
+    const historyEmpty=historyRows.length===0;
+
+    // cascade map
+    const tiers=this.buildTiers(s);
+    const drag=s.dragSource;
+    const trayList=s.config.disabled;
+    const trayOver=String(s.dragOverTier)==='disabled' && drag;
+    const trayItems=[];
+    for(let i=0;i<=trayList.length;i++){
+      if(trayOver && s.dragOverIndex===i) trayItems.push({isPlaceholder:true,isCard:false});
+      if(i<trayList.length) trayItems.push(this.mkCard(trayList[i],'disabled',i,s));
+    }
+
+    const saveMap={
+      idle:{text:'All changes saved', color:C.faint, bg:'#131612', border:'#272c25', spin:false},
+      saving:{text:'Saving…', color:'#e9ede3', bg:'#181c17', border:'#39402f', spin:true},
+      saved:{text:'Saved ✓', color:'#e9ede3', bg:'rgba(233,237,227,.09)', border:'#39402f', spin:false},
+    };
+    const sv=saveMap[s.saveState]||saveMap.idle;
+
+    const detail=this.buildDetail(s);
+    const drawerOpen=!!detail;
+    const panel=this.buildPanel(s);
+    const panelOpen=!!panel;
+
+    // search → download (searchAvailable=false mimics the 503 "search not configured" → UI hidden)
+    const searchVisible = this.props.searchAvailable ?? true;
+    const searchOpen = s.searchFocus && s.searchState!=='idle';
+    const searchResults = s.searchResults.map(t=>({
+      id:t.id, title:t.title, artist:t.artist,
+      albumYear:t.album+' · '+t.year,
+      dur:this.fmtDur(Math.round(t.duration_ms/1000)),
+      letter:t.title.charAt(0).toUpperCase(),
+      queued: !!s.queuedIds[t.id], notQueued: !s.queuedIds[t.id],
+    }));
+
+    // spotify listening
+    const np = this.CATALOG.find(t=>t.id===this.SPOTIFY.nowId);
+    const npDur = Math.round(np.duration_ms/1000);
+    const npEl = (96 + s.tick) % npDur;
+    const npQueued = !!s.queuedIds[np.id];
+    const recentPlays = this.SPOTIFY.recent.map(rp=>{
+      const t=this.CATALOG.find(x=>x.id===rp.id);
+      const inLib=!!this.IN_LIBRARY[t.id];
+      const queued=!inLib && !!s.queuedIds[t.id];
+      return {id:t.id, title:t.title, artist:t.artist, letter:t.title.charAt(0).toUpperCase(),
+        when:rp.when+' ago', inLibrary:inLib, queued, canQueue:!inLib&&!queued};
+    });
+
+    // ---------- bulk downloads: aggregate all sources ----------
+    const conc=(this.props.bulkConcurrency ?? 4);
+    let dlCount=0,qCount=0,doneCount=0,failCount=0,speedSum=0;
+    const srcAgg={}; Object.keys(this.SRC).forEach(k=>srcAgg[k]={active:0,speed:0});
+    this.BATCHES.forEach(b=>{ b.tracks.forEach(t=>{
+      if(t.status==='downloading'){
+        if(!b.paused){ dlCount++; const sp=this.SRC[t.source].mbps + (((s.tick*7)+t.title.length)%9)/10; t._sp=sp; speedSum+=sp; srcAgg[t.source].active++; srcAgg[t.source].speed+=sp; }
+      }
+      else if(t.status==='queued') qCount++;
+      else if(t.status==='done') doneCount++;
+      else if(t.status==='failed') failCount++;
+    });});
+    inflightReq.forEach(r=>{
+      if(r.status!=='downloading'){ r._sp=null; r._src=null; return; }
+      const a=r.attempts[r.attempts.length-1]; const src=a?a.source:null;
+      const sp=(src&&this.SRC[src]?this.SRC[src].mbps:2.2)+((s.tick*3)%8)/10;
+      r._sp=sp; r._src=src; speedSum+=sp;
+      if(src&&srcAgg[src]){ srcAgg[src].active++; srcAgg[src].speed+=sp; }
+    });
+    const singlesDl=inflightReq.filter(r=>r.status==='downloading').length;
+    const singlesQ=inflightReq.filter(r=>r.status==='queued').length;
+    const totalActive=dlCount+singlesDl;
+    const sourceLanes=Object.keys(this.SRC).map(k=>{
+      const a=srcAgg[k];
+      return {name:k, active:a.active?(a.active+' active'):'idle',
+        speed:a.active?(a.speed.toFixed(1)+' MB/s'):'—',
+        dotColor:a.active?'#e9ede3':'#272c25',
+        dotAnim:a.active?'pulse 1.6s ease-in-out infinite':'none',
+        nameColor:a.active?'#e9ede3':'#5d6456'};
+    });
+    const bulkStats=[
+      mkStat('Active now', String(totalActive), dlCount+' bulk · '+singlesDl+' individual', true),
+      mkStat('Combined speed', speedSum?(speedSum.toFixed(1)+' MB/s'):'0', 'across all sources', false),
+      mkStat('Queued', String(qCount+singlesQ), 'waiting for a slot', false),
+      mkStat('Done', String(doneCount), 'this session · bulk', false),
+      mkStat('Failed', String(failCount), failCount?'tap retry on a row':'nothing failed', false),
+    ];
+    const bulkBatches=this.BATCHES.map(b=>{
+      const dl=b.tracks.filter(t=>t.status==='downloading').length;
+      const done=b.tracks.filter(t=>t.status==='done').length;
+      const failed=b.tracks.filter(t=>t.status==='failed').length;
+      const complete=done+failed===b.total;
+      const expanded=!!s.expandedBatches[b.id];
+      let visible;
+      if(expanded) visible=b.tracks;
+      else if(complete) visible=b.tracks.filter(t=>t.status==='failed').concat(b.tracks.filter(t=>t.status==='done').slice(-3));
+      else visible=b.tracks.filter(t=>t.status==='downloading'||t.status==='failed').concat(b.tracks.filter(t=>t.status==='queued').slice(0,3));
+      const hidden=b.total-visible.length;
+      const rows=visible.map(t=>{
+        const dling=t.status==='downloading';
+        return {
+          bid:b.id, tid:t.id,
+          title:t.artist+' — '+t.title,
+          titleColor:t.status==='done'?'#5d6456':'#e9ede3',
+          spin:dling&&!b.paused, pausedGlyph:dling&&b.paused,
+          queuedDot:t.status==='queued',
+          isDone:t.status==='done', isFailed:t.status==='failed',
+          source:t.source, tierLabel:'T'+t.tier, tierColor:this.tierColor(t.tier),
+          barW:Math.round(t.progress)+'%',
+          barColor:t.status==='failed'?'#ff4c38':'#e9ede3',
+          pct:t.status==='done'?'100%':(t.status==='queued'?'':(Math.round(t.progress)+'%')),
+          speed:(dling&&!b.paused&&t._sp)?(t._sp.toFixed(1)+' MB/s'):(t.status==='queued'?'queued':(t.status==='done'?'done':(t.status==='failed'?'failed':'paused'))),
+          speedColor:t.status==='failed'?'#ff4c38':(t.status==='done'?'#5d6456':'#99a091'),
+        };
+      });
+      const remaining=b.total-done-failed;
+      const etaS=Math.ceil(remaining*6/Math.max(1,conc));
+      return {
+        id:b.id, name:b.name, originLabel:b.origin.toUpperCase(), owner:b.owner,
+        counts:done+' / '+b.total+' done'+(dl?(' · '+dl+' downloading'):'')+(failed?(' · '+failed+' failed'):''),
+        pctW:Math.round(done/b.total*100)+'%',
+        eta: b.paused?'paused':(complete?(failed?('done · '+failed+' failed'):'complete'):(etaS>=90?('≈ '+Math.round(etaS/60)+'m left'):('≈ '+etaS+'s left'))),
+        active:!complete, complete,
+        pauseLabel:b.paused?'resume':'pause',
+        cancelLabel:complete?'dismiss':'cancel',
+        rows,
+        showFooter:hidden>0||expanded,
+        footerLabel:expanded?'collapse ▴':('show all '+b.total+' tracks ▾'),
+      };
+    });
+    const bulkSingles=inflightReq.map(r=>({
+      id:r.id, query:r.query, via:r.via,
+      spin:r.status==='downloading', queuedDot:r.status==='queued',
+      source:r._src||'', srcShow:!!r._src,
+      speed:r._sp?(r._sp.toFixed(1)+' MB/s'):'queued',
+    }));
+    const bulkEmpty=this.BATCHES.length===0&&bulkSingles.length===0;
+    const pageBulk=s.page==='bulk', pageReview=s.page==='review', pageConsole=!pageBulk&&!pageReview;
+    const bpOpen=s.bulkPanel;
+
+    // review page
+    const rv=this.buildReviewItems(s);
+    const reviewPending=rv.pendingFailed+rv.pendingLossy;
+    const reviewStats=[
+      mkStat('Needs review', String(reviewPending), rv.pendingFailed+' failed · '+rv.pendingLossy+' lossy', true),
+      mkStat('Failed', String(rv.pendingFailed), 'no source produced a file', false),
+      mkStat('Lossy grabs', String(rv.pendingLossy), 'FLAC upgrade available', false),
+      mkStat('Resolved', String(rv.resolved), 'this session · via review', false),
+    ];
+
+    return {
+      pageConsole, pageBulk, pageReview,
+      gotoConsole:()=>this.setState({page:'console'}),
+      gotoBulk:()=>this.setState({page:'bulk', bulkPanel:false}),
+      gotoReview:()=>this.setState({page:'review', bulkPanel:false}),
+      navReviewBg:pageReview?'#e9ede3':'transparent', navReviewColor:pageReview?'#14170f':'#99a091',
+      reviewBadge:reviewPending>0, reviewCount:String(reviewPending),
+      reviewStats, reviewItems:rv.items, reviewEmpty:rv.items.length===0,
+      toggleReview:(e)=>{ const id=e.currentTarget.dataset.id; this.setState(st=>({reviewOpen:Object.assign({},st.reviewOpen,{[id]:!st.reviewOpen[id]})})); },
+      selectCand:(e)=>{ const d=e.currentTarget.dataset; this.setState(st=>({reviewSel:Object.assign({},st.reviewSel,{[d.rid]:d.cid})})); },
+      onReviewQuery:(e)=>{ const id=e.currentTarget.dataset.id; const v=e.target.value; this.setState(st=>({reviewQ:Object.assign({},st.reviewQ,{[id]:v})})); },
+      rescanReview:(e)=>{
+        e.stopPropagation();
+        const id=e.currentTarget.dataset.id;
+        this.setState(st=>({reviewSearching:Object.assign({},st.reviewSearching,{[id]:true})}));
+        this._queueTimers=this._queueTimers||[];
+        this._queueTimers.push(setTimeout(()=>{
+          this.setState(st=>({reviewSearching:Object.assign({},st.reviewSearching,{[id]:false})}));
+        },900));
+      },
+      downloadCand:(e)=>{
+        const id=e.currentTarget.dataset.id;
+        const r=this.REVIEW.find(x=>x.id===id);
+        const sel=s.reviewSel[id]; if(!r||!sel) return;
+        const c=r.cands.find(x=>x.id===sel); if(!c) return;
+        // POST /api/review/{id}/redownload {source, candidate} → new request pinned to that source
+        this.REQUESTS.unshift({
+          id:'rev_'+id+'_'+sel, query:r.query, via:'review', status:'downloading', tier:c.tier, source:c.source,
+          quality:'In progress', qshort:'—', size_bytes:0, lossless:c.lossless,
+          created_at:new Date(this.NOW).toISOString(),
+          attempts:[{source:c.source, tier:c.tier, ok:1, detail:'downloading…'}],
+          download:null, error:null, _startTick:s.tick,
+        });
+        clearTimeout(this._toastT);
+        this.setState(st=>({reviewDone:Object.assign({},st.reviewDone,{[id]:{source:c.source, quality:c.quality}}), toast:'Re-download queued: '+r.query+' · '+c.source, toastKind:'ok'}));
+        this._toastT=setTimeout(()=>this.setState({toast:null}),2600);
+      },
+      dismissReview:(e)=>{
+        const id=e.currentTarget.dataset.id;
+        const r=this.REVIEW.find(x=>x.id===id);
+        clearTimeout(this._toastT);
+        this.setState(st=>({reviewDismissed:Object.assign({},st.reviewDismissed,{[id]:true}), toast:(r&&r.kind==='lossy'?'Kept current file: ':'Dismissed: ')+(r?r.query:''), toastKind:'ok'}));
+        this._toastT=setTimeout(()=>this.setState({toast:null}),2600);
+      },
+      navConsoleBg:pageConsole?'#e9ede3':'transparent', navConsoleColor:pageConsole?'#14170f':'#99a091',
+      navBulkBg:pageBulk?'#e9ede3':'transparent', navBulkColor:pageBulk?'#14170f':'#99a091',
+      activeBadge:totalActive>0, activeCount:String(totalActive),
+      searchHasPlaylists: s.searchState==='results' && s.searchPls.length>0,
+      searchPlaylists: s.searchPls.map(pl=>{
+        const nm=((pl.name||'').replace(/[^a-z0-9]/gi,'').toUpperCase()+'CRATE');
+        return {id:pl.id, name:pl.name, originLabel:pl.origin.toUpperCase(),
+          sub:pl.tracks+' tracks · '+pl.owner+(pl.resolved?' · resolved from link':''),
+          g1:nm[0],g2:nm[1],g3:nm[2],g4:nm[3],
+          queued:!!s.queuedPls[pl.id], canQueue:!s.queuedPls[pl.id],
+          queuedLabel:'✓ '+pl.tracks+' queued', queueLabel:'Queue all '+pl.tracks};
+      }),
+      queuePlaylist:(e)=>{
+        e.preventDefault();
+        const id=e.currentTarget.dataset.id;
+        const pl=this.PLAYLISTS.concat([this.LINKPL.spotify,this.LINKPL.youtube]).find(p=>p.id===id);
+        if(!pl||s.queuedPls[id]) return;
+        this.startBatch(pl);
+        clearTimeout(this._toastT);
+        this.setState(st=>({queuedPls:Object.assign({},st.queuedPls,{[id]:true}), bulkPanel:true, toast:'Queued playlist: '+pl.name+' ('+pl.tracks+' tracks)', toastKind:'ok'}));
+        this._toastT=setTimeout(()=>this.setState({toast:null}),2600);
+      },
+      bulkStats, sourceLanes, bulkBatches, bulkSingles,
+      bulkHasSingles:bulkSingles.length>0, bulkEmpty,
+      toggleBatch:(e)=>{ const id=e.currentTarget.dataset.id; this.setState(st=>({expandedBatches:Object.assign({},st.expandedBatches,{[id]:!st.expandedBatches[id]})})); },
+      pauseBatch:(e)=>{ const b=this.BATCHES.find(x=>x.id===e.currentTarget.dataset.id); if(b){ b.paused=!b.paused; this.forceUpdate(); } },
+      cancelBatch:(e)=>{
+        const id=e.currentTarget.dataset.id;
+        const b=this.BATCHES.find(x=>x.id===id);
+        this.BATCHES=this.BATCHES.filter(x=>x.id!==id);
+        if(b){ delete this._batchFor[b.plId]; }
+        clearTimeout(this._toastT);
+        this.setState(st=>{
+          const q=Object.assign({},st.queuedPls); if(b) delete q[b.plId];
+          return {queuedPls:q, toast:b?((b.complete?'Dismissed: ':'Cancelled: ')+b.name):null, toastKind:'ok'};
+        });
+        this._toastT=setTimeout(()=>this.setState({toast:null}),2600);
+      },
+      retryTrack:(e)=>{
+        const d=e.currentTarget.dataset;
+        const b=this.BATCHES.find(x=>x.id===d.bid); if(!b) return;
+        const t=b.tracks.find(x=>x.id===d.tid);
+        if(t){ t.status='queued'; t.willFail=false; t.progress=0; this.forceUpdate(); }
+      },
+      openBulkPanel:()=>this.setState({bulkPanel:true}),
+      closeBulkPanel:()=>this.setState({bulkPanel:false}),
+      bpTransform:bpOpen?'translateX(0)':'translateX(103%)',
+      bpScrimOpacity:bpOpen?'1':'0', bpScrimPE:bpOpen?'auto':'none',
+      bpSummary:totalActive+' active · '+(qCount+singlesQ)+' queued · all sources',
+      bpSpeed:speedSum?speedSum.toFixed(1):'0.0',
+      bpEmpty:this.BATCHES.length===0,
+      bpSinglesLine: bulkSingles.length?(bulkSingles.length+' individual request'+(bulkSingles.length>1?'s':'')+' in flight'):null,
+
+      npId:np.id, npTitle:np.title, npArtist:np.artist,
+      npProgress: Math.round(npEl/npDur*100)+'%',
+      npTime: this.fmtDur(npEl)+' / '+this.fmtDur(npDur),
+      npQueued, npCanQueue:!npQueued,
+      recentPlays,
+
+      searchVisible, searchQ:s.searchQ, searchOpen,
+      searchLoading: s.searchState==='loading',
+      searchEmpty: s.searchState==='empty',
+      searchHasResults: s.searchState==='results' && searchResults.length>0,
+      searchResults,
+      onSearchInput:(e)=>{
+        const q=e.target.value;
+        this.setState({searchQ:q, searchFocus:true});
+        clearTimeout(this._searchT);
+        this._searchT=setTimeout(()=>this.runSearch(q), 220);
+      },
+      onSearchFocus:()=>{ clearTimeout(this._blurT); this.setState({searchFocus:true}); },
+      onSearchBlur:()=>{ this._blurT=setTimeout(()=>this.setState({searchFocus:false}), 180); },
+      queueTrack:(e)=>{
+        e.preventDefault();
+        const t=this.CATALOG.find(x=>x.id===e.currentTarget.dataset.id);
+        if(t) this.queueDownload(t);
+      },
+
+      connLabel, connDotColor,
+      statCards, winsByTier,
+      inflight, liveEmpty, liveSummary,
+      histSearch:s.histSearch, histStatus:s.histStatus,
+      onSearch:(e)=>this.setState({histSearch:e.target.value}),
+      onStatus:(e)=>this.setState({histStatus:e.target.value}),
+      historyRows, historyEmpty,
+      openDetail:(e)=>{
+        const id=e.currentTarget.dataset.id;
+        const req=this.REQUESTS.find(x=>x.id===id);
+        this.setState({selectedId:id, showLogs: !!req && req.status==='failed'});
+      },
+      closeDetail:()=>this.setState({selectedId:null}),
+      detail,
+      showLogs:s.showLogs,
+      logsChevron:s.showLogs?'hide ▴':'show ▾',
+      toggleLogs:()=>this.setState(st=>({showLogs:!st.showLogs})),
+      drawerTransform:drawerOpen?'translateX(0)':'translateX(103%)',
+      drawerScrimOpacity:drawerOpen?'1':'0', drawerScrimPE:drawerOpen?'auto':'none',
+
+      tiers,
+      trayItems, trayEmpty:trayList.length===0&&!trayOver,
+      trayCount: trayList.length===0?'empty':(trayList.length+(trayList.length===1?' source':' sources')),
+      trayBorder: trayOver?'#99a091':'#22261f', trayBg: trayOver?'rgba(233,237,227,.03)':'#0e100d',
+      saveText:sv.text, saveColor:sv.color, saveBg:sv.bg, saveBorder:sv.border, saveSpinning:sv.spin,
+      setStrategy:(e)=>{
+        const key=e.currentTarget.dataset.tier; const strat=e.currentTarget.dataset.strategy;
+        const cfg=JSON.parse(JSON.stringify(s.config));
+        const t=cfg.tiers.find(t=>String(t.tier)===String(key));
+        if(t && t.strategy!==strat){ t.strategy=strat; this.setState({config:cfg}); this.autosave(); }
+      },
+      onCardDragStart:(e)=>{
+        const name=e.currentTarget.dataset.source;
+        if(name==='ytdlp'){ e.preventDefault(); this.reject(name); return; }
+        e.dataTransfer.effectAllowed='move';
+        try{ e.dataTransfer.setData('text/plain',name); }catch(_){}
+        this.setState({dragSource:name});
+      },
+      onCardDragEnd:()=>this.clearDrag(),
+      onCardDragOver:(e)=>{
+        if(!s.dragSource) return;
+        e.preventDefault(); e.stopPropagation();
+        const t=e.currentTarget.dataset; const idx=Number(t.index);
+        const rect=e.currentTarget.getBoundingClientRect();
+        const after=(e.clientX-rect.left)>rect.width/2;
+        this.setState({dragOverTier:t.tier, dragOverIndex: after?idx+1:idx});
+      },
+      onColDragOver:(e)=>{
+        if(!s.dragSource) return;
+        e.preventDefault();
+        const key=e.currentTarget.dataset.tier;
+        if(String(s.dragOverTier)!==String(key)){
+          const col=(key==='disabled')?s.config.disabled:(s.config.tiers.find(t=>String(t.tier)===String(key))||{sources:[]}).sources;
+          this.setState({dragOverTier:key, dragOverIndex:col.length});
+        }
+      },
+      onColDrop:(e)=>{
+        e.preventDefault();
+        const key=e.currentTarget.dataset.tier; const name=s.dragSource;
+        if(!name){ this.clearDrag(); return; }
+        if(name==='ytdlp'){ this.reject(name); this.clearDrag(); return; }
+        this.moveSource(name, key, s.dragOverIndex);
+        this.clearDrag();
+      },
+
+      openPanel:(e)=>{ e.stopPropagation(); this.setState({panelSource:e.currentTarget.dataset.source, panelValues:{}, panelSave:'idle'}); },
+      closePanel:()=>this.setState({panelSource:null}),
+      onPanelField:(e)=>{
+        const key=e.currentTarget.dataset.key; const val=e.target.value;
+        this.setState(st=>({panelValues:Object.assign({},st.panelValues,{[key]:val}), panelSave:'dirty'}));
+      },
+      togglePanelEnabled:()=>{
+        const name=s.panelSource; if(name==='ytdlp') return;
+        const cfg=JSON.parse(JSON.stringify(s.config));
+        const disabled=cfg.disabled.includes(name);
+        if(disabled){ cfg.disabled=cfg.disabled.filter(x=>x!==name); cfg.tiers.find(t=>t.tier===2).sources.push(name); }
+        else { cfg.tiers.forEach(t=>t.sources=t.sources.filter(x=>x!==name)); cfg.disabled.push(name); }
+        this.setState({config:cfg}); this.autosave();
+      },
+      savePanel:()=>{
+        clearTimeout(this._panelT);
+        this.setState({panelSave:'saving'});
+        this._panelT=setTimeout(()=>{
+          this.setState({panelSave:'saved', toast:'Credentials saved — encrypted at rest', toastKind:'ok'});
+          clearTimeout(this._toastT); this._toastT=setTimeout(()=>this.setState({toast:null}),2600);
+        },800);
+      },
+      validatePanel:()=>{
+        this.setState({toast:'Testing '+s.panelSource+' credentials…', toastKind:'ok'});
+        clearTimeout(this._toastT);
+        this._toastT=setTimeout(()=>this.setState({toast:s.panelSource+' credentials valid ✓', toastKind:'ok'}),1100);
+      },
+      panel,
+      panelTransform:panelOpen?'translateX(0)':'translateX(103%)',
+      panelScrimOpacity:panelOpen?'1':'0', panelScrimPE:panelOpen?'auto':'none',
+
+      toast:s.toast,
+    };
+  }
+}
+</script>
+</body>
+</html>
