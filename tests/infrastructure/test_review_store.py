@@ -1,0 +1,137 @@
+"""RequestStore review-tab methods (migration 006): list_review / dismiss /
+queue_review_download / review_stats / get_review_candidate.
+
+Real temp-file SQLite so the migration + partial index + SQL run end to end."""
+
+from pathlib import Path
+
+from crate.application.download import DownloadReport
+from crate.domain.audio import AudioInfo, QualityVerdict
+from crate.domain.candidate import Candidate
+from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity
+from crate.infrastructure.sqlite.db import connect
+from crate.infrastructure.sqlite.store import RequestStore
+
+
+def _store(tmp_path: Path) -> RequestStore:
+    return RequestStore(connect(tmp_path / "crate.db"), requested_via="console")
+
+
+def _report(path: str, source: str, tier: int, *, lossless: bool) -> DownloadReport:
+    outcome = DownloadOutcome(Path(path), tier, source, 3.0, "q")
+    codec = "flac" if lossless else "opus"
+    info = AudioInfo(codec, codec, 44100, 2, 16 if lossless else None, 900_000, 200.0, 5_000_000)
+    verdict = QualityVerdict("lossless" if lossless else "lossy opus 160", lossless)
+    return DownloadReport("q", outcome, info, verdict, None)
+
+
+def _lossy_done(store: RequestStore, query: str) -> str:
+    rid = store.open_request(query, TrackIdentity(title=query, duration_s=200))
+    store.finish_request(rid, _report(f"/nas/{query}.opus", "ytdlp", 3, lossless=False))
+    return rid
+
+
+def _failed(store: RequestStore, query: str) -> str:
+    rid = store.open_request(query)
+    store.fail_request(rid, "all tiers missed")
+    return rid
+
+
+def _lossless_done(store: RequestStore, query: str) -> str:
+    rid = store.open_request(query)
+    store.finish_request(rid, _report(f"/nas/{query}.flac", "qobuz", 1, lossless=True))
+    return rid
+
+
+def test_migration_006_adds_dismissed_column_and_review_table(tmp_path: Path) -> None:
+    conn = connect(tmp_path / "crate.db")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(requests)")}
+    assert "dismissed" in cols
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "review_candidates" in tables
+
+
+def test_list_review_selects_failed_and_lossy_only(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    failed = _failed(store, "Failed Track")
+    lossy = _lossy_done(store, "Lossy Track")
+    _lossless_done(store, "Perfect Track")  # must NOT appear
+    store.open_request("In Flight")  # downloading, not reviewable
+
+    items = store.list_review()
+    by_id = {i["id"]: i for i in items}
+    assert set(by_id) == {failed, lossy}
+    assert by_id[failed]["kind"] == "failed" and by_id[failed]["reason"] == "all tiers missed"
+    assert by_id[lossy]["kind"] == "lossy" and by_id[lossy]["lossless"] == 0
+    assert by_id[lossy]["file_path"] == "/nas/Lossy Track.opus"
+
+
+def test_dismiss_removes_from_review(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    failed = _failed(store, "Dismiss Me")
+    assert store.dismiss_review(failed) is True
+    assert store.list_review() == []
+    assert store.dismiss_review(failed) is False  # already dismissed -> no-op
+    assert store.dismiss_review("nope") is False
+
+
+def test_review_stats_counts(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    _failed(store, "F1")
+    _failed(store, "F2")
+    _lossy_done(store, "L1")
+    stats = store.review_stats()
+    assert stats == {"needs_review": 3, "failed": 2, "lossy": 1, "resolved": 0}
+
+
+def _cand() -> Candidate:
+    return Candidate(
+        "qobuz", 1, "42", "Lossy Track", "Artist", "Album", "FLAC 24/96", True, 200, None
+    )
+
+
+def test_queue_review_download_arms_candidate_and_requeues(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    lossy = _lossy_done(store, "Lossy Track")
+    ok = store.queue_review_download(
+        lossy, _cand(), is_upgrade=True, target_path="/nas/Lossy Track.opus"
+    )
+    assert ok is True
+
+    # request flipped back to queued so the worker will claim it
+    row = store.get_request(lossy)
+    assert row is not None and row["status"] == "queued"
+
+    armed = store.get_review_candidate(lossy)
+    assert armed is not None
+    assert armed["source"] == "qobuz" and armed["ref"] == "42"
+    assert armed["is_upgrade"] == 1 and armed["target_path"] == "/nas/Lossy Track.opus"
+
+    claimed = store.claim_next()
+    assert claimed is not None and claimed["id"] == lossy
+
+
+def test_queue_review_download_unknown_request_returns_false(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert store.queue_review_download("nope", _cand(), is_upgrade=False, target_path=None) is False
+
+
+def test_review_stats_resolved_counts_completed_review_downloads(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    lossy = _lossy_done(store, "Lossy Track")
+    store.queue_review_download(
+        lossy, _cand(), is_upgrade=True, target_path="/nas/Lossy Track.opus"
+    )
+    store.claim_next()
+    # simulate the worker completing the re-download (now a lossless file)
+    store.finish_request(lossy, _report("/nas/Lossy Track.opus", "qobuz", 1, lossless=True))
+    stats = store.review_stats()
+    assert stats["resolved"] == 1
+    assert store.list_review() == []  # no longer lossy -> gone from the list
+
+
+def test_get_review_candidate_none_for_ordinary_request(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = store.enqueue("Some Track")
+    assert store.get_review_candidate(rid) is None

@@ -34,17 +34,24 @@ from crate.composition.catalog import (
     source_status,
     validate_layout,
 )
+from crate.domain.candidate import Candidate
 from crate.domain.identity import TrackIdentity
+from crate.domain.matching import candidate_match
 from crate.infrastructure.sqlite.config_store import ConfigStore
 from crate.infrastructure.sqlite.store import RequestStore
 
 SourcesFn = Callable[[], list[dict[str, Any]]]
 SearchFn = Callable[[str, int], list[dict[str, Any]]]
 BulkResolveFn = Callable[[str], ResolvedBatch]
+# Review-tab candidate sources: name -> (search_candidates, download_candidate).
+# Only the search half is used by the console; the serve worker does downloads.
+CandidateSearchFn = Callable[[str, "TrackIdentity | None"], list[Candidate]]
+CandidateSourcesFn = Callable[[], dict[str, tuple[CandidateSearchFn, Any]]]
 
 _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
 _MAX_PENDING_STATES = 32  # cap the CSRF-state set; single-user tool, bounded churn
+_REVIEW_SOURCE_TIMEOUT_S = 12.0  # per-source ceiling on the review search fan-out
 
 
 class SpotifyPort(Protocol):
@@ -77,6 +84,7 @@ def create_app(
     search: SearchFn | None = None,
     spotify: SpotifyPort | None = None,
     bulk_resolve: BulkResolveFn | None = None,
+    candidate_sources: CandidateSourcesFn | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     app = FastAPI(title="crate console", docs_url=None, redoc_url=None, openapi_url=None)
@@ -207,6 +215,62 @@ def create_app(
         if not store.requeue(request_id):
             raise HTTPException(status_code=409, detail="request is not retryable")
         return {"id": request_id, "status": "queued"}
+
+    # --- review tab (user-assisted retry / re-download) ---
+    @api.get("/review")
+    def review_list() -> dict[str, Any]:
+        return {"items": store.list_review(), "stats": store.review_stats()}
+
+    @api.post("/review/{request_id}/search")
+    async def review_search(
+        request_id: str, body: dict[str, Any] = Body(default={})
+    ) -> list[dict[str, Any]]:
+        record = store.get_request(request_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="request not found")
+        query = str(body.get("q") or "").strip() or str(record["query"])
+        want = _identity_from_record(record)
+        sources = candidate_sources() if candidate_sources is not None else {}
+
+        async def run_one(fn: CandidateSearchFn) -> list[Candidate]:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(fn, query, want), timeout=_REVIEW_SOURCE_TIMEOUT_S
+                )
+            except Exception:  # timeout / source failure -> skip this source
+                return []
+
+        results = await asyncio.gather(*(run_one(s[0]) for s in sources.values()))
+        cands = [c for lst in results for c in lst]
+        rows = [
+            _candidate_row(i, c, candidate_match(c.title, c.artist, c.duration_s, want))
+            for i, c in enumerate(cands)
+        ]
+        rows.sort(key=lambda r: r["match"], reverse=True)
+        return rows
+
+    @api.post("/review/{request_id}/download")
+    def review_download(request_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        record = store.get_request(request_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="request not found")
+        candidate = _candidate_from_body(body.get("candidate"))
+        if candidate is None:
+            raise HTTPException(status_code=400, detail="candidate required")
+        download = record.get("download") or {}
+        is_upgrade = record["status"] == "done" and int(download.get("lossless") or 0) == 0
+        target_path = str(download["path"]) if is_upgrade and download.get("path") else None
+        if not store.queue_review_download(
+            request_id, candidate, is_upgrade=is_upgrade, target_path=target_path
+        ):
+            raise HTTPException(status_code=404, detail="request not found")
+        return {"id": request_id, "status": "queued", "source": candidate.source}
+
+    @api.post("/review/{request_id}/dismiss")
+    def review_dismiss(request_id: str) -> dict[str, Any]:
+        if not store.dismiss_review(request_id):
+            raise HTTPException(status_code=404, detail="request not found or already dismissed")
+        return {"id": request_id, "dismissed": True}
 
     @api.get("/config")
     def get_config() -> dict[str, Any]:
@@ -339,6 +403,62 @@ def _clean(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _identity_from_record(record: dict[str, Any]) -> TrackIdentity:
+    """The wanted track identity from a stored request row (for match scoring)."""
+    duration = record.get("duration_s")
+    return TrackIdentity(
+        artist=_clean(record.get("artist")),
+        title=_clean(record.get("title")),
+        isrc=_clean(record.get("isrc")),
+        duration_s=int(duration) if duration is not None else None,
+    )
+
+
+def _candidate_row(index: int, c: Candidate, match: int) -> dict[str, Any]:
+    """Serialise a candidate + its match % for the review UI. ``id`` is a stable
+    per-response handle for radio selection; the full candidate is echoed back on
+    download so the API caches nothing."""
+    return {
+        "id": f"{c.source}-{index}",
+        "source": c.source,
+        "tier": c.tier,
+        "ref": c.ref,
+        "title": c.title,
+        "artist": c.artist,
+        "album": c.album,
+        "quality_label": c.quality_label,
+        "lossless": c.lossless,
+        "duration_s": c.duration_s,
+        "size_bytes": c.size_bytes,
+        "match": match,
+    }
+
+
+def _candidate_from_body(body: Any) -> Candidate | None:
+    """Rebuild a :class:`Candidate` from the download payload the client echoes
+    back. Returns ``None`` when the essential fields (source/ref) are missing."""
+    if not isinstance(body, dict):
+        return None
+    source = _clean(body.get("source"))
+    ref = _clean(body.get("ref"))
+    if not source or not ref:
+        return None
+    duration = body.get("duration_s")
+    size = body.get("size_bytes")
+    return Candidate(
+        source=source,
+        tier=int(body.get("tier") or 2),
+        ref=ref,
+        title=str(body.get("title") or ""),
+        artist=str(body.get("artist") or ""),
+        album=_clean(body.get("album")),
+        quality_label=str(body.get("quality_label") or ""),
+        lossless=bool(body.get("lossless")),
+        duration_s=int(duration) if duration is not None else None,
+        size_bytes=int(size) if size is not None else None,
+    )
 
 
 def _live_frame(store: RequestStore) -> str:

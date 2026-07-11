@@ -59,10 +59,13 @@ max-args = 9
 # Only domain/ + ports/ are forbidden from importing outward. Application wires
 # concretes today (ports/composition refactor is deferred, ADR-0017).
 "src/crate/application/**" = ["TID251"]
+# review re-download injects many collaborators (download/probe/finalize/replace/
+# recorder) the same way dedup does — allow the wide keyword-only signature.
+"src/crate/application/review.py" = ["TID251", "PLR0913"]
 "src/crate/adapters/**" = ["TID251"]
 # FastAPI idioms: Depends/Body/Query in arg defaults (B008); route registration
 # in one factory is inherently long (PLR0915).
-"src/crate/adapters/inbound/ops_api.py" = ["TID251", "B008", "PLR0915"]
+"src/crate/adapters/inbound/ops_api.py" = ["TID251", "B008", "PLR0915", "PLR0913"]
 "src/crate/infrastructure/**" = ["TID251"]
 "src/crate/composition/**" = ["TID251", "PLC0415"]
 "src/crate/cli/**" = ["TID251", "PLC0415"]
