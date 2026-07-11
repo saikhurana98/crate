@@ -360,6 +360,7 @@ async function downloadCand(id: string): Promise<void> {
   const cands = state.reviewCands[id] ?? [];
   const cand = cands.find((c) => c.id === state.reviewSel[id]);
   if (!cand) return;
+  stopClip(); // stop the audition once the pick is committed
   state.reviewLastCand[id] = cand; // remember it so a needs_confirm item can force-resend
   state.reviewDownloading[id] = true;
   render();
@@ -413,6 +414,7 @@ async function replaceAnyway(id: string): Promise<void> {
     toast("No candidate to replace with — search and pick one first");
     return;
   }
+  stopClip(); // stop the audition once the pick is committed
   state.reviewDownloading[id] = true;
   render();
   try {
@@ -493,6 +495,16 @@ function seekClip(key: string, frac: number): void {
   a.currentTime = Math.max(0, Math.min(1, frac)) * a.duration;
   playPos = a.currentTime;
   render();
+}
+
+// Halt whatever clip is sounding — called when a re-download is requested so the
+// audition doesn't keep playing after the decision is made.
+function stopClip(): void {
+  if (!audioEl) return;
+  audioEl.pause();
+  playKey = null;
+  playPos = 0;
+  playPaused = true;
 }
 
 // ---------- bulk downloads ----------
@@ -1833,7 +1845,21 @@ function fingerprintBlock(item: ReviewItem): string {
       ? `<span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>identifying…`
       : "Identify"
   }</button>`;
-  return `<div style="margin-bottom:12px">${btn}${hintLine}</div>`;
+  // When the fingerprint named the track, offer to re-search using that term —
+  // the fastest way to find the right recording when the original query was off.
+  const searchHint = title
+    ? `<button data-act="searchHint" data-id="${esc(id)}" style="display:inline-flex;align-items:center;gap:6px;background:none;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:7px 13px;margin-left:8px;cursor:pointer;transition:border-color .15s,color .15s">search this →</button>`
+    : "";
+  return `<div style="margin-bottom:12px">${btn}${searchHint}${hintLine}</div>`;
+}
+
+// The re-search term the fingerprint hint suggests ("Artist Title"), or null.
+function hintTerm(item: ReviewItem): string | null {
+  const hint = state.reviewHint[item.id];
+  const artist = hint?.artist ?? item.acoustid_artist;
+  const title = hint?.title ?? item.acoustid_title;
+  if (!title) return null;
+  return `${artist ? `${artist} ` : ""}${title}`.trim();
 }
 
 // Provenance + chronology for a resolve decision: who requested the song, the
@@ -2150,6 +2176,15 @@ function bindEvents(): void {
       state.reviewSel[el.dataset.rid!] = el.dataset.cid!;
       render();
     } else if (act === "rescanReview") void rescanReview(el.dataset.id!);
+    else if (act === "searchHint") {
+      const id = el.dataset.id!;
+      const item = state.reviewItems.find((i) => i.id === id);
+      const term = item ? hintTerm(item) : null;
+      if (term) {
+        state.reviewQ[id] = term; // seed the search box with the fingerprint term
+        void rescanReview(id);
+      }
+    }
     else if (act === "downloadCand") void downloadCand(el.dataset.id!);
     else if (act === "dismissReview") void dismissReview(el.dataset.id!);
     else if (act === "identifyReview") void identifyReview(el.dataset.id!);
@@ -2206,6 +2241,15 @@ function bindEvents(): void {
       state.bulkText = el.value; // capture without re-render so the textarea isn't clobbered
     } else if (el.dataset.inp === "reviewq") {
       state.reviewQ[el.dataset.id!] = el.value; // capture without re-render (keep focus)
+    }
+  });
+
+  root.addEventListener("keydown", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.dataset.inp === "reviewq" && (e as KeyboardEvent).key === "Enter") {
+      e.preventDefault();
+      state.reviewQ[el.dataset.id!] = el.value; // ensure the latest value is used
+      void rescanReview(el.dataset.id!);
     }
   });
 
