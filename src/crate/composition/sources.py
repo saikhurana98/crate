@@ -50,6 +50,26 @@ def _strategy(tier_num: int) -> MuxStrategy:
     return MuxStrategy.UNIFORM if value in ("uniform", "distribute") else MuxStrategy.ALL
 
 
+_amz_lock = threading.Lock()
+_amz_holder: dict[str, Any] = {}  # holder (not a global rebind) for the singleton
+
+
+def _shared_amz() -> Any:  # pragma: no cover - IO wiring
+    """Process-wide singleton :class:`AmzSession` — one headed browser shared by
+    every monochrome wiring (each of the N queue workers, the review-candidate
+    path, and every config hot-reload rebuild). Constructing one per build leaked
+    a ~2 GB Chromium each time, blowing the serve container past its memory limit;
+    the session marshals all Playwright work to its own thread so sharing is safe."""
+    with _amz_lock:
+        session = _amz_holder.get("session")
+        if session is None:
+            from crate.infrastructure.browser.amz_session import AmzSession
+
+            session = AmzSession()
+            _amz_holder["session"] = session
+        return session
+
+
 def _qobuz_source() -> SourceEntry:  # pragma: no cover - IO wiring
     from crate.adapters.sources.qobuz import qobuz_download
     from crate.infrastructure.qobuz.client import QobuzClient
@@ -74,9 +94,7 @@ def _qobuz_source() -> SourceEntry:  # pragma: no cover - IO wiring
 
 
 def _monochrome_source() -> SourceEntry:  # pragma: no cover - IO wiring
-    from crate.infrastructure.browser.amz_session import AmzSession
-
-    session = AmzSession()
+    session = _shared_amz()
 
     def search_json(query: str) -> Any:
         return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
@@ -232,9 +250,8 @@ def _qobuz_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
 
 def _monochrome_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
     from crate.adapters.sources import monochrome
-    from crate.infrastructure.browser.amz_session import AmzSession
 
-    session = AmzSession()
+    session = _shared_amz()
 
     def search_json(query: str) -> Any:
         return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
