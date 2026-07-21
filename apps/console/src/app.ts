@@ -119,6 +119,7 @@ interface State {
   panelSource: string | null;
   panelValues: Record<string, string>;
   panelSave: "idle" | "dirty" | "saving" | "saved";
+  panelValidate: Record<string, { status: "testing" | "ok" | "fail"; detail: string }>; // source -> cred-test result
   drag: { source: string | null; overTier: string | null; overIndex: number | null };
   rejectShake: string | null;
   saveState: SaveState;
@@ -173,6 +174,7 @@ const state: State = {
   panelSource: null,
   panelValues: {},
   panelSave: "idle",
+  panelValidate: {},
   drag: { source: null, overTier: null, overIndex: null },
   rejectShake: null,
   saveState: "idle",
@@ -1172,6 +1174,29 @@ function drawerHtml(): string {
   return sheetChrome(inner, open, "closeDetail", 50, "min(470px,94vw)");
 }
 
+// The "Test" button, reflecting an in-flight credential check.
+function validateButton(name: string): string {
+  const testing = state.panelValidate[name]?.status === "testing";
+  return `<button class="ghost" data-act="validatePanel" ${testing ? "disabled" : ""} style="background:#181c17;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:600 13px 'Instrument Sans';padding:12px 16px;cursor:${testing ? "default" : "pointer"};display:inline-flex;align-items:center;gap:8px">${
+    testing
+      ? `<span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>Testing…`
+      : "Test"
+  }</button>`;
+}
+
+// Result of the last credential test for this source (downloads a known song).
+function validationRow(name: string): string {
+  const v = state.panelValidate[name];
+  if (!v) return "";
+  if (v.status === "testing")
+    return `<div style="font:400 10.5px 'JetBrains Mono';color:${C.muted};display:flex;align-items:center;gap:8px"><span style="width:11px;height:11px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>${esc(v.detail)}</div>`;
+  const ok = v.status === "ok";
+  const col = ok ? "#9fce8a" : "#ff6b58";
+  const bg = ok ? "rgba(159,206,138,.08)" : "rgba(255,107,88,.08)";
+  const bd = ok ? "rgba(159,206,138,.3)" : "rgba(255,107,88,.3)";
+  return `<div style="display:flex;align-items:flex-start;gap:8px;background:${bg};border:1px solid ${bd};border-radius:12px;padding:10px 12px;font:400 11px 'JetBrains Mono';color:#e9ede3;line-height:1.5"><span style="color:${col};flex-shrink:0;font-weight:700">${ok ? "✓" : "✗"}</span><span style="word-break:break-word">${esc(v.detail)}</span></div>`;
+}
+
 function panelHtml(): string {
   const name = state.panelSource;
   const open = !!name;
@@ -1229,9 +1254,12 @@ function panelHtml(): string {
       ${settings ? `<div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin-bottom:11px">Settings</div>${settings}` : ""}
       ${creds ? `<div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin:4px 0 11px;display:flex;align-items:center;gap:8px">Credentials <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#464d40">· encrypted at rest, never displayed</span></div>${creds}` : ""}
     </div>
-    <div style="padding:16px 22px;border-top:1px solid #1d211c;display:flex;align-items:center;gap:12px">
-      <button data-act="savePanel" ${saving ? "disabled" : ""} style="flex:1;background:${saved ? "rgba(233,237,227,.14)" : saving ? "#272c25" : "#e9ede3"};border:none;border-radius:14px;color:${saved ? "#e9ede3" : saving ? C.muted : "#14170f"};font:600 13px 'Instrument Sans';padding:12px;cursor:${saving ? "default" : "pointer"};transition:.15s;display:flex;align-items:center;justify-content:center;gap:8px">${saving ? "Saving…" : saved ? "Saved ✓" : dirty ? "Save changes" : "Save"}</button>
-      ${def.validate ? `<button class="ghost" data-act="validatePanel" style="background:#181c17;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:600 13px 'Instrument Sans';padding:12px 16px;cursor:pointer">Test</button>` : ""}
+    <div style="padding:16px 22px;border-top:1px solid #1d211c;display:flex;flex-direction:column;gap:11px">
+      ${validationRow(name)}
+      <div style="display:flex;align-items:center;gap:12px">
+        <button data-act="savePanel" ${saving ? "disabled" : ""} style="flex:1;background:${saved ? "rgba(233,237,227,.14)" : saving ? "#272c25" : "#e9ede3"};border:none;border-radius:14px;color:${saved ? "#e9ede3" : saving ? C.muted : "#14170f"};font:600 13px 'Instrument Sans';padding:12px;cursor:${saving ? "default" : "pointer"};transition:.15s;display:flex;align-items:center;justify-content:center;gap:8px">${saving ? "Saving…" : saved ? "Saved ✓" : dirty ? "Save changes" : "Save"}</button>
+        ${def.validate ? validateButton(name) : ""}
+      </div>
     </div>`;
   }
   return sheetChrome(inner, open, "closePanel", 52, "min(440px,94vw)");
@@ -2105,6 +2133,23 @@ async function savePanel(): Promise<void> {
   }
   render();
 }
+// Test credentials by downloading a known song through this source (server-side).
+async function validatePanel(name: string): Promise<void> {
+  state.panelValidate[name] = { status: "testing", detail: "downloading a test track…" };
+  render();
+  try {
+    const r = await api.validateSource(name);
+    const q = r.quality_label ? ` · ${r.quality_label}` : "";
+    const t = r.elapsed_s != null ? ` · ${r.elapsed_s}s` : "";
+    state.panelValidate[name] = {
+      status: r.ok ? "ok" : "fail",
+      detail: `${r.detail}${r.ok ? q + t : ""}`,
+    };
+  } catch (err) {
+    state.panelValidate[name] = { status: "fail", detail: (err as Error).message };
+  }
+  render();
+}
 async function togglePanelEnabled(): Promise<void> {
   const name = state.panelSource;
   if (!name || name === "ytdlp") return;
@@ -2209,7 +2254,9 @@ function bindEvents(): void {
       void batchAction(() => api.pauseBatch(el.dataset.id!, el.dataset.paused === "1"));
     else if (act === "cancelBatch") void batchAction(() => api.cancelBatch(el.dataset.id!));
     else if (act === "retryTrack") void batchAction(() => api.retry(el.dataset.id!));
-    else if (act === "validatePanel") toast(`${state.panelSource} — validation not wired yet`);
+    else if (act === "validatePanel") {
+      if (state.panelSource) void validatePanel(state.panelSource);
+    }
   });
 
   // queue from the search dropdown must fire before focusout closes it

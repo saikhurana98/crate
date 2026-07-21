@@ -56,6 +56,8 @@ IdentifyFn = Callable[[Path], "IdentityHint | None"]
 # client-supplied URL — the SSRF boundary for the audition endpoint.
 StreamResolver = Callable[[str], str]
 CandidateStreamersFn = Callable[[], dict[str, StreamResolver]]
+# Credential test: source name -> {ok, detail, quality_label, elapsed_s}.
+SourceValidatorFn = Callable[[str], dict[str, Any]]
 
 _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
@@ -96,6 +98,7 @@ def create_app(
     candidate_sources: CandidateSourcesFn | None = None,
     identify_hint: IdentifyFn | None = None,
     candidate_streamers: CandidateStreamersFn | None = None,
+    source_validator: SourceValidatorFn | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     app = FastAPI(title="crate console", docs_url=None, redoc_url=None, openapi_url=None)
@@ -412,6 +415,19 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         version = cfg.put_layout(layout)
         return {**layout, "version": version}
+
+    @api.post("/sources/{name}/validate")
+    async def validate_source_creds(name: str) -> dict[str, Any]:
+        """Download a known song through this source to test its credentials.
+
+        Offloaded off the event loop — it does real network IO (and, for a browser
+        source, a headed-Chromium resolve). Never raises for a bad credential; a
+        failure comes back as ``{ok: false, detail: ...}``."""
+        if name not in KNOWN:
+            raise HTTPException(status_code=404, detail="unknown source")
+        if source_validator is None:
+            raise HTTPException(status_code=503, detail="validation not available")
+        return await asyncio.to_thread(source_validator, name)
 
     @api.put("/sources/{name}")
     def put_source(name: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:

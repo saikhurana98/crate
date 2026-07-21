@@ -282,6 +282,12 @@ export const api = {
     send<Layout>("PUT", "/api/config", layout),
   putSource: (name: string, body: SourceUpdate) =>
     send<Source>("PUT", `/api/sources/${encodeURIComponent(name)}`, body),
+  validateSource: (name: string) =>
+    send<{ ok: boolean; detail: string; quality_label: string | null; elapsed_s: number | null }>(
+      "POST",
+      `/api/sources/${encodeURIComponent(name)}/validate`,
+      {},
+    ),
   search: (q: string, signal?: AbortSignal) =>
     get<SpotifyTrack[]>(`/api/search?q=${encodeURIComponent(q)}&limit=20`, signal),
   enqueue: (payload: EnqueuePayload) => send<Enqueued>("POST", "/api/download", payload),
