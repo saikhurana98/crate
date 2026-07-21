@@ -15,6 +15,7 @@ from crate.adapters.sources.ytdlp import (
     extract_path,
     parse_candidates,
     parse_stream_url,
+    search_candidates,
     select_candidate,
 )
 
@@ -290,3 +291,36 @@ def test_download_raises_runtimeerror_on_timeout() -> None:
 
     with pytest.raises(RuntimeError, match="yt-dlp timed out"):
         download("anything", Path("/tmp/out"), runner=timing_out_runner, clock=lambda: 0.0)
+
+
+def test_search_candidates_salvages_results_on_nonzero_exit() -> None:
+    # yt-dlp exits nonzero when one ytsearch hit is unavailable, but still printed
+    # the good rows to stdout — they must not be discarded.
+    stdout = "c1\tDaft Punk - Get Lucky\tDaft Punk\t248\n"
+
+    def runner(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        return _cp(1, stdout=stdout, stderr="ERROR: [youtube] X: This video is not available")
+
+    cands = search_candidates("Daft Punk Get Lucky", runner=runner)
+    assert [c.ref for c in cands] == ["c1"]
+    assert cands[0].title == "Daft Punk - Get Lucky"
+
+
+def test_download_uses_search_results_despite_nonzero_search_exit() -> None:
+    search_out = "c1\tDaft Punk - Get Lucky\tDaft Punk\t248\n"
+    seen: list[list[str]] = []
+
+    def runner(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        if "--skip-download" in cmd:  # the ytsearch5 probe fails but prints results
+            return _cp(1, stdout=search_out, stderr="ERROR: one hit unavailable")
+        return _cp(0, stdout="/tmp/out/Daft Punk - Get Lucky [c1].opus\n")
+
+    times = iter([100.0, 104.0])
+    outcome = download(
+        "Daft Punk Get Lucky", Path("/tmp/out"), runner=runner, clock=lambda: next(times)
+    )
+    assert (
+        outcome.title == "Daft Punk - Get Lucky"
+    )  # salvaged candidate, not the ytsearch1 fallback
+    assert any("watch?v=c1" in arg for cmd in seen for arg in cmd)  # downloaded by id
