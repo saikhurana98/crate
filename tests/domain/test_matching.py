@@ -46,9 +46,26 @@ def test_title_matches_accepts_when_title_in_query() -> None:
     assert title_matches("I Hate Luv Storys", "I Hate Luv Storys Vishal-Shekhar") is True
 
 
+def test_title_matches_accepts_verbose_source_title_of_right_song() -> None:
+    # YouTube-style: featured artists + decorations inflate the title, but every
+    # query token is present -> it's the right song and must pass.
+    assert (
+        title_matches(
+            "Daft Punk - Get Lucky (Official Audio) ft. Pharrell Williams, Nile Rodgers",
+            "Daft Punk Get Lucky",
+        )
+        is True
+    )
+
+
 def test_title_matches_rejects_different_song() -> None:
     assert title_matches("Channa Mereya", "Marjaani Pritam") is False
     assert title_matches("BENNY", "Besharmi Ki Height") is False
+    # A different, equally-verbose song by the same artist: the query's title
+    # words ("get lucky") are absent, so it's still rejected.
+    assert (
+        title_matches("Daft Punk - Instant Crush (Official Video)", "Daft Punk Get Lucky") is False
+    )
 
 
 def test_title_matches_empty_title_is_false() -> None:

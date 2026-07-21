@@ -93,10 +93,23 @@ def _overlap(text: str, query_tokens: set[str]) -> float:
 
 
 def title_matches(title: str, query: str, threshold: float = 0.6) -> bool:
-    """True if most of the candidate *title*'s significant tokens appear in the query."""
-    if not norm_tokens(title):
+    """True if the candidate *title* and the query mostly share significant tokens.
+
+    Bidirectional: a match counts when *either* most of the title's tokens are in
+    the query (a clean ``"Get Lucky"`` under a longer query) *or* most of the
+    query's tokens are in the title (a verbose source title of the right song —
+    ``"Daft Punk - Get Lucky (Official Audio) ft. Pharrell Williams, Nile
+    Rodgers"`` — where featured-artist names inflate the title). A *different*
+    song still fails, because its title lacks the query's actual title words; the
+    artist/duration gates downstream do the finer discrimination."""
+    title_tokens = norm_tokens(title)
+    query_tokens = norm_tokens(query)
+    if not title_tokens or not query_tokens:
         return False
-    return _overlap(title, set(norm_tokens(query))) >= threshold
+    query_set, title_set = set(query_tokens), set(title_tokens)
+    title_in_query = sum(1 for w in title_tokens if w in query_set) / len(title_tokens)
+    query_in_title = sum(1 for w in query_tokens if w in title_set) / len(query_tokens)
+    return title_in_query >= threshold or query_in_title >= threshold
 
 
 def artist_matches(candidate_artist: str, want_artist: str, threshold: float = 0.5) -> bool:
