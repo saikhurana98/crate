@@ -110,13 +110,12 @@ class AmzSession:  # pragma: no cover - browser I/O
         self._pw = sync_playwright().start()
         # In a container the headed browser runs under Xvfb and, as an unprivileged
         # user, needs --no-sandbox (Chrome's setuid sandbox can't init there). Gated
-        # on an env flag so a local desktop install keeps the hardened default. The
-        # gpu/extension flags shave memory off the (single) resident browser.
-        launch_args = [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-gpu",
-            "--disable-extensions",
-        ]
+        # on an env flag so a local desktop install keeps the hardened default.
+        # NOTE: keep this arg list minimal — Cloudflare Turnstile is fingerprint
+        # sensitive and extra flags (tried --disable-gpu/--disable-extensions) made
+        # it return ERR at solve time. The singleton browser is the memory win; the
+        # launch args stay exactly as the known-good headed profile.
+        launch_args = ["--disable-blink-features=AutomationControlled"]
         if os.environ.get("CRATE_BROWSER_NO_SANDBOX"):
             launch_args += ["--no-sandbox", "--disable-dev-shm-usage"]
         self._browser = self._pw.chromium.launch(
