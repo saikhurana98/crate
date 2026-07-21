@@ -395,3 +395,33 @@ def test_batch_pause_cancel_and_retry(tmp_path: Path) -> None:
     assert client.post("/api/batches/nope/cancel").status_code == 404
     assert client.get("/api/batches/nope").status_code == 404
     assert client.post("/api/requests/nope/retry").status_code == 409
+
+
+def test_validate_source_returns_validator_result(tmp_path: Path) -> None:
+    seen: dict[str, str] = {}
+
+    def validator(name: str) -> dict[str, object]:
+        seen["name"] = name
+        return {
+            "ok": True,
+            "detail": "downloaded “Get Lucky” — flac",
+            "quality_label": "FLAC 16/44",
+        }
+
+    client = TestClient(create_app(_seeded_store(tmp_path), source_validator=validator))
+    r = client.post("/api/sources/qobuz/validate")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True and "Get Lucky" in r.json()["detail"]
+    assert seen["name"] == "qobuz"
+
+
+def test_validate_source_unknown_source_404(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(_seeded_store(tmp_path), source_validator=lambda n: {"ok": True})
+    )
+    assert client.post("/api/sources/nope/validate").status_code == 404
+
+
+def test_validate_source_503_without_validator(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    assert client.post("/api/sources/qobuz/validate").status_code == 503

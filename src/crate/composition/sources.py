@@ -934,6 +934,40 @@ def build_candidate_streamers() -> dict[str, Callable[[str], str]]:  # pragma: n
     return streamers
 
 
+def build_source_validator() -> Callable[[str], dict[str, Any]]:  # pragma: no cover - IO wiring
+    """``name -> {ok, detail, quality_label, elapsed_s}``: download a known song
+    through a source to prove its credentials. Reuses the review candidate halves
+    (search + download-by-ref), so it reaches the cred-gated resolve (a stale token
+    fails here even though a bare search passes). Sources without a candidate path
+    (soulseek/telegram) report that a credential test isn't available for them."""
+    import tempfile
+
+    from crate.application.validate import validate_source
+    from crate.infrastructure.audio.probe import probe
+
+    out_dir = Path(tempfile.gettempdir()) / "crate-validate"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def validate(name: str) -> dict[str, Any]:
+        entry = build_candidate_sources().get(name)
+        if entry is None:
+            return {
+                "ok": False,
+                "detail": "credential test not available for this source",
+                "quality_label": None,
+                "elapsed_s": None,
+            }
+        res = validate_source(search=entry[0], download=entry[1], prober=probe, out_dir=out_dir)
+        return {
+            "ok": res.ok,
+            "detail": res.detail,
+            "quality_label": res.quality_label,
+            "elapsed_s": res.elapsed_s,
+        }
+
+    return validate
+
+
 def build_console_app() -> Any:  # pragma: no cover - IO wiring
     """FastAPI app for `crate console`: a read-only view over the history DB."""
     from crate.adapters.inbound.ops_api import create_app
@@ -955,4 +989,5 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         candidate_sources=build_candidate_sources,
         identify_hint=build_identifier(),
         candidate_streamers=build_candidate_streamers,
+        source_validator=build_source_validator(),
     )
