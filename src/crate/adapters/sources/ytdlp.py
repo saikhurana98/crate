@@ -287,8 +287,9 @@ def download(
         return _fallback_download(query, out_dir, runner=runner, clock=clock, start=start)
 
     search = _run(runner, build_search_command(query), _SEARCH_TIMEOUT_S)
-    if search.returncode != 0:
-        return _fallback_download(query, out_dir, runner=runner, clock=clock, start=start)
+    # yt-dlp exits nonzero if ANY ytsearch hit is unavailable, yet still prints the
+    # good ones — so parse stdout regardless of exit code and only fall back when
+    # nothing parses. Gating on returncode threw away otherwise-usable results.
     candidates = parse_candidates(search.stdout)
     if not candidates:
         return _fallback_download(query, out_dir, runner=runner, clock=clock, start=start)
@@ -314,11 +315,11 @@ def search_candidates(
 
     Runs the metadata-only probe (already ``ytsearch5``), reuses ``parse_candidates``
     + the shared title gate, and returns them all (no ``select_candidate`` collapse);
-    ``ref`` is the YouTube video id for later download-by-id. A search failure
-    yields an empty list so the review fan-out simply skips this source."""
+    ``ref`` is the YouTube video id for later download-by-id. yt-dlp exits nonzero
+    when ANY ytsearch hit is unavailable, yet still prints the good ones, so we
+    parse stdout regardless of exit code (an unparseable/empty result yields an
+    empty list, so the review fan-out simply skips this source)."""
     search = _run(runner, build_search_command(query), _SEARCH_TIMEOUT_S)
-    if search.returncode != 0:
-        return []
     return [
         Candidate(
             source="ytdlp",
