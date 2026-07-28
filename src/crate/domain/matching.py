@@ -84,6 +84,11 @@ _FILLER = frozenset(
 # are not stripped, only counted when the query didn't ask for them.
 _VERSION_MARKERS = frozenset(
     {
+        "vs",  # "A vs. B" — the usual mashup signature, no "mashup" word in sight
+        "versus",
+        "medley",
+        "megamix",
+        "transition",
         "edit",
         "edits",
         "remix",

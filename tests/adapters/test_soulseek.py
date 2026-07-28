@@ -171,6 +171,39 @@ def test_rank_demotes_an_unrequested_bootleg_edit() -> None:
     assert rank_files([bootleg, original], "Sean Paul Temperature")[0] is original
 
 
+def test_rank_demotes_a_mashup_carrying_a_second_song() -> None:
+    # THE REGRESSION: this mashup beat the original live. It has NO version-marker
+    # word beyond "vs", covers every query token, and is a big FLAC — so it has to
+    # lose on carrying a whole second song's worth of tokens.
+    mashup = _slsk(
+        "C&C Music Factory vs. Sean Paul - Gonna Make You Sweat "
+        "(Everybody Dance Now) vs. Temperature.flac",
+        size=60_000_000,
+        depth=16,
+        rate=44100,
+    )
+    original = _slsk("Sean Paul - Temperature.flac", size=23_000_000, depth=16, rate=44100)
+    assert rank_files([mashup, original], "Sean Paul Temperature")[0] is original
+
+
+def test_rank_decorated_original_still_beats_a_mashup() -> None:
+    # decoration adds a few tokens, a second song adds many — the decorated
+    # original must still win
+    mashup = _slsk(
+        "C&C Music Factory vs. Sean Paul - Gonna Make You Sweat vs. Temperature.flac",
+        size=60_000_000,
+        depth=16,
+        rate=44100,
+    )
+    decorated = _slsk(
+        "01. Sean Paul - Temperature (Album Version) [2005].flac",
+        size=23_000_000,
+        depth=16,
+        rate=44100,
+    )
+    assert rank_files([mashup, decorated], "Sean Paul Temperature")[0] is decorated
+
+
 def test_rank_keeps_a_bootleg_when_it_is_all_there_is() -> None:
     # demotion, not exclusion — a bootleg still beats returning nothing
     bootleg = _slsk("Sean Paul - Temperature (Club Edit).flac", depth=16, rate=44100)
