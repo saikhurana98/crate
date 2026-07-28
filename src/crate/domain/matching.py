@@ -95,21 +95,28 @@ def _overlap(text: str, query_tokens: set[str]) -> float:
 def title_matches(title: str, query: str, threshold: float = 0.6) -> bool:
     """True if the candidate *title* and the query mostly share significant tokens.
 
-    Bidirectional: a match counts when *either* most of the title's tokens are in
-    the query (a clean ``"Get Lucky"`` under a longer query) *or* most of the
-    query's tokens are in the title (a verbose source title of the right song —
-    ``"Daft Punk - Get Lucky (Official Audio) ft. Pharrell Williams, Nile
-    Rodgers"`` — where featured-artist names inflate the title). A *different*
-    song still fails, because its title lacks the query's actual title words; the
-    artist/duration gates downstream do the finer discrimination."""
+    Bidirectional, but the two directions are not symmetric:
+
+    * **Title ⊆ query** (fractional, ``threshold``): most of the title's tokens
+      appear in the query — a clean ``"Get Lucky"`` under a longer query.
+    * **Query ⊆ title** (*complete*, not fractional): every query token appears
+      in the title. This is what lets a verbose source title of the right song
+      through — ``"Daft Punk - Get Lucky (Official Audio) ft. Pharrell Williams,
+      Nile Rodgers"`` — where featured artists inflate the title.
+
+    The second direction demands *full* coverage because a query usually carries
+    the artist as well as the title, and an artist name alone can supply most of
+    the query's tokens. Accepting a fraction let a different song by the right
+    artist through: ``"Sean Paul - Get Busy"`` scored 2/3 against the query
+    ``"Sean Paul Temperature"`` and passed. Requiring every token means the
+    actual title words must be present, which is the whole point of this gate."""
     title_tokens = norm_tokens(title)
     query_tokens = norm_tokens(query)
     if not title_tokens or not query_tokens:
         return False
     query_set, title_set = set(query_tokens), set(title_tokens)
     title_in_query = sum(1 for w in title_tokens if w in query_set) / len(title_tokens)
-    query_in_title = sum(1 for w in query_tokens if w in title_set) / len(query_tokens)
-    return title_in_query >= threshold or query_in_title >= threshold
+    return title_in_query >= threshold or query_set <= title_set
 
 
 def artist_matches(candidate_artist: str, want_artist: str, threshold: float = 0.5) -> bool:
