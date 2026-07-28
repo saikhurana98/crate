@@ -29,6 +29,7 @@ from crate.domain.matching import (
     match_score,
     norm_tokens,
     title_matches,
+    unwanted_version_markers,
 )
 
 Search = Callable[[str], list[dict[str, Any]]]  # query -> slskd response items
@@ -132,6 +133,10 @@ def rank_files(
     present in the filename — so a same-title file by the wrong artist still
     loses to the requested one, while release decoration (``(Album Version)``,
     ``[2005]``, a track number) no longer penalises an otherwise ideal file.
+    Because coverage is blind to *extra* words by design, an unrequested
+    edit/remix/bootleg covers the query just as well as the original; those are
+    demoted next (see :func:`unwanted_version_markers`).
+
     Within a coverage tier the order is what a Nicotine+ user would pick by hand:
     format (tagged lossless > raw PCM > lossy), then bit depth, sample rate and
     file size (a bigger file of the same runtime is the better rip), then a free
@@ -168,6 +173,7 @@ def rank_files(
         matching,
         key=lambda c: (
             coverage(c),
+            -unwanted_version_markers(Path(_basename(c.filename)).stem, score_query),
             format_rank(c),
             c.bit_depth or 0,
             c.sample_rate or 0,

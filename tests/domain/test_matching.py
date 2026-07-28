@@ -7,6 +7,7 @@ from crate.domain.matching import (
     match_score,
     norm_tokens,
     title_matches,
+    unwanted_version_markers,
 )
 
 
@@ -82,6 +83,26 @@ def test_title_matches_rejects_different_song() -> None:
     assert (
         title_matches("Daft Punk - Instant Crush (Official Video)", "Daft Punk Get Lucky") is False
     )
+
+
+def test_unwanted_version_markers_flags_an_unrequested_edit() -> None:
+    # the real incident: this bootleg covers every query token, so coverage alone
+    # ranked it level with the original single and its FLAC-ness won.
+    bootleg = "MICHAELBRAILEY - Edits 2016 - 02 SHALT x Sean Paul - Temperature -ULTIMATE Edit-"
+    assert unwanted_version_markers(bootleg, "Sean Paul Temperature") > 0
+    assert unwanted_version_markers("Sean Paul - Temperature", "Sean Paul Temperature") == 0
+
+
+def test_unwanted_version_markers_ignores_markers_the_query_asked_for() -> None:
+    # asking for a remix must not demote remixes
+    assert unwanted_version_markers("Temperature (Club Remix)", "Sean Paul Temperature Remix") == 0
+    assert unwanted_version_markers("Temperature (Live)", "Sean Paul Temperature Live") == 0
+
+
+def test_unwanted_version_markers_ignores_plain_release_decoration() -> None:
+    # decoration is not a version marker — it must not be demoted
+    title = "01. Sean Paul - Temperature (Album Version) [2005 Dutty Rock]"
+    assert unwanted_version_markers(title, "Sean Paul Temperature") == 0
 
 
 def test_title_matches_empty_title_is_false() -> None:
