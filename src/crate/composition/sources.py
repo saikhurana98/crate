@@ -976,9 +976,17 @@ def build_source_validator() -> Callable[
     out_dir = Path(tempfile.gettempdir()) / "crate-validate"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    def fail(detail: str) -> dict[str, Any]:
+        return {"ok": False, "detail": detail, "quality_label": None, "elapsed_s": None}
+
     def validate(name: str, query: str | None = None) -> dict[str, Any]:
         # a custom query carries no known identity; the default test track does
         kw: dict[str, Any] = {"query": query, "want": None} if query else {}
+        # console-saved credentials live in the config store, not the environment;
+        # push them out first or a source configured via the UI looks unconfigured
+        config = _config_store_if_enabled()
+        if config is not None:
+            _apply_stored_secrets(config)
         entry = build_candidate_sources().get(name)
         if entry is not None:
             res = validate_source(
@@ -987,15 +995,14 @@ def build_source_validator() -> Callable[
         else:
             factory = _FACTORIES.get(name)
             if factory is None:
-                return {
-                    "ok": False,
-                    "detail": "unknown source",
-                    "quality_label": None,
-                    "elapsed_s": None,
-                }
-            res = validate_source_direct(
-                download=factory().download, prober=probe, out_dir=out_dir, **kw
-            )
+                return fail("unknown source")
+            try:
+                download = factory().download
+            except KeyError as exc:  # factories read creds via os.environ[...]
+                return fail(f"not configured: {exc.args[0]} is missing")
+            except Exception as exc:  # unreachable daemon, bad URL, ...
+                return fail(f"could not initialise: {exc}"[:200])
+            res = validate_source_direct(download=download, prober=probe, out_dir=out_dir, **kw)
         return {
             "ok": res.ok,
             "detail": res.detail,
