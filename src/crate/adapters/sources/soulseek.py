@@ -169,12 +169,26 @@ def rank_files(
         stem_tokens = set(norm_tokens(Path(_basename(c.filename)).stem))
         return sum(1 for t in wanted_tokens if t in stem_tokens) / len(wanted_tokens)
 
+    def extra_tokens(c: SlskFile) -> int:
+        """Tokens in the filename the query didn't ask for.
+
+        A mashup carries a whole second song's words ("C&C Music Factory vs. Sean
+        Paul - Gonna Make You Sweat ... vs. Temperature") and so covers the query
+        completely while being the wrong recording — and it needn't contain any
+        version marker to do it. Release decoration adds a handful of tokens, a
+        second song adds many, so the leaner title wins a tie. Ranked *below*
+        format so this never resurrects the bug where a decorated FLAC lost to a
+        bare MP3."""
+        stem_tokens = set(norm_tokens(Path(_basename(c.filename)).stem))
+        return sum(1 for t in stem_tokens if t not in wanted_tokens)
+
     return sorted(
         matching,
         key=lambda c: (
             coverage(c),
             -unwanted_version_markers(Path(_basename(c.filename)).stem, score_query),
             format_rank(c),
+            -extra_tokens(c),
             c.bit_depth or 0,
             c.sample_rate or 0,
             c.size,
