@@ -398,10 +398,10 @@ def test_batch_pause_cancel_and_retry(tmp_path: Path) -> None:
 
 
 def test_validate_source_returns_validator_result(tmp_path: Path) -> None:
-    seen: dict[str, str] = {}
+    seen: dict[str, object] = {}
 
-    def validator(name: str) -> dict[str, object]:
-        seen["name"] = name
+    def validator(name: str, query: str | None) -> dict[str, object]:
+        seen["name"], seen["query"] = name, query
         return {
             "ok": True,
             "detail": "downloaded “Get Lucky” — flac",
@@ -413,11 +413,38 @@ def test_validate_source_returns_validator_result(tmp_path: Path) -> None:
     assert r.status_code == 200
     assert r.json()["ok"] is True and "Get Lucky" in r.json()["detail"]
     assert seen["name"] == "qobuz"
+    assert seen["query"] is None  # no body -> the known test track
+
+
+def test_validate_source_forces_a_supplied_query(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def validator(name: str, query: str | None) -> dict[str, object]:
+        seen["name"], seen["query"] = name, query
+        return {"ok": False, "detail": "no results"}
+
+    client = TestClient(create_app(_seeded_store(tmp_path), source_validator=validator))
+    r = client.post("/api/sources/soulseek/validate", json={"query": "  Jay Sean Ride It  "})
+    assert r.status_code == 200
+    assert seen["name"] == "soulseek"
+    assert seen["query"] == "Jay Sean Ride It"  # trimmed
+
+
+def test_validate_source_blank_query_falls_back_to_test_track(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def validator(name: str, query: str | None) -> dict[str, object]:
+        seen["query"] = query
+        return {"ok": True, "detail": "ok"}
+
+    client = TestClient(create_app(_seeded_store(tmp_path), source_validator=validator))
+    client.post("/api/sources/qobuz/validate", json={"query": "   "})
+    assert seen["query"] is None
 
 
 def test_validate_source_unknown_source_404(tmp_path: Path) -> None:
     client = TestClient(
-        create_app(_seeded_store(tmp_path), source_validator=lambda n: {"ok": True})
+        create_app(_seeded_store(tmp_path), source_validator=lambda n, q: {"ok": True})
     )
     assert client.post("/api/sources/nope/validate").status_code == 404
 

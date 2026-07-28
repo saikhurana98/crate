@@ -145,6 +145,12 @@ SourceSpec("foo", 2, "CRATE_FOO", ("CRATE_FOO_TOKEN",), lossless=True),
 `enable_flag=None` means always-on (only ytdlp). Never invent a new tier number
 — tiers are fixed 1/2/3.
 
+Registering in `_FACTORIES` also makes the source **testable in isolation** for
+free — `crate download --source foo` and the console's Sources → Test button
+both force a download through just this source, falling back to your `download`
+callable when the source has no candidate/search-by-ref path. Nothing extra to
+implement.
+
 ### 5. Env template — `.crate.env.example`
 Document the enable flag + every `required_env` var with a one-line "how to get
 it". Prefix everything `CRATE_`.

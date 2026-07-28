@@ -15,7 +15,7 @@ import typer
 
 from crate import __version__
 from crate.application.cascade import CascadeResult, run_cascade
-from crate.composition.sources import build_recorder, build_tiers
+from crate.composition.sources import build_forced_tiers, build_recorder, build_tiers
 from crate.infrastructure.audio.probe import probe
 
 app = typer.Typer(
@@ -62,11 +62,31 @@ def _fmt_result(idx: int, res: CascadeResult) -> str:
 def download(
     queries: Annotated[list[str], typer.Argument(help="Track queries (free text or URL).")],
     out: Annotated[Path, typer.Option("--out", "-o", help="Output directory.")] = Path("downloads"),
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--source",
+            "-s",
+            help="Force one source (e.g. soulseek) instead of the cascade, to test that source.",
+        ),
+    ] = None,
 ) -> None:
-    """Download tracks via the tier cascade (Tier 1 Monochrome -> Tier 3 yt-dlp;
-    Tier 2 skipped) and report which tier won plus the quality."""
+    """Download tracks via the tier cascade and report which tier won plus the quality.
+
+    With ``--source`` the cascade is replaced by that single source, so a failure
+    is attributable to it instead of being masked by a lower tier taking over.
+    The forced source runs even when it's disabled in the stored layout."""
     out.mkdir(parents=True, exist_ok=True)
-    tiers = build_tiers()
+    if source is not None:
+        try:
+            tiers = build_forced_tiers(source)
+        except KeyError:
+            raise typer.BadParameter(f"unknown source: {source}") from None
+        except Exception as exc:  # missing creds -> that IS the diagnosis
+            typer.echo(f"source {source!r} could not be built: {exc}")
+            raise typer.Exit(code=1) from None
+    else:
+        tiers = build_tiers()
     # record to the console DB only when one is configured (keeps ad-hoc local
     # downloads side-effect-free; the server sets CRATE_DB).
     recorder = build_recorder("cli") if os.environ.get("CRATE_DB") else None

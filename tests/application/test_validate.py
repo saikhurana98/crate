@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from crate.application.validate import validate_source
+from crate.application.validate import TEST_QUERY, validate_source, validate_source_direct
 from crate.domain.audio import AudioInfo
 from crate.domain.candidate import Candidate
 
@@ -80,3 +80,73 @@ def test_validate_picks_best_matching_candidate(tmp_path: Path) -> None:
         search=lambda q, w: cands, download=download, prober=lambda p: _info(), out_dir=tmp_path
     )
     assert seen["c"].title == "Get Lucky"  # exact title beats the remix
+
+
+# --- forced download: test one source against a specific track ------------------
+
+
+def test_validate_defaults_to_the_known_test_track(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def search(q: str, want: object) -> list[Candidate]:
+        seen["q"], seen["want"] = q, want
+        return []
+
+    validate_source(
+        search=search, download=lambda c, o, w: None, prober=lambda p: _info(), out_dir=tmp_path
+    )
+    assert seen["q"] == TEST_QUERY
+    assert seen["want"] is not None  # the known track carries an expected identity
+
+
+def test_validate_forces_a_caller_supplied_query(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    def search(q: str, want: object) -> list[Candidate]:
+        seen["q"], seen["want"] = q, want
+        return []
+
+    validate_source(
+        search=search,
+        download=lambda c, o, w: None,
+        prober=lambda p: _info(),
+        out_dir=tmp_path,
+        query="Jay Sean Every Little Part of Me",
+        want=None,
+    )
+    assert seen["q"] == "Jay Sean Every Little Part of Me"
+    assert seen["want"] is None  # free text carries no expected identity
+
+
+def test_validate_direct_uses_the_cascade_download_half(tmp_path: Path) -> None:
+    # soulseek/telegram have no candidate path: query in, file out.
+    produced = tmp_path / "Some Artist - Some Track.flac"
+    seen: dict[str, object] = {}
+
+    def download(query: str, out_dir: Path, want: object) -> object:
+        seen["q"] = query
+        produced.write_bytes(b"fLaC")
+        return type("O", (), {"path": produced})()
+
+    res = validate_source_direct(
+        download=download,
+        prober=lambda p: _info(),
+        out_dir=tmp_path,
+        query="Some Artist Some Track",
+        want=None,
+    )
+    assert seen["q"] == "Some Artist Some Track"
+    assert res.ok is True
+    assert "Some Artist - Some Track.flac" in res.detail  # filename is the label
+    assert res.quality_label is None  # no candidate metadata on this path
+    assert not produced.exists()  # probe file deleted
+
+
+def test_validate_direct_reports_source_failure(tmp_path: Path) -> None:
+    def download(query: str, out_dir: Path, want: object) -> object:
+        raise RuntimeError("slskd transfer timed out")
+
+    res = validate_source_direct(
+        download=download, prober=lambda p: _info(), out_dir=tmp_path, want=None
+    )
+    assert res.ok is False and "timed out" in res.detail

@@ -453,6 +453,25 @@ def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     return _tiers_from_layout(layout)
 
 
+def build_forced_tiers(name: str) -> list[TierMux]:  # pragma: no cover - env + IO wiring
+    """A one-source cascade: every query goes through ``name`` and nothing else.
+
+    The diagnostic counterpart to :func:`build_tiers` — it answers "is *this*
+    source broken?" without the cascade masking the answer by falling through to
+    a lower tier. Deliberately ignores the stored layout's membership, so a
+    disabled or tray-held source can still be exercised; stored credentials are
+    still applied. Raises ``KeyError`` for an unknown source, and lets a missing-
+    credential failure propagate rather than silently skipping (unlike the
+    cascade, a source that can't be built *is* the answer here)."""
+    if name not in _FACTORIES:
+        raise KeyError(name)
+    config = _config_store_if_enabled()
+    if config is not None:
+        _apply_stored_secrets(config)
+    entry = _FACTORIES[name]()
+    return [TierMux(entry.ref.tier, [entry], MuxStrategy.ALL)]
+
+
 def db_path() -> Path:  # pragma: no cover - env read
     """Console/history SQLite path. Must be a local FS, never NFS (ADR-0018)."""
     return Path(os.environ.get("CRATE_DB", "data/crate.db"))
@@ -934,30 +953,49 @@ def build_candidate_streamers() -> dict[str, Callable[[str], str]]:  # pragma: n
     return streamers
 
 
-def build_source_validator() -> Callable[[str], dict[str, Any]]:  # pragma: no cover - IO wiring
-    """``name -> {ok, detail, quality_label, elapsed_s}``: download a known song
-    through a source to prove its credentials. Reuses the review candidate halves
-    (search + download-by-ref), so it reaches the cred-gated resolve (a stale token
-    fails here even though a bare search passes). Sources without a candidate path
-    (soulseek/telegram) report that a credential test isn't available for them."""
+def build_source_validator() -> Callable[
+    [str, str | None], dict[str, Any]
+]:  # pragma: no cover - IO wiring
+    """``(name, query) -> {ok, detail, quality_label, elapsed_s}``: force a download
+    through *one* source to prove it works.
+
+    Prefers the review candidate halves (search + download-by-ref) because they
+    reach the cred-gated resolve — a stale token fails there even though a bare
+    search passes. Sources with no candidate path (soulseek/telegram resolve free
+    text internally) fall back to the cascade's own download half, so every source
+    is testable.
+
+    ``query`` defaults to the well-known test track. A caller-supplied query is a
+    free-text probe with no expected identity, so the artist/title gates stay off
+    and the source is judged only on whether it can deliver *that* track."""
     import tempfile
 
-    from crate.application.validate import validate_source
+    from crate.application.validate import validate_source, validate_source_direct
     from crate.infrastructure.audio.probe import probe
 
     out_dir = Path(tempfile.gettempdir()) / "crate-validate"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    def validate(name: str) -> dict[str, Any]:
+    def validate(name: str, query: str | None = None) -> dict[str, Any]:
+        # a custom query carries no known identity; the default test track does
+        kw: dict[str, Any] = {"query": query, "want": None} if query else {}
         entry = build_candidate_sources().get(name)
-        if entry is None:
-            return {
-                "ok": False,
-                "detail": "credential test not available for this source",
-                "quality_label": None,
-                "elapsed_s": None,
-            }
-        res = validate_source(search=entry[0], download=entry[1], prober=probe, out_dir=out_dir)
+        if entry is not None:
+            res = validate_source(
+                search=entry[0], download=entry[1], prober=probe, out_dir=out_dir, **kw
+            )
+        else:
+            factory = _FACTORIES.get(name)
+            if factory is None:
+                return {
+                    "ok": False,
+                    "detail": "unknown source",
+                    "quality_label": None,
+                    "elapsed_s": None,
+                }
+            res = validate_source_direct(
+                download=factory().download, prober=probe, out_dir=out_dir, **kw
+            )
         return {
             "ok": res.ok,
             "detail": res.detail,
