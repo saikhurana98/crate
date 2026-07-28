@@ -79,9 +79,58 @@ _FILLER = frozenset(
 )
 
 
+# Words marking an *alternate recording* rather than the requested one. Unlike
+# _FILLER these are meaningful — they say "this is a different version" — so they
+# are not stripped, only counted when the query didn't ask for them.
+_VERSION_MARKERS = frozenset(
+    {
+        "edit",
+        "edits",
+        "remix",
+        "remixes",
+        "rmx",
+        "bootleg",
+        "mashup",
+        "rework",
+        "refix",
+        "flip",
+        "vip",
+        "live",
+        "cover",
+        "instrumental",
+        "acapella",
+        "karaoke",
+        "nightcore",
+        "slowed",
+        "sped",
+        "reverb",
+        "demo",
+        "snippet",
+    }
+)
+
+
 def norm_tokens(text: str) -> list[str]:
     cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
     return [w for w in cleaned.split() if len(w) > 1 and w not in _FILLER]
+
+
+def unwanted_version_markers(title: str, query: str) -> int:
+    """How many "different version" words the title carries that the query didn't ask for.
+
+    A title can contain every token of the query and still be the wrong
+    recording: a DJ bootleg named ``"SHALT x Sean Paul - Temperature -'Acheron'
+    ULTIMATE DESTRUCTION Edit-"`` covers the query completely. Token *coverage*
+    can't see that — it's deliberately blind to extra words so release decoration
+    doesn't penalise a good file — so this counts the markers instead.
+
+    Zero when the query asks for that version (searching "temperature remix"
+    should return remixes), so it only ever demotes an unrequested alternate.
+    Ranking signal, not a gate: if a bootleg is all the network has, it still
+    beats nothing. The duration prefilter is the hard guard when a runtime is
+    known; this covers identity-less free-text requests, which have none."""
+    wanted = set(norm_tokens(query))
+    return sum(1 for t in set(norm_tokens(title)) if t in _VERSION_MARKERS and t not in wanted)
 
 
 def _overlap(text: str, query_tokens: set[str]) -> float:

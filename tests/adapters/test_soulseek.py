@@ -157,6 +157,33 @@ def test_rank_still_rejects_a_different_song_by_the_same_artist() -> None:
     assert [f.filename for f in ranked] == ["x\\Sean Paul - Temperature.mp3"]
 
 
+def test_rank_demotes_an_unrequested_bootleg_edit() -> None:
+    # THE REGRESSION: this exact bootleg beat the original single live. It covers
+    # every query token, so coverage tied — and being a big FLAC it won on format.
+    bootleg = _slsk(
+        "MICHAELBRAILEY - Edits 2016 - 02 SHALT x Sean Paul - Temperature "
+        "-MICHAELBRAILEY 'Acheron' ULTIMATE DESTRUCTION Edit-.flac",
+        size=60_000_000,
+        depth=16,
+        rate=44100,
+    )
+    original = _slsk("Sean Paul - Temperature.flac", size=23_000_000, depth=16, rate=44100)
+    assert rank_files([bootleg, original], "Sean Paul Temperature")[0] is original
+
+
+def test_rank_keeps_a_bootleg_when_it_is_all_there_is() -> None:
+    # demotion, not exclusion — a bootleg still beats returning nothing
+    bootleg = _slsk("Sean Paul - Temperature (Club Edit).flac", depth=16, rate=44100)
+    assert rank_files([bootleg], "Sean Paul Temperature") == [bootleg]
+
+
+def test_rank_does_not_demote_a_remix_the_query_asked_for() -> None:
+    remix = _slsk("Sean Paul - Temperature (Club Remix).flac", depth=16, rate=44100)
+    original = _slsk("Sean Paul - Temperature.flac", depth=16, rate=44100)
+    ranked = rank_files([original, remix], "Sean Paul Temperature Remix")
+    assert ranked[0] is remix  # asked for a remix -> the remix wins on coverage
+
+
 def test_rank_prefers_tagged_lossless_over_raw_pcm() -> None:
     # WAV is the same audio but untagged and ~3x the size; FLAC wins even though
     # the WAV is the larger file.
