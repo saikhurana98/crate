@@ -59,7 +59,7 @@ Requests carry a `TrackIdentity` (from Spotify search/playlist: artist/title/ISR
 
 ## The three runnable surfaces
 
-- `crate download <queries…>` — ad-hoc CLI acquisition. Env-only config; writes to `--out`. Records to history DB only if `CRATE_DB` is set.
+- `crate download <queries…>` — ad-hoc CLI acquisition. Env-only config; writes to `--out`. Records to history DB only if `CRATE_DB` is set. `--source <name>` replaces the cascade with that **single** source (even one disabled in the stored layout) so a failure is attributable instead of masked by a lower tier taking over — the CLI half of "which source is broken?".
 - `crate serve` (default port 2416) — the **slskd-compatible shim** for Explo. Owns the NAS mount + full toolchain. On startup: `reap_orphans` (requeue rows a prior crash left `downloading`) + `prune_attempts` + a daily maintenance thread. Spawns N **queue-worker** threads (`CRATE_BULK_CONCURRENCY`) that drain console-queued rows via atomic `claim_next`; de-dups + upgrades via `dedup.py`. When `CRATE_LIBRARY_ROOT` is set, each winner is finalized into the library (organize + tag + cover art).
 - `crate console` (default port 8788) — FastAPI dashboard over the history DB (stats, history, Spotify search/OAuth "listening", bulk paste). Reads are served from a **2 s-cached stats frame** so N SSE viewers cost one recompute. The console only **writes `queued` rows** (+ config/layout); `serve`'s workers do the downloading.
 

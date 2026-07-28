@@ -120,6 +120,7 @@ interface State {
   panelValues: Record<string, string>;
   panelSave: "idle" | "dirty" | "saving" | "saved";
   panelValidate: Record<string, { status: "testing" | "ok" | "fail"; detail: string }>; // source -> cred-test result
+  panelTestQuery: string; // optional track to force through the source instead of the known test song
   drag: { source: string | null; overTier: string | null; overIndex: number | null };
   rejectShake: string | null;
   saveState: SaveState;
@@ -175,6 +176,7 @@ const state: State = {
   panelValues: {},
   panelSave: "idle",
   panelValidate: {},
+  panelTestQuery: "",
   drag: { source: null, overTier: null, overIndex: null },
   rejectShake: null,
   saveState: "idle",
@@ -1184,6 +1186,14 @@ function validateButton(name: string): string {
   }</button>`;
 }
 
+// Optional track to force through this source. Empty = the known test song, so
+// the button stays a one-click credential check until you need a specific track.
+function testQueryField(): string {
+  return `<div>
+      <input data-inp="panelTestQuery" value="${esc(state.panelTestQuery)}" placeholder="Force a specific track through this source (optional)…" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:400 11.5px 'Instrument Sans';padding:9px 12px"/>
+    </div>`;
+}
+
 // Result of the last credential test for this source (downloads a known song).
 function validationRow(name: string): string {
   const v = state.panelValidate[name];
@@ -1255,6 +1265,7 @@ function panelHtml(): string {
       ${creds ? `<div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin:4px 0 11px;display:flex;align-items:center;gap:8px">Credentials <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#464d40">· encrypted at rest, never displayed</span></div>${creds}` : ""}
     </div>
     <div style="padding:16px 22px;border-top:1px solid #1d211c;display:flex;flex-direction:column;gap:11px">
+      ${def.validate ? testQueryField() : ""}
       ${validationRow(name)}
       <div style="display:flex;align-items:center;gap:12px">
         <button data-act="savePanel" ${saving ? "disabled" : ""} style="flex:1;background:${saved ? "rgba(233,237,227,.14)" : saving ? "#272c25" : "#e9ede3"};border:none;border-radius:14px;color:${saved ? "#e9ede3" : saving ? C.muted : "#14170f"};font:600 13px 'Instrument Sans';padding:12px;cursor:${saving ? "default" : "pointer"};transition:.15s;display:flex;align-items:center;justify-content:center;gap:8px">${saving ? "Saving…" : saved ? "Saved ✓" : dirty ? "Save changes" : "Save"}</button>
@@ -2135,10 +2146,14 @@ async function savePanel(): Promise<void> {
 }
 // Test credentials by downloading a known song through this source (server-side).
 async function validatePanel(name: string): Promise<void> {
-  state.panelValidate[name] = { status: "testing", detail: "downloading a test track…" };
+  const query = state.panelTestQuery.trim();
+  state.panelValidate[name] = {
+    status: "testing",
+    detail: query ? `forcing “${query}” through ${name}…` : "downloading a test track…",
+  };
   render();
   try {
-    const r = await api.validateSource(name);
+    const r = await api.validateSource(name, query || undefined);
     const q = r.quality_label ? ` · ${r.quality_label}` : "";
     const t = r.elapsed_s != null ? ` · ${r.elapsed_s}s` : "";
     state.panelValidate[name] = {
@@ -2286,6 +2301,8 @@ function bindEvents(): void {
       state.panelValues[el.dataset.key!] = el.value;
       state.panelSave = "dirty";
       render(); // reflect Save button state; morph keeps the focused field intact
+    } else if (el.dataset.inp === "panelTestQuery") {
+      state.panelTestQuery = el.value; // capture without re-render (keep focus)
     } else if (el.dataset.inp === "bulk") {
       state.bulkText = el.value; // capture without re-render so the textarea isn't clobbered
     } else if (el.dataset.inp === "reviewq") {

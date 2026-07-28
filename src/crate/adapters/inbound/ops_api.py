@@ -57,7 +57,7 @@ IdentifyFn = Callable[[Path], "IdentityHint | None"]
 StreamResolver = Callable[[str], str]
 CandidateStreamersFn = Callable[[], dict[str, StreamResolver]]
 # Credential test: source name -> {ok, detail, quality_label, elapsed_s}.
-SourceValidatorFn = Callable[[str], dict[str, Any]]
+SourceValidatorFn = Callable[[str, "str | None"], dict[str, Any]]
 
 _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
@@ -417,8 +417,15 @@ def create_app(
         return {**layout, "version": version}
 
     @api.post("/sources/{name}/validate")
-    async def validate_source_creds(name: str) -> dict[str, Any]:
-        """Download a known song through this source to test its credentials.
+    async def validate_source_creds(
+        name: str, body: dict[str, Any] = Body(default={})
+    ) -> dict[str, Any]:
+        """Force a download through this source to test it.
+
+        With no body it downloads a known song — the credential test. Pass
+        ``{"query": "..."}`` to force *that* track through *this* source instead,
+        which is how an operator pins down which source is broken for a track the
+        cascade is failing on.
 
         Offloaded off the event loop — it does real network IO (and, for a browser
         source, a headed-Chromium resolve). Never raises for a bad credential; a
@@ -427,7 +434,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="unknown source")
         if source_validator is None:
             raise HTTPException(status_code=503, detail="validation not available")
-        return await asyncio.to_thread(source_validator, name)
+        query = str(body.get("query", "")).strip() or None
+        return await asyncio.to_thread(source_validator, name, query)
 
     @api.put("/sources/{name}")
     def put_source(name: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:

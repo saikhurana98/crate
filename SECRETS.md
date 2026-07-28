@@ -70,10 +70,14 @@ Every third-party credential the service touches lives here. Adapter PRs must up
 - **Env**: TBD by adapter author
 - **Used in**: `adapters/sources/monochrome.ts`
 
-#### Soulseek
-- **Env**: `CRATE_SOULSEEK_USERNAME`, `CRATE_SOULSEEK_PASSWORD`
-- **How to obtain**: register on the Soulseek network (free)
-- **Used in**: `adapters/sources/soulseek.ts`
+#### Soulseek (via slskd)
+- **Env**: `CRATE_SLSKD_URL`, `CRATE_SLSKD_API_KEY`, `CRATE_SLSKD_DOWNLOADS`
+- **How to obtain**: run an [slskd](https://github.com/slskd/slskd) daemon; the API key is a
+  random string you set under `web.authentication.api_keys` in its `slskd.yml`.
+- **Note**: the Soulseek *account* (username/password) belongs to slskd's own config, not to
+  crate — crate only talks to slskd's REST API and reads its downloads dir (needs write access
+  too, since it moves the finished file out).
+- **Used in**: `infrastructure/soulseek/slskd_client.py`, wired in `composition/sources.py`
 
 ## Local development
 
