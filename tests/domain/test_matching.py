@@ -58,6 +58,22 @@ def test_title_matches_accepts_verbose_source_title_of_right_song() -> None:
     )
 
 
+def test_title_matches_rejects_other_song_by_the_same_artist() -> None:
+    # THE REGRESSION: a query carries the artist too, so the artist name alone can
+    # supply most of its tokens. "Sean Paul" is 2 of the 3 tokens in the query, so
+    # a fractional reverse match let a *different* Sean Paul song through.
+    assert title_matches("Sean Paul - Get Busy", "Sean Paul Temperature") is False
+    assert title_matches("Sean Paul - Temperature", "Sean Paul Temperature") is True
+    # the verbose-but-correct title must still pass (every query token present)
+    assert (
+        title_matches(
+            "Sean Paul - Temperature (Official Video) [2005 Dutty Rock]",
+            "Sean Paul Temperature",
+        )
+        is True
+    )
+
+
 def test_title_matches_rejects_different_song() -> None:
     assert title_matches("Channa Mereya", "Marjaani Pritam") is False
     assert title_matches("BENNY", "Besharmi Ki Height") is False

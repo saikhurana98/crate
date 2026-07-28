@@ -11,7 +11,9 @@ import pytest
 
 from crate.adapters.sources.soulseek import (
     SlskFile,
+    format_rank,
     is_lossless,
+    meets_bitrate_floor,
     parse_responses,
     rank_files,
     search_variants,
@@ -90,6 +92,89 @@ def test_select_title_guard_rejects_wrong_song() -> None:
     ]
     with pytest.raises(LookupError, match="no title-matching"):
         select_file(parse_responses(wrong), "Marjaani Pritam")
+
+
+def _slsk(
+    name: str,
+    *,
+    bitrate_bps: int = 0,
+    size: int = 1,
+    depth: int | None = None,
+    rate: int | None = None,
+    length: int | None = 218,
+    free: bool = True,
+    speed: int = 1,
+) -> SlskFile:
+    return SlskFile("p", f"x\\{name}", size, bitrate_bps, depth, length, rate, free, speed)
+
+
+def test_bitrate_floor_never_drops_lossless() -> None:
+    # THE REGRESSION: slskd reports bitRate 0 for FLAC (bitrate is a lossy
+    # attribute), so a floor applied to everything deleted almost every lossless
+    # file on the network — the exact files the floor exists to reach.
+    flac = _slsk("Temperature.flac", bitrate_bps=0, depth=16, rate=44100)
+    assert meets_bitrate_floor(flac, 256_000) is True
+    # the floor still does its job on lossy files
+    assert meets_bitrate_floor(_slsk("Temperature.mp3", bitrate_bps=128_000), 256_000) is False
+    assert meets_bitrate_floor(_slsk("Temperature.mp3", bitrate_bps=320_000), 256_000) is True
+
+
+def test_rank_keeps_zero_bitrate_flac_above_the_floor() -> None:
+    files = [
+        _slsk("Sean Paul - Temperature.mp3", bitrate_bps=320_000),
+        _slsk("Sean Paul - Temperature.flac", bitrate_bps=0, depth=16, rate=44100),
+    ]
+    ranked = rank_files(files, "Sean Paul Temperature", min_bitrate_kbps=256)
+    assert len(ranked) == 2  # the flac survived the floor
+    assert ranked[0].filename.endswith(".flac")
+
+
+def test_rank_prefers_flac_despite_a_tidier_mp3_filename() -> None:
+    # match_score penalises the filename's extra tokens, so an untidy-but-lossless
+    # file used to lose to a cleanly-named MP3 of the same song. Ranking on query
+    # coverage instead is blind to decoration, so format decides.
+    files = [
+        _slsk("Sean Paul - Temperature.mp3", bitrate_bps=320_000),
+        _slsk(
+            "01. Sean Paul - Temperature (Album Version) [2005].flac",
+            bitrate_bps=0,
+            depth=16,
+            rate=44100,
+        ),
+    ]
+    ranked = rank_files(files, "Sean Paul Temperature")
+    assert ranked[0].filename.endswith(".flac")
+
+
+def test_rank_still_rejects_a_different_song_by_the_same_artist() -> None:
+    # preferring lossless must not let a different song ride in on its format:
+    # the title guard drops it before ranking ever sees it
+    files = [
+        _slsk("Sean Paul - Temperature.mp3", bitrate_bps=320_000),
+        _slsk("Sean Paul - Get Busy.flac", bitrate_bps=0, depth=16, rate=44100),
+    ]
+    ranked = rank_files(files, "Sean Paul Temperature")
+    assert [f.filename for f in ranked] == ["x\\Sean Paul - Temperature.mp3"]
+
+
+def test_rank_prefers_tagged_lossless_over_raw_pcm() -> None:
+    # WAV is the same audio but untagged and ~3x the size; FLAC wins even though
+    # the WAV is the larger file.
+    files = [
+        _slsk("Sean Paul - Temperature.wav", size=36_000_000, depth=16, rate=44100),
+        _slsk("Sean Paul - Temperature.flac", size=23_000_000, depth=16, rate=44100),
+    ]
+    assert rank_files(files, "Sean Paul Temperature")[0].filename.endswith(".flac")
+    assert format_rank(files[1]) > format_rank(files[0])
+
+
+def test_rank_prefers_higher_bit_depth_then_bigger_file() -> None:
+    hi = _slsk("Sean Paul - Temperature.flac", size=40_000_000, depth=24, rate=96000)
+    lo = _slsk("Sean Paul - Temperature.flac", size=23_000_000, depth=16, rate=44100)
+    assert rank_files([lo, hi], "Sean Paul Temperature")[0] is hi
+    # same depth/rate -> the bigger file is the better rip
+    big = _slsk("Sean Paul - Temperature.flac", size=30_000_000, depth=16, rate=44100)
+    assert rank_files([lo, big], "Sean Paul Temperature")[0] is big
 
 
 def test_select_honours_min_bitrate() -> None:
