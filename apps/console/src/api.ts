@@ -247,8 +247,15 @@ export interface ReviewResponse {
   stats: ReviewStats;
 }
 
+// A mid-session 401 (expired/revoked cookie) reboots into the login gate. /api/me
+// is exempt: the gate itself probes it and handles null without a redirect loop.
+function on401(path: string): void {
+  if (!path.startsWith("/api/me")) window.location.href = "/";
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, { headers: { Accept: "application/json" }, signal });
+  if (res.status === 401) on401(path);
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${path}`);
   return (await res.json()) as T;
 }
@@ -334,4 +341,26 @@ export const api = {
   spotifyPlayer: (signal?: AbortSignal) => get<PlayerState>("/api/spotify/player", signal),
   spotifyLoginUrl: "/api/spotify/login",
   eventsUrl: "/api/events",
+  // Login with Spotify (Phase 2). me() resolves the current user, or null when
+  // logged out (401) so the app can render the login gate.
+  me: async (): Promise<Me | null> => {
+    const res = await fetch("/api/me", { headers: { Accept: "application/json" } });
+    if (res.status === 401) return null;
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText} — /api/me`);
+    return (await res.json()) as Me;
+  },
+  loginUrl: "/api/auth/login",
+  logout: async (): Promise<void> => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/";
+  },
 };
+
+export interface Me {
+  id: string;
+  spotify_id: string | null;
+  display_name: string;
+  email: string | null;
+  avatar_url: string | null;
+  is_admin: boolean;
+}

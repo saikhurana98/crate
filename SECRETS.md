@@ -24,6 +24,20 @@ Every third-party credential the service touches lives here. Adapter PRs must up
 - **Used in**: `adapters/metadata/spotify.ts`, `adapters/bulk/spotify.ts`, `adapters/cover-art/spotify-art.ts`
 - **Note**: Client-credentials flow is sufficient (no user OAuth needed for catalog metadata)
 
+#### Login with Spotify (console multi-user, Phase 2)
+- **Env**: `CRATE_SPOTIFY_CLIENT_ID`, `CRATE_SPOTIFY_CLIENT_SECRET`, `CRATE_SPOTIFY_REDIRECT_URI`
+  (same app as above). The redirect URI is the console's login callback:
+  `https://<host>.<tailnet>.ts.net/api/auth/callback` — register it verbatim in the
+  dashboard (Spotify accepts only https or loopback). Front the console with
+  `tailscale serve` to get that HTTPS name.
+- **Scopes**: `user-read-email user-library-read playlist-read-private
+  playlist-read-collaborative` (+ the existing player scopes). Broadening scopes forces
+  everyone previously connected to re-consent — expected.
+- **Dev-mode cap**: a Development-mode app authorizes at most 25 users; add each friend's
+  Spotify email under the app's user list (or request Extended Quota).
+- **Behavior**: when these are set the console requires Login-with-Spotify (session cookie);
+  when absent it stays single-user (open, or `CRATE_OPS_API_KEY` only) exactly as before.
+
 ### Apple Music API
 - **Env**: `CRATE_APPLE_DEVELOPER_TOKEN` (JWT, signed with private key)
 - **How to obtain**: Apple Developer account → MusicKit → generate developer token

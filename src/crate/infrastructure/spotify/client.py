@@ -25,11 +25,19 @@ SEARCH_URL = "https://api.spotify.com/v1/search"
 NOW_PLAYING_URL = "https://api.spotify.com/v1/me/player/currently-playing"
 RECENT_URL = "https://api.spotify.com/v1/me/player/recently-played"
 PLAYLIST_URL = "https://api.spotify.com/v1/playlists/"
+ME_URL = "https://api.spotify.com/v1/me"
 
 _PLAYLIST_ID = re.compile(r"playlist[/:]([A-Za-z0-9]+)")
 
 # user-scoped read of playback — the client-credentials flow cannot reach these.
 USER_SCOPES = "user-read-currently-playing user-read-recently-played"
+# Login-with-Spotify needs identity (/v1/me) + private library reads (Phase B
+# import). Requesting these forces re-consent for anyone connected under the old
+# player-only scopes — that's expected (see the plan's Risks).
+LOGIN_SCOPES = (
+    "user-read-email user-library-read "
+    "playlist-read-private playlist-read-collaborative " + USER_SCOPES
+)
 
 PostForm = Callable[[str, dict[str, str], dict[str, str]], Any]
 GetJson = Callable[[str, dict[str, Any], dict[str, str]], Any]
@@ -165,26 +173,47 @@ class SpotifyClient:
     def _basic(self) -> str:
         return base64.b64encode(f"{self._id}:{self._secret}".encode()).decode()
 
-    def authorize_url(self, redirect_uri: str, state: str) -> str:
-        """The Spotify consent URL the operator's browser is sent to on Connect."""
+    def authorize_url(self, redirect_uri: str, state: str, scope: str = USER_SCOPES) -> str:
+        """The Spotify consent URL the browser is sent to. ``scope`` defaults to
+        the player scopes; the login flow passes :data:`LOGIN_SCOPES`."""
         return f"{AUTHORIZE_URL}?" + urlencode(
             {
                 "client_id": self._id,
                 "response_type": "code",
                 "redirect_uri": redirect_uri,
-                "scope": USER_SCOPES,
+                "scope": scope,
                 "state": state,
             }
         )
 
-    def exchange_code(self, code: str, redirect_uri: str) -> str:
-        """Swap the callback ``code`` for a long-lived refresh token."""
+    def exchange_code_tokens(self, code: str, redirect_uri: str) -> dict[str, str]:
+        """Swap the callback ``code`` for both tokens: ``{access_token,
+        refresh_token}``. Login needs the access token immediately to read
+        ``/v1/me``; the refresh token is persisted per user."""
         data = self._post_form(
             TOKEN_URL,
             {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri},
             {"Authorization": f"Basic {self._basic()}"},
         )
-        return str(data["refresh_token"])
+        return {
+            "access_token": str(data["access_token"]),
+            "refresh_token": str(data["refresh_token"]),
+        }
+
+    def exchange_code(self, code: str, redirect_uri: str) -> str:
+        """Swap the callback ``code`` for a long-lived refresh token."""
+        return self.exchange_code_tokens(code, redirect_uri)["refresh_token"]
+
+    def me(self, access_token: str) -> dict[str, Any]:
+        """The authenticated user's profile from ``GET /v1/me``:
+        ``{id, display_name, email, avatar}``."""
+        data = self._get_json(ME_URL, {}, {"Authorization": f"Bearer {access_token}"}) or {}
+        return {
+            "id": str(data.get("id") or ""),
+            "display_name": str(data.get("display_name") or data.get("id") or ""),
+            "email": (str(data["email"]) if data.get("email") else None),
+            "avatar": _best_art(data.get("images") or []),
+        }
 
     def refresh_access_token(self, refresh_token: str) -> str:
         data = self._post_form(
