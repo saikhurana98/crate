@@ -21,10 +21,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
-from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from crate.application.auth import SERVICE_USER_ID, SESSION_TTL_S, User
 from crate.application.bulk import ResolvedBatch
 from crate.composition.catalog import (
     KNOWN,
@@ -63,6 +64,27 @@ _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
 _MAX_PENDING_STATES = 32  # cap the CSRF-state set; single-user tool, bounded churn
 _REVIEW_SOURCE_TIMEOUT_S = 12.0  # per-source ceiling on the review search fan-out
+_SESSION_COOKIE = "crate_session"
+
+
+class AuthPort(Protocol):
+    """Login-with-Spotify provider (Phase 2). ``None`` in single-user mode."""
+
+    def login_url(self, state: str) -> str:
+        """Spotify consent URL to redirect the browser to on login."""
+        ...
+
+    def complete_login(self, code: str) -> tuple[User, str]:
+        """Exchange the callback code; return the user + raw session token."""
+        ...
+
+    def resolve_session(self, raw_token: str) -> User | None:
+        """The user for a live session cookie, else ``None``."""
+        ...
+
+    def logout(self, raw_token: str) -> None:
+        """Revoke a session (idempotent)."""
+        ...
 
 
 class SpotifyPort(Protocol):
@@ -94,6 +116,7 @@ def create_app(
     config: ConfigStore | None = None,
     search: SearchFn | None = None,
     spotify: SpotifyPort | None = None,
+    auth: AuthPort | None = None,
     bulk_resolve: BulkResolveFn | None = None,
     candidate_sources: CandidateSourcesFn | None = None,
     identify_hint: IdentifyFn | None = None,
@@ -103,9 +126,27 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="crate console", docs_url=None, redoc_url=None, openapi_url=None)
 
-    def require_key(x_api_key: str | None = Header(default=None)) -> None:
-        if api_key and x_api_key != api_key:
+    def require_auth(request: Request) -> None:
+        """Gate the ``/api`` router on a valid session cookie OR the matching
+        ``X-API-Key`` (automation), stashing the resolved user id on
+        ``request.state.user_id`` for attribution. Falls back to today's
+        key-only behavior when no ``auth`` provider is wired: with no key AND no
+        auth the console is open (single-user, as before)."""
+        header_key = request.headers.get("x-api-key")
+        if api_key is not None and header_key == api_key:
+            request.state.user_id = SERVICE_USER_ID
+            return
+        if auth is not None:
+            raw = request.cookies.get(_SESSION_COOKIE) or ""
+            user = auth.resolve_session(raw) if raw else None
+            if user is not None:
+                request.state.user_id = user.id
+                return
             raise HTTPException(status_code=401, detail="unauthorized")
+        if api_key is None:
+            request.state.user_id = SERVICE_USER_ID
+            return
+        raise HTTPException(status_code=401, detail="unauthorized")
 
     def sources_view() -> list[dict[str, Any]]:
         """Source records reflecting the stored layout (membership => enabled) and
@@ -124,7 +165,7 @@ def create_app(
             raise HTTPException(status_code=503, detail="config store not available")
         return config
 
-    api = APIRouter(prefix="/api", dependencies=[Depends(require_key)])
+    api = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
 
     @api.get("/stats")
     def stats() -> dict[str, Any]:
@@ -512,6 +553,69 @@ def create_app(
             _event_stream(store, poll_interval), media_type="text/event-stream"
         )
 
+    @api.get("/me")
+    def me(request: Request) -> dict[str, Any]:
+        """The logged-in user (behind require_auth). A live session resolves the
+        full profile; the API-key / single-user path returns the service user."""
+        raw = request.cookies.get(_SESSION_COOKIE) or ""
+        user = auth.resolve_session(raw) if auth is not None and raw else None
+        if user is not None:
+            return _user_dict(user)
+        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
+        return {
+            "id": uid,
+            "spotify_id": None,
+            "display_name": "service" if uid == SERVICE_USER_ID else uid,
+            "email": None,
+            "avatar_url": None,
+            "is_admin": False,
+        }
+
+    # --- Login with Spotify (unauthenticated: these establish the session) ---
+    @app.get("/api/auth/login")
+    def auth_login() -> RedirectResponse:
+        if auth is None:
+            raise HTTPException(status_code=503, detail="login not configured")
+        state = secrets.token_urlsafe(16)
+        if len(pending_states) < _MAX_PENDING_STATES:
+            pending_states.add(state)
+        return RedirectResponse(auth.login_url(state), status_code=307)
+
+    @app.get("/api/auth/callback")
+    def auth_callback(
+        code: str | None = None, state: str | None = None, error: str | None = None
+    ) -> RedirectResponse:
+        if auth is None:
+            raise HTTPException(status_code=503, detail="login not configured")
+        known = state in pending_states
+        pending_states.discard(state or "")
+        if error or not code or state is None or not known:
+            return RedirectResponse("/?login=error", status_code=303)
+        try:
+            _user, raw = auth.complete_login(code)
+        except Exception:  # bad code / exchange / profile failure -> surface in UI
+            return RedirectResponse("/?login=error", status_code=303)
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie(
+            _SESSION_COOKIE,
+            raw,
+            max_age=SESSION_TTL_S,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+        return resp
+
+    @app.post("/api/auth/logout")
+    def auth_logout(request: Request) -> RedirectResponse:
+        raw = request.cookies.get(_SESSION_COOKIE) or ""
+        if auth is not None and raw:
+            auth.logout(raw)
+        resp = RedirectResponse("/?login=out", status_code=303)
+        resp.delete_cookie(_SESSION_COOKIE, path="/")
+        return resp
+
     # health sits outside the authed router so proxy/uptime probes need no key
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -549,6 +653,18 @@ def _clean(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _user_dict(user: User) -> dict[str, Any]:
+    """Serialise the logged-in user for ``/api/me`` and the console header."""
+    return {
+        "id": user.id,
+        "spotify_id": user.spotify_id,
+        "display_name": user.display_name,
+        "email": user.email,
+        "avatar_url": user.avatar_url,
+        "is_admin": user.is_admin,
+    }
 
 
 def _identity_from_record(record: dict[str, Any]) -> TrackIdentity:

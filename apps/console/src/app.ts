@@ -9,6 +9,7 @@ import {
   type BatchDetail,
   type Layout,
   type LiveEvent,
+  type Me,
   type PlayerState,
   type PlayerTrack,
   type RequestDetail,
@@ -158,6 +159,8 @@ interface State {
   reviewHint: Record<string, { artist: string | null; title: string | null; mbid: string | null }>; // item id -> fingerprint hint (key present => identify ran)
   reviewLastCand: Record<string, ReviewCandidate>; // item id -> candidate last chosen (for a force re-send)
   reviewDetail: Record<string, RequestDetail>; // item id -> full provenance (origin + identity + attempt trail), fetched on expand
+  me: Me | null; // the logged-in user (Login with Spotify), or null in single-user mode
+  authRequired: boolean; // true when /api/me 401s => render the login gate instead of the app
 }
 
 const state: State = {
@@ -213,6 +216,8 @@ const state: State = {
   reviewHint: {},
   reviewLastCand: {},
   reviewDetail: {},
+  me: null,
+  authRequired: false,
 };
 
 const root = document.getElementById("app")!;
@@ -1389,9 +1394,26 @@ function headerHtml(): string {
           <span style="width:7px;height:7px;border-radius:50%;background:${live ? "#ff4c38" : C.faint};animation:pulse 2s ease-in-out infinite"></span>
           <span style="font:500 11px 'JetBrains Mono';color:#99a091;letter-spacing:.06em">${live ? "live" : "connecting…"}</span>
         </div>
+        ${userChipHtml()}
       </div>
     </div>
   </header>`;
+}
+
+// Logged-in user + logout, shown only when Login-with-Spotify is active.
+function userChipHtml(): string {
+  const me = state.me;
+  if (!me || !me.spotify_id) return "";
+  const avatar = me.avatar_url
+    ? `<img src="${esc(me.avatar_url)}" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover"/>`
+    : `<span style="width:22px;height:22px;border-radius:50%;background:#272c25;display:inline-flex;align-items:center;justify-content:center;font:700 10px 'JetBrains Mono';color:#99a091">${esc((me.display_name[0] || "?").toUpperCase())}</span>`;
+  return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px 5px 6px;background:#131612;border:1px solid #272c25;border-radius:20px">
+    ${avatar}
+    <span style="font:600 11.5px 'Instrument Sans';color:#e9ede3;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(me.display_name)}</span>
+    <button data-act="logout" title="Log out" style="background:none;border:none;cursor:pointer;color:#5d6456;padding:2px;display:inline-flex;border-radius:6px">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+    </button>
+  </div>`;
 }
 
 // Responsive side-drawer (desktop) / bottom-sheet (mobile) chrome around inner.
@@ -2080,7 +2102,29 @@ function reviewPageHtml(): string {
 
 // Pure view: State -> HTML. The renderer reconciles it into the DOM (morph), so
 // this can run every tick without wiping the page.
+// Full-screen login gate shown when /api/me 401s (auth configured, no session).
+function loginGateHtml(): string {
+  const err = state.error
+    ? `<div style="margin-top:14px;color:#ff4c38;font:500 12.5px 'Instrument Sans'">${esc(state.error)}</div>`
+    : "";
+  return `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+    <div style="text-align:center;max-width:360px">
+      <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:8px">
+        <span style="width:10px;height:10px;border-radius:50%;background:#ff4c38"></span>
+        <span style="font:800 26px 'Doto';letter-spacing:.08em">crate</span>
+      </div>
+      <div style="font:500 13px 'Instrument Sans';color:#99a091;margin-bottom:26px">Log in with Spotify to request and track FLAC downloads.</div>
+      <a href="${api.loginUrl}" style="display:inline-flex;align-items:center;gap:10px;background:#1db954;color:#0a140c;font:700 14px 'Instrument Sans';padding:13px 22px;border-radius:24px;text-decoration:none">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm4.6 14.4a.6.6 0 01-.86.2c-2.35-1.44-5.3-1.76-8.8-.96a.62.62 0 11-.28-1.2c3.83-.88 7.1-.5 9.74 1.1.3.18.4.58.2.86zm1.23-2.74a.78.78 0 01-1.07.26c-2.69-1.65-6.79-2.13-9.97-1.17a.78.78 0 11-.45-1.5c3.63-1.09 8.15-.55 11.24 1.34.36.22.48.7.25 1.07zm.1-2.85C14.8 8.03 9.3 7.84 6.12 8.8a.94.94 0 11-.54-1.8c3.65-1.1 9.72-.89 13.55 1.38a.94.94 0 01-.96 1.62z"></path></svg>
+        Log in with Spotify
+      </a>
+      ${err}
+    </div>
+  </div>`;
+}
+
 function view(): string {
+  if (state.authRequired) return loginGateHtml();
   if (state.error) {
     return `<div style="max-width:600px;margin:80px auto;padding:24px;color:#ff4c38;font:500 14px 'Instrument Sans';text-align:center">Failed to load console: ${esc(state.error)}</div>`;
   }
@@ -2187,7 +2231,8 @@ function bindEvents(): void {
     if (!el) return;
     e.stopPropagation();
     const act = el.dataset.act!;
-    if (act === "strategy") setStrategy(el.dataset.tier!, el.dataset.strategy as "all" | "uniform");
+    if (act === "logout") void api.logout();
+    else if (act === "strategy") setStrategy(el.dataset.tier!, el.dataset.strategy as "all" | "uniform");
     else if (act === "openPanel") {
       state.panelSource = el.dataset.source!;
       state.panelValues = {};
@@ -2427,9 +2472,12 @@ function bindEvents(): void {
 function flashOAuthResult(): void {
   const params = new URLSearchParams(location.search);
   const s = params.get("spotify");
-  if (!s) return;
-  toast(s === "connected" ? "Spotify connected ✓" : "Spotify connection failed — try again");
+  const login = params.get("login");
+  if (!s && !login) return;
+  if (s) toast(s === "connected" ? "Spotify connected ✓" : "Spotify connection failed — try again");
+  if (login === "error") state.error = "Login failed — please try again.";
   params.delete("spotify");
+  params.delete("login");
   const qs = params.toString();
   history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : ""));
 }
@@ -2451,6 +2499,18 @@ async function boot(): Promise<void> {
   watchViewport(); // desktop <-> mobile layout switch
   flashOAuthResult();
   render(); // header/skeleton
+  // Login-with-Spotify gate: /api/me is null when auth is configured and there's
+  // no session. In single-user mode it returns the service user and we proceed.
+  try {
+    state.me = await api.me();
+    if (state.me === null) {
+      state.authRequired = true;
+      render();
+      return;
+    }
+  } catch (err) {
+    state.error = (err as Error).message;
+  }
   try {
     await Promise.all([loadStatic(), loadHistory()]);
     state.stats = await api.stats();

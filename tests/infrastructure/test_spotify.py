@@ -195,6 +195,48 @@ def test_refresh_access_token() -> None:
     assert _oauth_client(post=post).refresh_access_token("rt") == "fresh"
 
 
+def test_login_scope_authorize_url() -> None:
+    from crate.infrastructure.spotify.client import LOGIN_SCOPES
+
+    url = _oauth_client().authorize_url("https://c/cb", "st8", LOGIN_SCOPES)
+    assert "user-read-email" in url
+    assert "user-library-read" in url
+    assert "playlist-read-private" in url
+    assert "state=st8" in url
+
+
+def test_exchange_code_tokens_returns_both() -> None:
+    def post(url: str, data: dict[str, str], headers: dict[str, str]) -> Any:
+        return {"access_token": "acc", "refresh_token": "ref", "expires_in": 3600}
+
+    tokens = _oauth_client(post=post).exchange_code_tokens("code", "https://c/cb")
+    assert tokens == {"access_token": "acc", "refresh_token": "ref"}
+
+
+def test_me_shapes_profile() -> None:
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        assert url.endswith("/v1/me")
+        assert headers["Authorization"] == "Bearer AC"
+        return {
+            "id": "spot123",
+            "display_name": "Sai",
+            "email": "sai@example.com",
+            "images": [{"url": "http://img/big", "height": 300}],
+        }
+
+    me = _oauth_client(get=get).me("AC")
+    assert me["id"] == "spot123"
+    assert me["display_name"] == "Sai"
+    assert me["email"] == "sai@example.com"
+    assert me["avatar"] == "http://img/big"
+
+
+def test_me_falls_back_to_id_and_handles_missing_fields() -> None:
+    me = _oauth_client(get=lambda *_: {"id": "onlyid"}).me("AC")
+    assert me["display_name"] == "onlyid"
+    assert me["email"] is None and me["avatar"] is None
+
+
 def test_currently_playing_shapes_track() -> None:
     def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
         assert url.endswith("/currently-playing")

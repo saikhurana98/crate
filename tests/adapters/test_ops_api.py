@@ -165,6 +165,118 @@ def test_api_key_enforced(tmp_path: Path) -> None:
     assert client.get("/api/stats", headers={"X-API-Key": "secret"}).status_code == 200
 
 
+# --- Login with Spotify (Phase 2) ---
+from crate.application.auth import User  # noqa: E402
+
+
+class _FakeAuth:
+    """Minimal AuthPort for the API tests. login_url embeds the state so the
+    callback can round-trip it; complete_login always mints ``sess-raw``."""
+
+    RAW = "sess-raw"
+
+    def __init__(self) -> None:
+        self.user = User(id="u1", spotify_id="spot1", display_name="Sai", avatar_url="http://a")
+        self._revoked: set[str] = set()
+
+    def login_url(self, state: str) -> str:
+        return f"https://accounts.spotify.com/authorize?state={state}"
+
+    def complete_login(self, code: str) -> tuple[User, str]:
+        if code == "bad":
+            raise RuntimeError("exchange failed")
+        return self.user, self.RAW
+
+    def resolve_session(self, raw_token: str) -> User | None:
+        if raw_token == self.RAW and raw_token not in self._revoked:
+            return self.user
+        return None
+
+    def logout(self, raw_token: str) -> None:
+        self._revoked.add(raw_token)
+
+
+def _state_from(location: str) -> str:
+    return location.split("state=", 1)[1]
+
+
+def test_me_without_auth_returns_service_user(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    me = client.get("/api/me").json()
+    assert me["id"] == "service" and me["display_name"] == "service"
+
+
+def test_session_required_when_auth_configured(tmp_path: Path) -> None:
+    auth = _FakeAuth()
+    client = TestClient(create_app(_seeded_store(tmp_path), auth=auth))
+    # no cookie -> 401 on the authed router
+    assert client.get("/api/stats").status_code == 401
+    # a valid session cookie -> 200 + /api/me is the real user
+    cookies = {"crate_session": _FakeAuth.RAW}
+    assert client.get("/api/stats", cookies=cookies).status_code == 200
+    me = client.get("/api/me", cookies=cookies).json()
+    assert me["display_name"] == "Sai" and me["spotify_id"] == "spot1"
+
+
+def test_api_key_still_bypasses_session(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), api_key="secret", auth=_FakeAuth()))
+    assert client.get("/api/stats").status_code == 401
+    assert client.get("/api/stats", headers={"X-API-Key": "secret"}).status_code == 200
+
+
+def test_login_and_callback_sets_cookie(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), auth=_FakeAuth()))
+    login = client.get("/api/auth/login", follow_redirects=False)
+    assert login.status_code == 307
+    state = _state_from(login.headers["location"])
+
+    cb = client.get(
+        "/api/auth/callback", params={"code": "ok", "state": state}, follow_redirects=False
+    )
+    assert cb.status_code == 303 and cb.headers["location"] == "/"
+    set_cookie = cb.headers["set-cookie"]
+    assert "crate_session=sess-raw" in set_cookie
+    assert "HttpOnly" in set_cookie and "Secure" in set_cookie
+    assert "samesite=lax" in set_cookie.lower()
+
+
+def test_callback_rejects_unknown_state(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), auth=_FakeAuth()))
+    cb = client.get(
+        "/api/auth/callback", params={"code": "ok", "state": "forged"}, follow_redirects=False
+    )
+    assert cb.status_code == 303 and cb.headers["location"] == "/?login=error"
+    assert "set-cookie" not in cb.headers
+
+
+def test_callback_exchange_failure_redirects_error(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), auth=_FakeAuth()))
+    state = _state_from(client.get("/api/auth/login", follow_redirects=False).headers["location"])
+    cb = client.get(
+        "/api/auth/callback", params={"code": "bad", "state": state}, follow_redirects=False
+    )
+    assert cb.headers["location"] == "/?login=error"
+
+
+def test_login_endpoints_503_without_auth(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    assert client.get("/api/auth/login", follow_redirects=False).status_code == 503
+    assert client.get("/api/auth/callback", params={"code": "x", "state": "y"}).status_code == 503
+
+
+def test_logout_revokes_and_clears_cookie(tmp_path: Path) -> None:
+    auth = _FakeAuth()
+    client = TestClient(create_app(_seeded_store(tmp_path), auth=auth))
+    cookies = {"crate_session": _FakeAuth.RAW}
+    out = client.post("/api/auth/logout", cookies=cookies, follow_redirects=False)
+    assert out.status_code == 303
+    assert 'crate_session=""' in out.headers["set-cookie"] or "crate_session=;" in out.headers[
+        "set-cookie"
+    ].replace(" ", "")
+    # session now revoked -> authed access fails
+    assert client.get("/api/stats", cookies=cookies).status_code == 401
+
+
 def test_requests_limit_validation(tmp_path: Path) -> None:
     client = TestClient(create_app(_seeded_store(tmp_path)))
     assert client.get("/api/requests", params={"limit": 0}).status_code == 422

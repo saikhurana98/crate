@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from crate.adapters.sources import ytdlp
 from crate.adapters.sources.monochrome import DEFAULT_TIDAL_BASE, monochrome_download
+from crate.application.auth import SessionStore, SpotifyProfile, User, UserRepository
 from crate.application.cascade import MuxStrategy, SourceEntry, TierMux
 from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
@@ -899,6 +900,98 @@ def build_spotify_oauth(
     return SpotifyOAuthProvider(client, redirect_uri, config, store)
 
 
+class AuthProvider:
+    """Login-with-Spotify façade the console API calls (Phase 2, ADR-0018 v5).
+
+    One OAuth round-trip authenticates AND links the account: exchange the code,
+    read ``/v1/me`` for identity, upsert the user, persist their refresh token
+    per-user in the config vault (key ``spotify:<user_id>``, for Phase B library
+    reads), and mint a session. Constructed with injected collaborators so the
+    orchestration is unit-tested with fakes.
+    """
+
+    def __init__(
+        self,
+        client: _SpotifyClient,
+        redirect_uri: str,
+        config: _ConfigStore,
+        users: UserRepository,
+        sessions: SessionStore,
+    ) -> None:
+        self._client = client
+        self._redirect = redirect_uri
+        self._config = config
+        self._users = users
+        self._sessions = sessions
+
+    def login_url(self, state: str) -> str:
+        from crate.infrastructure.spotify.client import LOGIN_SCOPES
+
+        return self._client.authorize_url(self._redirect, state, LOGIN_SCOPES)
+
+    def complete_login(self, code: str) -> tuple[User, str]:
+        tokens = self._client.exchange_code_tokens(code, self._redirect)
+        me = self._client.me(tokens["access_token"])
+        if not me.get("id"):
+            raise RuntimeError("spotify profile missing id")
+        user = self._users.upsert_spotify_user(
+            SpotifyProfile(
+                spotify_id=me["id"],
+                display_name=me["display_name"],
+                email=me.get("email"),
+                avatar_url=me.get("avatar"),
+            )
+        )
+        self._config.put_secret(f"spotify:{user.id}", "refresh_token", tokens["refresh_token"])
+        raw = self._sessions.create(user.id)
+        return user, raw
+
+    def resolve_session(self, raw_token: str) -> User | None:
+        user_id = self._sessions.resolve(raw_token)
+        return self._users.get(user_id) if user_id else None
+
+    def logout(self, raw_token: str) -> None:
+        self._sessions.revoke(raw_token)
+
+
+def build_auth(
+    config: _ConfigStore, conn: Any
+) -> AuthProvider | None:  # pragma: no cover - IO wiring
+    """Login-with-Spotify provider, or ``None`` when the Spotify client creds /
+    redirect URI are absent (the console then falls back to key-only auth).
+    Shares the console's DB connection for the users/sessions tables."""
+    client_id = os.environ.get("CRATE_SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("CRATE_SPOTIFY_CLIENT_SECRET")
+    redirect_uri = os.environ.get("CRATE_SPOTIFY_REDIRECT_URI")
+    if not client_id or not client_secret or not redirect_uri:
+        return None
+    import httpx
+
+    from crate.infrastructure.spotify.client import SpotifyClient
+    from crate.infrastructure.sqlite.user_store import SqliteSessionStore, SqliteUserRepository
+
+    http_client = httpx.Client(timeout=8.0, follow_redirects=True)
+
+    def post_form(url: str, data: dict[str, str], headers: dict[str, str]) -> Any:
+        resp = http_client.post(url, data=data, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_json(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        resp = http_client.get(url, params=params, headers=headers)
+        resp.raise_for_status()
+        return resp.json() if resp.content else None
+
+    client = SpotifyClient(client_id, client_secret, post_form=post_form, get_json=get_json)
+    return AuthProvider(
+        client,
+        redirect_uri,
+        config,
+        SqliteUserRepository(conn),
+        SqliteSessionStore(conn),
+    )
+
+
 def build_identifier() -> Any:  # pragma: no cover - IO wiring
     """Advisory AcoustID identifier for the review hint: ``path -> IdentityHint``.
 
@@ -1019,7 +1112,8 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
     from crate.infrastructure.sqlite.db import connect
     from crate.infrastructure.sqlite.store import RequestStore
 
-    store = RequestStore(connect(db_path()), requested_via="console")
+    conn = connect(db_path())
+    store = RequestStore(conn, requested_via="console")
     config = build_config_store()
     static_env = os.environ.get("CRATE_CONSOLE_STATIC")
     static_dir = Path(static_env) if static_env else None
@@ -1030,6 +1124,7 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         config=config,
         search=build_spotify_search(),
         spotify=build_spotify_oauth(config, store),
+        auth=build_auth(config, conn),
         bulk_resolve=build_bulk_resolver(),
         candidate_sources=build_candidate_sources,
         identify_hint=build_identifier(),
