@@ -578,6 +578,15 @@ def create_app(
             store.enqueue(track["query"], batch_id=bid, identity=to_identity(track), user_id=uid)
         return {"id": bid, "name": name, "origin": "spotify", "total": len(tracks)}
 
+    @api.get("/feed")
+    def feed(
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+    ) -> list[dict[str, Any]]:
+        """The shared activity feed — everyone sees everything: who requested each
+        track and how fast it was served (time-to-first-playable + time-to-FLAC)."""
+        return store.list_feed(limit=limit, offset=offset)
+
     @api.get("/events")
     def events() -> StreamingResponse:
         return StreamingResponse(
@@ -764,6 +773,7 @@ def _live_frame(store: RequestStore) -> str:
     payload = {
         "stats": store.stats(),
         "in_flight": store.list_requests(status="downloading", limit=100),
+        "feed": store.list_feed(limit=50),
     }
     return f"data: {json.dumps(payload)}\n\n"
 

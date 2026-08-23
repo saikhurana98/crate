@@ -38,6 +38,26 @@ def _seeded_store(tmp_path: Path) -> RequestStore:
     return store
 
 
+def test_feed_shows_everyone_with_both_latencies(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    rows = client.get("/api/feed").json()
+    assert isinstance(rows, list) and rows
+    done = next(r for r in rows if r["status"] == "done")
+    # who requested it + both latencies present on a completed lossless grab
+    assert "user_name" in done and "user_id" in done
+    assert done["ttf_playable_s"] is not None
+    assert done["ttf_final_s"] is not None
+    # the still-in-flight row is in the feed too, latencies unset
+    inflight = next(r for r in rows if r["status"] == "downloading")
+    assert inflight["ttf_playable_s"] is None and inflight["ttf_final_s"] is None
+
+
+def test_feed_limit_is_bounded(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    assert client.get("/api/feed", params={"limit": 0}).status_code == 422
+    assert client.get("/api/feed", params={"limit": 500}).status_code == 422
+
+
 def test_health_needs_no_key(tmp_path: Path) -> None:
     client = TestClient(create_app(_seeded_store(tmp_path), api_key="secret"))
     r = client.get("/api/health")
