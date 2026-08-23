@@ -352,28 +352,19 @@ def test_sources_reflect_stored_layout(tmp_path: Path) -> None:
     assert srcs["ytdlp"]["enabled"] is True  # pinned in tier 3
 
 
-# --- Spotify "Listening" panel routes (user-scoped OAuth) ---
+# --- Spotify "Listening" panel routes (per-user; token from login) ---
 
 
 class _FakePort:
-    def __init__(self, connected: bool = False, raise_on_connect: bool = False) -> None:
+    def __init__(self, connected: bool = False) -> None:
         self._connected = connected
-        self._raise = raise_on_connect
-        self.codes: list[str] = []
+        self.seen: list[str] = []
 
-    def connected(self) -> bool:
+    def connected(self, user_id: str) -> bool:
         return self._connected
 
-    def authorize_url(self, state: str) -> str:
-        return f"https://accounts.spotify.com/authorize?state={state}"
-
-    def connect(self, code: str) -> None:
-        if self._raise:
-            raise RuntimeError("bad code")
-        self.codes.append(code)
-        self._connected = True
-
-    def player(self) -> dict[str, object]:
+    def player(self, user_id: str) -> dict[str, object]:
+        self.seen.append(user_id)
         return {"now_playing": {"title": "X", "query": "a X"}, "recent": []}
 
 
@@ -384,55 +375,72 @@ def test_spotify_status_absent_vs_present(tmp_path: Path) -> None:
     assert on.get("/api/spotify/status").json() == {"configured": True, "connected": True}
 
 
-def test_spotify_login_redirects_to_consent(tmp_path: Path) -> None:
-    client = TestClient(create_app(_seeded_store(tmp_path), spotify=_FakePort()))
-    r = client.get("/api/spotify/login", follow_redirects=False)
-    assert r.status_code == 307
-    assert r.headers["location"].startswith("https://accounts.spotify.com/authorize?state=")
-
-
-def test_spotify_login_503_when_absent(tmp_path: Path) -> None:
-    client = TestClient(create_app(_seeded_store(tmp_path)))
-    assert client.get("/api/spotify/login", follow_redirects=False).status_code == 503
-
-
-def test_spotify_callback_connects(tmp_path: Path) -> None:
-    port = _FakePort()
-    client = TestClient(create_app(_seeded_store(tmp_path), spotify=port))
-    r = client.get(
-        "/api/spotify/callback", params={"code": "abc", "state": "s"}, follow_redirects=False
-    )
-    assert r.status_code == 303 and r.headers["location"] == "/?spotify=connected"
-    assert port.codes == ["abc"]
-
-
-def test_spotify_callback_error_paths(tmp_path: Path) -> None:
-    port = _FakePort()
-    client = TestClient(create_app(_seeded_store(tmp_path), spotify=port))
-    # explicit error from Spotify
-    r1 = client.get(
-        "/api/spotify/callback", params={"error": "access_denied"}, follow_redirects=False
-    )
-    assert r1.status_code == 303 and r1.headers["location"] == "/?spotify=error"
-    # exchange failure -> error, not a 500
-    bad = _FakePort(raise_on_connect=True)
-    c2 = TestClient(create_app(_seeded_store(tmp_path), spotify=bad))
-    r2 = c2.get("/api/spotify/callback", params={"code": "x", "state": "s"}, follow_redirects=False)
-    assert r2.status_code == 303 and r2.headers["location"] == "/?spotify=error"
-    assert port.codes == []
-
-
 def test_spotify_player_states(tmp_path: Path) -> None:
-    # absent -> 503
+    # absent -> 409 (not connected)
     off = TestClient(create_app(_seeded_store(tmp_path)))
-    assert off.get("/api/spotify/player").status_code == 503
+    assert off.get("/api/spotify/player").status_code == 409
     # configured but not connected -> 409
     disc = TestClient(create_app(_seeded_store(tmp_path), spotify=_FakePort(connected=False)))
     assert disc.get("/api/spotify/player").status_code == 409
-    # connected -> payload
-    on = TestClient(create_app(_seeded_store(tmp_path), spotify=_FakePort(connected=True)))
+    # connected -> payload, scoped to the current user (service in single-user mode)
+    port = _FakePort(connected=True)
+    on = TestClient(create_app(_seeded_store(tmp_path), spotify=port))
     body = on.get("/api/spotify/player").json()
     assert body["now_playing"]["title"] == "X" and body["recent"] == []
+    assert port.seen == ["service"]
+
+
+# --- Spotify library import (per-user) ---
+
+
+class _FakeLibrary:
+    def my_playlists(self, user_id: str) -> list[dict]:
+        return [{"id": "p1", "name": "Focus", "count": 3, "image": None}]
+
+    def liked_songs(self, user_id: str, max_tracks: int = 2000) -> list[dict]:
+        return [{"query": "A T", "artist": "A", "title": "T", "isrc": "X", "duration_s": 200}]
+
+    def playlist_tracks(self, user_id: str, playlist_id: str, max_tracks: int = 2000) -> list[dict]:
+        return [{"query": f"pl {playlist_id}", "artist": "A", "title": playlist_id}]
+
+
+def test_library_playlists(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), library=_FakeLibrary()))
+    pls = client.get("/api/library/playlists").json()
+    assert pls[0]["name"] == "Focus" and pls[0]["count"] == 3
+
+
+def test_library_playlists_503_when_absent(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    assert client.get("/api/library/playlists").status_code == 503
+
+
+def test_library_import_liked_enqueues_batch(tmp_path: Path) -> None:
+    store = _seeded_store(tmp_path)
+    client = TestClient(create_app(store, library=_FakeLibrary()))
+    r = client.post("/api/library/import", json={"source": "liked"})
+    assert r.status_code == 200 and r.json()["total"] == 1 and r.json()["name"] == "Liked Songs"
+    claimed = store.claim_next()
+    assert claimed is not None and claimed["identity"].isrc == "X"
+
+
+def test_library_import_playlist_requires_id(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), library=_FakeLibrary()))
+    assert client.post("/api/library/import", json={"source": "playlist"}).status_code == 400
+    ok = client.post("/api/library/import", json={"source": "playlist", "playlist_id": "p1"})
+    assert ok.status_code == 200 and ok.json()["total"] == 1
+
+
+def test_library_import_bad_source_and_empty(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path), library=_FakeLibrary()))
+    assert client.post("/api/library/import", json={"source": "nope"}).status_code == 400
+
+    class _Empty(_FakeLibrary):
+        def liked_songs(self, user_id: str, max_tracks: int = 2000) -> list[dict]:
+            return []
+
+    c2 = TestClient(create_app(_seeded_store(tmp_path), library=_Empty()))
+    assert c2.post("/api/library/import", json={"source": "liked"}).status_code == 404
 
 
 # --- bulk downloads ---

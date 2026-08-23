@@ -16,6 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from crate.application.auth import SERVICE_USER_ID
 from crate.application.download import DownloadReport
 from crate.domain.candidate import Candidate
 from crate.domain.identity import TrackIdentity
@@ -71,36 +72,65 @@ class RequestStore:
         self._stats_cache = None
 
     # --- RequestRecorder (writes) ---
-    def open_request(self, query: str, identity: TrackIdentity | None = None) -> str:
+    def open_request(
+        self, query: str, identity: TrackIdentity | None = None, *, user_id: str | None = None
+    ) -> str:
         rid = _new_id()
         artist, title, isrc, duration_s = _identity_cols(identity)
         with self._lock:
             self._conn.execute(
                 "INSERT INTO requests"
-                "(id, query, requested_via, status, created_at, artist, title, isrc, duration_s) "
-                "VALUES (?, ?, ?, 'downloading', ?, ?, ?, ?, ?)",
-                (rid, query, self._via, now_iso(), artist, title, isrc, duration_s),
+                "(id, query, requested_via, status, created_at, artist, title, isrc, duration_s, "
+                "user_id) VALUES (?, ?, ?, 'downloading', ?, ?, ?, ?, ?, ?)",
+                (
+                    rid,
+                    query,
+                    self._via,
+                    now_iso(),
+                    artist,
+                    title,
+                    isrc,
+                    duration_s,
+                    user_id or SERVICE_USER_ID,
+                ),
             )
             self._invalidate_stats()
         return rid
 
     # --- console queue (cross-process work items) ---
     def enqueue(
-        self, query: str, batch_id: str | None = None, identity: TrackIdentity | None = None
+        self,
+        query: str,
+        batch_id: str | None = None,
+        identity: TrackIdentity | None = None,
+        *,
+        user_id: str | None = None,
     ) -> str:
         """Record a console-requested download as ``queued``; the shim's queue
         worker claims and runs it. ``batch_id`` groups it into a bulk batch;
-        ``identity`` persists the structured artist/title/ISRC/duration columns.
-        Returns the new request id."""
+        ``identity`` persists the structured artist/title/ISRC/duration columns;
+        ``user_id`` attributes it to the requesting user (defaults to the
+        synthetic service user for automation/CLI). Returns the new request id."""
         rid = _new_id()
         artist, title, isrc, duration_s = _identity_cols(identity)
         with self._lock:
             self._conn.execute(
                 "INSERT INTO requests"
                 "(id, query, requested_via, status, created_at, batch_id, "
-                "artist, title, isrc, duration_s) "
-                "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
-                (rid, query, self._via, now_iso(), batch_id, artist, title, isrc, duration_s),
+                "artist, title, isrc, duration_s, user_id) "
+                "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    rid,
+                    query,
+                    self._via,
+                    now_iso(),
+                    batch_id,
+                    artist,
+                    title,
+                    isrc,
+                    duration_s,
+                    user_id or SERVICE_USER_ID,
+                ),
             )
             self._invalidate_stats()
         return rid
@@ -112,15 +142,22 @@ class RequestStore:
     )
 
     def claim_next(self) -> dict[str, Any] | None:
-        """Atomically claim the oldest claimable ``queued`` request
+        """Atomically claim the next claimable ``queued`` request
         (-> ``downloading``), skipping paused/cancelled batches. Safe under
         concurrent claimers (the guarded UPDATE makes claiming exclusive).
+
+        **Fair scheduling:** serve the user whose last claim is oldest
+        (round-robin across users, NULLS-FIRST for never-served users), then FIFO
+        within that user — so one user's 500-track import can't starve everyone
+        else. Records the claim in ``owner_claims`` inside the same locked txn.
         Returns ``{"id", "query", "identity"}`` or ``None`` when nothing is
         claimable; ``identity`` is the row's :class:`TrackIdentity`."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, query, artist, title, isrc, duration_s FROM requests "
-                f"WHERE {self._CLAIMABLE} ORDER BY created_at LIMIT 1"
+                "SELECT r.id, r.query, r.artist, r.title, r.isrc, r.duration_s, r.user_id "
+                "FROM requests r LEFT JOIN owner_claims oc ON oc.user_id = r.user_id "
+                f"WHERE {self._CLAIMABLE} "
+                "ORDER BY COALESCE(oc.last_claim_at, '') ASC, r.created_at ASC LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
@@ -130,6 +167,11 @@ class RequestStore:
             )
             if cur.rowcount != 1:  # another worker claimed it first
                 return None
+            self._conn.execute(
+                "INSERT INTO owner_claims(user_id, last_claim_at) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET last_claim_at=excluded.last_claim_at",
+                (row["user_id"] or SERVICE_USER_ID, now_iso()),
+            )
             self._invalidate_stats()  # a row moved queued -> downloading
             return {"id": row["id"], "query": row["query"], "identity": _row_identity(row)}
 
@@ -192,10 +234,14 @@ class RequestStore:
         query: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        *,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         sql = (
-            "SELECT r.*, d.quality_label, d.size_bytes, d.lossless, d.elapsed_s "
-            "FROM requests r LEFT JOIN downloads d ON d.request_id = r.id"
+            "SELECT r.*, d.quality_label, d.size_bytes, d.lossless, d.elapsed_s, "
+            "u.display_name AS user_name "
+            "FROM requests r LEFT JOIN downloads d ON d.request_id = r.id "
+            "LEFT JOIN users u ON u.id = r.user_id"
         )
         clauses: list[str] = []
         params: list[Any] = []
@@ -205,6 +251,9 @@ class RequestStore:
         if query:
             clauses.append("r.query LIKE ?")
             params.append(f"%{query}%")
+        if user_id:
+            clauses.append("r.user_id = ?")
+            params.append(user_id)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         # Order by last activity, not creation: a review re-download reuses the
@@ -220,7 +269,11 @@ class RequestStore:
 
     def get_request(self, request_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._conn.execute("SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()
+            row = self._conn.execute(
+                "SELECT r.*, u.display_name AS user_name FROM requests r "
+                "LEFT JOIN users u ON u.id = r.user_id WHERE r.id=?",
+                (request_id,),
+            ).fetchone()
             if row is None:
                 return None
             out = dict(row)
@@ -298,13 +351,15 @@ class RequestStore:
             return frame
 
     # --- bulk batches ---
-    def create_batch(self, name: str, origin: str, owner: str, total: int) -> str:
+    def create_batch(
+        self, name: str, origin: str, owner: str, total: int, *, user_id: str | None = None
+    ) -> str:
         bid = _new_id()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO batches(id, name, origin, owner, total, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (bid, name, origin, owner, total, now_iso()),
+                "INSERT INTO batches(id, name, origin, owner, total, created_at, user_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (bid, name, origin, owner, total, now_iso(), user_id or SERVICE_USER_ID),
             )
             self._invalidate_stats()
         return bid

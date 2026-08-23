@@ -11,6 +11,7 @@ import {
   type LiveEvent,
   type Me,
   type PlayerState,
+  type Playlist,
   type PlayerTrack,
   type RequestDetail,
   type RequestRow,
@@ -137,6 +138,10 @@ interface State {
   spotifyConfigured: boolean; // /api/spotify/status.configured (user-OAuth set up)
   spotifyConnected: boolean; // refresh token stored -> Listening panel is live
   player: PlayerState | null; // now-playing + recently-played
+  importOpen: boolean; // "Import from Spotify" section expanded
+  importPlaylists: Playlist[] | null; // the user's playlists (lazy-loaded on open)
+  importBusy: Record<string, boolean>; // "liked" | playlist id -> import in flight
+  importErr: string | null;
   isMobile: boolean; // viewport <= 640px -> tabbed app layout
   activeTab: "cascade" | "activity" | "tracks"; // mobile bottom-nav selection
   page: "console" | "bulk" | "review"; // top-level page
@@ -195,6 +200,10 @@ const state: State = {
   spotifyConfigured: false,
   spotifyConnected: false,
   player: null,
+  importOpen: false,
+  importPlaylists: null,
+  importBusy: {},
+  importErr: null,
   isMobile: typeof matchMedia !== "undefined" ? matchMedia("(max-width: 640px)").matches : false,
   activeTab: "cascade",
   page: "console",
@@ -310,6 +319,36 @@ async function loadPlayer(): Promise<void> {
     state.player = await api.spotifyPlayer();
   } catch {
     /* 409 not connected / transient — leave the last snapshot */
+  }
+}
+
+// ---------- library import ----------
+async function toggleImport(): Promise<void> {
+  state.importOpen = !state.importOpen;
+  render();
+  if (state.importOpen && state.importPlaylists === null) {
+    state.importErr = null;
+    try {
+      state.importPlaylists = await api.libraryPlaylists();
+    } catch (err) {
+      state.importErr = (err as Error).message;
+    }
+    render();
+  }
+}
+async function runImport(source: "liked" | "playlist", key: string, pid?: string, name?: string): Promise<void> {
+  if (state.importBusy[key]) return;
+  state.importBusy = { ...state.importBusy, [key]: true };
+  render();
+  try {
+    const res = await api.importLibrary({ source, playlist_id: pid, name });
+    toast(`Importing “${res.name}” — ${res.total} track${res.total === 1 ? "" : "s"} queued`);
+    void loadBatches().then(render);
+  } catch (err) {
+    toast(`Import failed: ${(err as Error).message}`);
+  } finally {
+    state.importBusy = { ...state.importBusy, [key]: false };
+    render();
   }
 }
 
@@ -941,8 +980,7 @@ function listeningHtml(): string {
       </div>${inner}</div>`;
   if (!state.spotifyConnected) {
     return wrap(
-      `<a href="${api.spotifyLoginUrl}" style="display:flex;align-items:center;justify-content:center;gap:9px;background:#181c17;border:1px solid #272c25;border-radius:14px;padding:14px;text-decoration:none;color:#e9ede3;font:600 12.5px 'Instrument Sans';transition:border-color .15s" class="ghost">
-        <span style="width:8px;height:8px;border-radius:50%;background:#ff4c38"></span>Connect Spotify to pull your now-playing &amp; recent tracks</a>`,
+      `<div style="background:#181c17;border:1px solid #272c25;border-radius:14px;padding:14px;font:400 11.5px 'Instrument Sans';color:#99a091">Log in with Spotify to see your now-playing and import your library.</div>`,
     );
   }
   const np = state.player?.now_playing ?? null;
@@ -981,7 +1019,48 @@ function listeningHtml(): string {
         })
         .join("")}`
     : "";
-  return wrap(nowBlock + recentBlock);
+  return wrap(nowBlock + recentBlock + importHtml());
+}
+
+// "Import from Spotify" — pull the user's Liked Songs or a playlist into the queue.
+function importHtml(): string {
+  const chevron = state.importOpen ? "▾" : "▸";
+  const header = `<button data-act="toggleImport" class="ghost" style="margin-top:12px;width:100%;display:flex;align-items:center;gap:8px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:11px 14px;cursor:pointer;color:#e9ede3;font:600 12px 'Instrument Sans';transition:border-color .15s">
+    <span style="width:8px;height:8px;border-radius:50%;background:#1db954"></span>Import from Spotify
+    <span style="margin-left:auto;color:#5d6456">${chevron}</span></button>`;
+  if (!state.importOpen) return header;
+
+  const likedBusy = !!state.importBusy["liked"];
+  const liked = `<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-top:1px solid #1a1e19">
+    <span style="width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#4300a0,#c13584);display:flex;align-items:center;justify-content:center;flex-shrink:0">♥</span>
+    <div style="flex:1;min-width:0"><div style="font:600 12px 'Instrument Sans';color:#e9ede3">Liked Songs</div></div>
+    ${importBtn("importLiked", likedBusy)}</div>`;
+
+  let body: string;
+  if (state.importErr) {
+    body = `<div style="padding:10px 4px;font:400 11px 'Instrument Sans';color:#ff4c38">${esc(state.importErr)}</div>`;
+  } else if (state.importPlaylists === null) {
+    body = `<div style="padding:10px 4px;font:400 11px 'Instrument Sans';color:#5d6456">Loading playlists…</div>`;
+  } else {
+    body = state.importPlaylists
+      .map((p) => {
+        const busy = !!state.importBusy[p.id];
+        const art = p.image
+          ? `<img src="${esc(p.image)}" alt="" style="width:30px;height:30px;border-radius:8px;object-fit:cover;flex-shrink:0"/>`
+          : `<span style="width:30px;height:30px;border-radius:8px;background:#181c17;border:1px solid #272c25;display:flex;align-items:center;justify-content:center;font:800 12px 'Doto';color:#5d6456;flex-shrink:0">${esc((p.name[0] || "?").toUpperCase())}</span>`;
+        return `<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-top:1px solid #1a1e19">
+          ${art}
+          <div style="flex:1;min-width:0"><div style="font:500 12px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</div><div style="font:400 10px 'JetBrains Mono';color:#5d6456">${p.count} track${p.count === 1 ? "" : "s"}</div></div>
+          ${importBtn("importPlaylist", busy, p.id, p.name)}</div>`;
+      })
+      .join("");
+  }
+  return header + liked + body;
+}
+
+function importBtn(act: string, busy: boolean, pid?: string, name?: string): string {
+  const attrs = pid ? ` data-pid="${esc(pid)}" data-name="${esc(name || "")}"` : "";
+  return `<button data-act="${act}"${attrs} ${busy ? "disabled" : ""} style="flex-shrink:0;background:${busy ? "#181c17" : "rgba(29,185,84,.14)"};border:1px solid ${busy ? "#272c25" : "rgba(29,185,84,.4)"};border-radius:12px;color:${busy ? "#5d6456" : "#1db954"};font:600 11px 'Instrument Sans';padding:7px 13px;cursor:${busy ? "default" : "pointer"};transition:.15s">${busy ? "Queuing…" : "Import"}</button>`;
 }
 
 function liveHtml(): string {
@@ -2232,6 +2311,10 @@ function bindEvents(): void {
     e.stopPropagation();
     const act = el.dataset.act!;
     if (act === "logout") void api.logout();
+    else if (act === "toggleImport") void toggleImport();
+    else if (act === "importLiked") void runImport("liked", "liked");
+    else if (act === "importPlaylist")
+      void runImport("playlist", el.dataset.pid!, el.dataset.pid!, el.dataset.name!);
     else if (act === "strategy") setStrategy(el.dataset.tier!, el.dataset.strategy as "all" | "uniform");
     else if (act === "openPanel") {
       state.panelSource = el.dataset.source!;

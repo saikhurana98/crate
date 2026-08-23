@@ -805,62 +805,55 @@ if TYPE_CHECKING:
     from crate.infrastructure.sqlite.config_store import ConfigStore as _ConfigStore
     from crate.infrastructure.sqlite.store import RequestStore as _RequestStore
 
-_SPOTIFY_REFRESH = ("spotify", "refresh_token")
 _ACCESS_TTL_S = 3000.0  # Spotify access tokens live 3600 s; refresh comfortably early
 
 
-class SpotifyOAuthProvider:
-    """User-scoped Spotify player integration for the console (ADR-0018 v4).
+class SpotifyUser:
+    """Per-user Spotify reads — the "Listening" panel + library import (Phase 2).
 
-    Holds the operator's refresh token (encrypted in the config store) and trades
-    it for short-lived access tokens to read their current + recent tracks. The
-    client-credentials search flow cannot reach these endpoints — they need the
-    user's own consent.
+    Trades each logged-in user's stored refresh token (vault key
+    ``spotify:<user_id>``, minted by :class:`AuthProvider` at login) for
+    short-lived access tokens, cached per user. There is no separate "connect"
+    flow anymore: Login-with-Spotify is the single OAuth round-trip.
     """
 
     def __init__(
         self,
         client: _SpotifyClient,
-        redirect_uri: str,
         config: _ConfigStore,
         store: _RequestStore,
         *,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = client
-        self._redirect = redirect_uri
         self._config = config
         self._store = store
         self._now = now
-        self._access: str | None = None
-        self._access_exp = 0.0
+        self._access: dict[str, tuple[str, float]] = {}  # user_id -> (token, expiry)
 
-    def connected(self) -> bool:
-        return self._config.get_secret(*_SPOTIFY_REFRESH) is not None
+    @staticmethod
+    def _key(user_id: str) -> tuple[str, str]:
+        return (f"spotify:{user_id}", "refresh_token")
 
-    def authorize_url(self, state: str) -> str:
-        return self._client.authorize_url(self._redirect, state)
+    def connected(self, user_id: str) -> bool:
+        return self._config.get_secret(*self._key(user_id)) is not None
 
-    def connect(self, code: str) -> None:
-        refresh = self._client.exchange_code(code, self._redirect)
-        self._config.put_secret(*_SPOTIFY_REFRESH, refresh)
-        self._access = None  # force a fresh access token on the next player() call
-
-    def _bearer(self) -> str:
-        if self._access is not None and self._now() < self._access_exp:
-            return self._access
-        refresh = self._config.get_secret(*_SPOTIFY_REFRESH)
+    def _bearer(self, user_id: str) -> str:
+        cached = self._access.get(user_id)
+        if cached is not None and self._now() < cached[1]:
+            return cached[0]
+        refresh = self._config.get_secret(*self._key(user_id))
         if refresh is None:
             raise RuntimeError("spotify not connected")
-        self._access = self._client.refresh_access_token(refresh)
-        self._access_exp = self._now() + _ACCESS_TTL_S
-        return self._access
+        token = self._client.refresh_access_token(refresh)
+        self._access[user_id] = (token, self._now() + _ACCESS_TTL_S)
+        return token
 
     def _in_library(self, query: str) -> bool:
         return bool(self._store.list_requests(query=query, status="done", limit=1))
 
-    def player(self) -> dict[str, Any]:
-        token = self._bearer()
+    def player(self, user_id: str) -> dict[str, Any]:
+        token = self._bearer(user_id)
         now = self._client.currently_playing(token)
         recent = self._client.recently_played(token, limit=8)
         if now is not None:
@@ -869,16 +862,28 @@ class SpotifyOAuthProvider:
             track["in_library"] = self._in_library(track["query"])
         return {"now_playing": now, "recent": recent}
 
+    # --- library import (SpotifyLibraryReader) ---
+    def my_playlists(self, user_id: str) -> list[dict[str, Any]]:
+        return self._client.current_user_playlists(self._bearer(user_id))
 
-def build_spotify_oauth(
+    def liked_songs(self, user_id: str, max_tracks: int = 2000) -> list[dict[str, Any]]:
+        return self._client.saved_tracks(self._bearer(user_id), max_tracks)
+
+    def playlist_tracks(
+        self, user_id: str, playlist_id: str, max_tracks: int = 2000
+    ) -> list[dict[str, Any]]:
+        return self._client.user_playlist_tracks(self._bearer(user_id), playlist_id, max_tracks)
+
+
+def build_spotify_user(
     config: _ConfigStore, store: _RequestStore
-) -> SpotifyOAuthProvider | None:  # pragma: no cover - IO wiring
-    """Provider for the console's Spotify "Listening" panel, or ``None`` when the
-    client creds or redirect URI are absent (the panel then hides)."""
+) -> SpotifyUser | None:  # pragma: no cover - IO wiring
+    """Per-user Spotify reads (player + library) for the console, or ``None`` when
+    the client creds are absent (the panel/import then hide). Uses the per-user
+    tokens login already stores; needs no redirect URI of its own."""
     client_id = os.environ.get("CRATE_SPOTIFY_CLIENT_ID")
     client_secret = os.environ.get("CRATE_SPOTIFY_CLIENT_SECRET")
-    redirect_uri = os.environ.get("CRATE_SPOTIFY_REDIRECT_URI")
-    if not client_id or not client_secret or not redirect_uri:
+    if not client_id or not client_secret:
         return None
     import httpx
 
@@ -897,7 +902,7 @@ def build_spotify_oauth(
         return resp.json() if resp.content else None  # 204 => nothing playing
 
     client = SpotifyClient(client_id, client_secret, post_form=post_form, get_json=get_json)
-    return SpotifyOAuthProvider(client, redirect_uri, config, store)
+    return SpotifyUser(client, config, store)
 
 
 class AuthProvider:
@@ -1117,13 +1122,15 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
     config = build_config_store()
     static_env = os.environ.get("CRATE_CONSOLE_STATIC")
     static_dir = Path(static_env) if static_env else None
+    spotify_user = build_spotify_user(config, store)
     return create_app(
         store,
         api_key=os.environ.get("CRATE_OPS_API_KEY") or None,
         static_dir=static_dir,
         config=config,
         search=build_spotify_search(),
-        spotify=build_spotify_oauth(config, store),
+        spotify=spotify_user,
+        library=spotify_user,
         auth=build_auth(config, conn),
         bulk_resolve=build_bulk_resolver(),
         candidate_sources=build_candidate_sources,
