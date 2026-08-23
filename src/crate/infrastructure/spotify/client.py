@@ -26,6 +26,8 @@ NOW_PLAYING_URL = "https://api.spotify.com/v1/me/player/currently-playing"
 RECENT_URL = "https://api.spotify.com/v1/me/player/recently-played"
 PLAYLIST_URL = "https://api.spotify.com/v1/playlists/"
 ME_URL = "https://api.spotify.com/v1/me"
+SAVED_TRACKS_URL = "https://api.spotify.com/v1/me/tracks"
+MY_PLAYLISTS_URL = "https://api.spotify.com/v1/me/playlists"
 
 _PLAYLIST_ID = re.compile(r"playlist[/:]([A-Za-z0-9]+)")
 
@@ -54,6 +56,25 @@ def _best_art(images: list[dict[str, Any]]) -> str | None:
     pick = min(usable or images, key=lambda i: int(i.get("height") or 10_000))
     url = pick.get("url")
     return str(url) if url else None
+
+
+def _min_track(track: dict[str, Any]) -> dict[str, Any] | None:
+    """Minimal cascade-ready dict from a Spotify track object, or ``None`` when it
+    has no title (local/unavailable rows). Shared by playlist / Liked-Songs /
+    user-playlist reads so they all match on ISRC + duration."""
+    title = track.get("name")
+    if not title:
+        return None
+    artists = ", ".join(a["name"] for a in track.get("artists", []) if a.get("name"))
+    duration_ms = int(track.get("duration_ms") or 0)
+    isrc = (track.get("external_ids") or {}).get("isrc")
+    return {
+        "query": f"{artists} {title}".strip(),
+        "artist": artists or None,
+        "title": str(title),
+        "isrc": str(isrc) if isrc else None,
+        "duration_s": round(duration_ms / 1000) if duration_ms else None,
+    }
 
 
 def _track(item: dict[str, Any]) -> dict[str, Any]:
@@ -144,22 +165,9 @@ class SpotifyClient:
 
         def collect(items: list[dict[str, Any]]) -> None:
             for entry in items or []:
-                track = (entry or {}).get("track") or {}
-                title = track.get("name")
-                if not title:
-                    continue
-                artists = ", ".join(a["name"] for a in track.get("artists", []) if a.get("name"))
-                duration_ms = int(track.get("duration_ms") or 0)
-                isrc = (track.get("external_ids") or {}).get("isrc")
-                tracks.append(
-                    {
-                        "query": f"{artists} {title}".strip(),
-                        "artist": artists or None,
-                        "title": str(title),
-                        "isrc": str(isrc) if isrc else None,
-                        "duration_s": round(duration_ms / 1000) if duration_ms else None,
-                    }
-                )
+                track = _min_track((entry or {}).get("track") or {})
+                if track is not None:
+                    tracks.append(track)
 
         collect(tracks_obj.get("items") or [])
         nxt = tracks_obj.get("next")
@@ -246,4 +254,61 @@ class SpotifyClient:
             track = _track(item)
             track["played_at"] = entry.get("played_at")
             out.append(track)
+        return out
+
+    # --- user library (private reads, need the per-user access token) ---
+    def _paged_tracks(
+        self, url: str, access_token: str, params: dict[str, Any], max_tracks: int
+    ) -> list[dict[str, Any]]:
+        """Follow ``next`` pagination collecting ``_min_track`` dicts from items
+        shaped ``{track: {...}}`` (Liked Songs and playlist-track endpoints)."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        out: list[dict[str, Any]] = []
+        data = self._get_json(url, {"limit": 50, **params}, headers)
+        while data:
+            for entry in (data or {}).get("items") or []:
+                track = _min_track((entry or {}).get("track") or {})
+                if track is not None:
+                    out.append(track)
+                if len(out) >= max_tracks:
+                    return out
+            nxt = (data or {}).get("next")
+            data = self._get_json(str(nxt), {}, headers) if nxt else None
+        return out
+
+    def saved_tracks(self, access_token: str, max_tracks: int = 2000) -> list[dict[str, Any]]:
+        """The user's Liked Songs (``GET /v1/me/tracks``)."""
+        return self._paged_tracks(SAVED_TRACKS_URL, access_token, {}, max_tracks)
+
+    def user_playlist_tracks(
+        self, access_token: str, playlist_id: str, max_tracks: int = 2000
+    ) -> list[dict[str, Any]]:
+        """Tracks of one of the user's own playlists (works for private ones)."""
+        url = f"{PLAYLIST_URL}{playlist_id}/tracks"
+        return self._paged_tracks(url, access_token, {}, max_tracks)
+
+    def current_user_playlists(
+        self, access_token: str, max_playlists: int = 200
+    ) -> list[dict[str, Any]]:
+        """The user's playlists (``GET /v1/me/playlists``) as
+        ``{id, name, count, image}`` dicts."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        out: list[dict[str, Any]] = []
+        data = self._get_json(MY_PLAYLISTS_URL, {"limit": 50}, headers)
+        while data:
+            for pl in (data or {}).get("items") or []:
+                if not pl or not pl.get("id"):
+                    continue
+                out.append(
+                    {
+                        "id": str(pl["id"]),
+                        "name": str(pl.get("name") or "Playlist"),
+                        "count": int(((pl.get("tracks") or {}).get("total")) or 0),
+                        "image": _best_art(pl.get("images") or []),
+                    }
+                )
+                if len(out) >= max_playlists:
+                    return out
+            nxt = (data or {}).get("next")
+            data = self._get_json(str(nxt), {}, headers) if nxt else None
         return out

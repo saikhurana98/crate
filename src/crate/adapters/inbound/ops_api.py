@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 
 from crate.application.auth import SERVICE_USER_ID, SESSION_TTL_S, User
 from crate.application.bulk import ResolvedBatch
+from crate.application.library_import import to_identity
 from crate.composition.catalog import (
     KNOWN,
     PINNED,
@@ -88,22 +89,34 @@ class AuthPort(Protocol):
 
 
 class SpotifyPort(Protocol):
-    """Console-facing Spotify player integration (user-scoped OAuth)."""
+    """Per-user Spotify "Listening" panel. Tokens come from Login-with-Spotify;
+    there is no separate connect flow (Phase 2 consolidation)."""
 
-    def connected(self) -> bool:
-        """True once the operator has authorized (a refresh token is stored)."""
+    def connected(self, user_id: str) -> bool:
+        """True when this user has a stored Spotify token (always so once they've
+        logged in with Spotify)."""
         ...
 
-    def authorize_url(self, state: str) -> str:
-        """The Spotify consent URL to redirect the browser to on Connect."""
+    def player(self, user_id: str) -> dict[str, Any]:
+        """``{now_playing, recent}`` — this user's current + recent tracks."""
         ...
 
-    def connect(self, code: str) -> None:
-        """Exchange the callback code for a refresh token and persist it."""
+
+class LibraryPort(Protocol):
+    """Per-user Spotify library reads for import (Phase 2)."""
+
+    def my_playlists(self, user_id: str) -> list[dict[str, Any]]:
+        """The user's playlists as ``{id, name, count, image}`` dicts."""
         ...
 
-    def player(self) -> dict[str, Any]:
-        """``{now_playing, recent}`` — the operator's current + recent tracks."""
+    def liked_songs(self, user_id: str, max_tracks: int = 2000) -> list[dict[str, Any]]:
+        """The user's Liked Songs as track dicts."""
+        ...
+
+    def playlist_tracks(
+        self, user_id: str, playlist_id: str, max_tracks: int = 2000
+    ) -> list[dict[str, Any]]:
+        """The tracks of one of the user's playlists as track dicts."""
         ...
 
 
@@ -116,6 +129,7 @@ def create_app(
     config: ConfigStore | None = None,
     search: SearchFn | None = None,
     spotify: SpotifyPort | None = None,
+    library: LibraryPort | None = None,
     auth: AuthPort | None = None,
     bulk_resolve: BulkResolveFn | None = None,
     candidate_sources: CandidateSourcesFn | None = None,
@@ -213,16 +227,17 @@ def create_app(
         return results
 
     @api.post("/download")
-    def enqueue_download(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    def enqueue_download(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         query = str(body.get("query", "")).strip()
         if not query:
             raise HTTPException(status_code=400, detail="query required")
-        rid = store.enqueue(query, identity=_identity_from_body(body))
+        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
+        rid = store.enqueue(query, identity=_identity_from_body(body), user_id=uid)
         return {"id": rid, "query": query, "status": "queued"}
 
     # --- bulk downloads (batches) ---
     @api.post("/bulk")
-    def enqueue_bulk(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    def enqueue_bulk(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
         text = str(body.get("text", "")).strip()
         if not text:
             raise HTTPException(status_code=400, detail="text required")
@@ -236,9 +251,12 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # resolver/network failure
             raise HTTPException(status_code=502, detail=f"could not resolve: {exc}") from exc
-        bid = store.create_batch(batch.name, batch.origin, batch.owner, len(batch.tracks))
+        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
+        bid = store.create_batch(
+            batch.name, batch.origin, batch.owner, len(batch.tracks), user_id=uid
+        )
         for track in batch.tracks:
-            store.enqueue(track.display(), batch_id=bid, identity=track)
+            store.enqueue(track.display(), batch_id=bid, identity=track, user_id=uid)
         return {"id": bid, "name": batch.name, "origin": batch.origin, "total": len(batch.tracks)}
 
     @api.get("/batches")
@@ -505,47 +523,60 @@ def create_app(
             cfg.put_layout(validate_layout(layout))
         return next(s for s in sources_view() if s["name"] == name)
 
-    # --- Spotify "Listening" panel (user-scoped OAuth) ---
+    # CSRF-state set for Login-with-Spotify (auth/login -> auth/callback).
     pending_states: set[str] = set()
 
+    # --- Spotify "Listening" panel (per-user; token comes from login) ---
     @api.get("/spotify/status")
-    def spotify_status() -> dict[str, bool]:
+    def spotify_status(request: Request) -> dict[str, bool]:
+        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
         return {
             "configured": spotify is not None,
-            "connected": bool(spotify and spotify.connected()),
+            "connected": bool(spotify and spotify.connected(uid)),
         }
 
-    @api.get("/spotify/login")
-    def spotify_login() -> RedirectResponse:
-        if spotify is None:
-            raise HTTPException(status_code=503, detail="spotify not configured")
-        state = secrets.token_urlsafe(16)
-        if len(pending_states) < _MAX_PENDING_STATES:
-            pending_states.add(state)
-        return RedirectResponse(spotify.authorize_url(state), status_code=307)
-
-    @api.get("/spotify/callback")
-    def spotify_callback(
-        code: str | None = None, state: str | None = None, error: str | None = None
-    ) -> RedirectResponse:
-        if spotify is None:
-            raise HTTPException(status_code=503, detail="spotify not configured")
-        pending_states.discard(state or "")
-        if error or not code or state is None:
-            return RedirectResponse("/?spotify=error", status_code=303)
-        try:
-            spotify.connect(code)
-        except Exception:  # bad code / exchange failure -> surface in the UI, don't 500
-            return RedirectResponse("/?spotify=error", status_code=303)
-        return RedirectResponse("/?spotify=connected", status_code=303)
-
     @api.get("/spotify/player")
-    def spotify_player() -> dict[str, Any]:
-        if spotify is None:
-            raise HTTPException(status_code=503, detail="spotify not configured")
-        if not spotify.connected():
+    def spotify_player(request: Request) -> dict[str, Any]:
+        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
+        if spotify is None or not spotify.connected(uid):
             raise HTTPException(status_code=409, detail="not connected")
-        return spotify.player()
+        return spotify.player(uid)
+
+    # --- Spotify library import (per-user) ---
+    @api.get("/library/playlists")
+    def library_playlists(request: Request) -> list[dict[str, Any]]:
+        if library is None:
+            raise HTTPException(status_code=503, detail="library not configured")
+        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
+        return library.my_playlists(uid)
+
+    @api.post("/library/import")
+    def library_import(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        if library is None:
+            raise HTTPException(status_code=503, detail="library not configured")
+        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
+        source = str(body.get("source", "")).strip()
+        try:
+            if source == "liked":
+                name, tracks = "Liked Songs", library.liked_songs(uid)
+            elif source == "playlist":
+                pid = str(body.get("playlist_id", "")).strip()
+                if not pid:
+                    raise HTTPException(status_code=400, detail="playlist_id required")
+                name = str(body.get("name", "")).strip() or "Playlist"
+                tracks = library.playlist_tracks(uid, pid)
+            else:
+                raise HTTPException(status_code=400, detail="source must be 'liked' or 'playlist'")
+        except HTTPException:
+            raise
+        except Exception as exc:  # token/refresh/network failure
+            raise HTTPException(status_code=502, detail=f"import failed: {exc}") from exc
+        if not tracks:
+            raise HTTPException(status_code=404, detail="nothing to import")
+        bid = store.create_batch(name, "spotify", name, len(tracks), user_id=uid)
+        for track in tracks:
+            store.enqueue(track["query"], batch_id=bid, identity=to_identity(track), user_id=uid)
+        return {"id": bid, "name": name, "origin": "spotify", "total": len(tracks)}
 
     @api.get("/events")
     def events() -> StreamingResponse:

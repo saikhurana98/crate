@@ -237,6 +237,69 @@ def test_me_falls_back_to_id_and_handles_missing_fields() -> None:
     assert me["email"] is None and me["avatar"] is None
 
 
+def _track_obj(name: str) -> dict[str, Any]:
+    return {"name": name, "artists": [{"name": "A"}], "duration_ms": 200_000, "external_ids": {}}
+
+
+def test_saved_tracks_paginates() -> None:
+    pages = {
+        "https://api.spotify.com/v1/me/tracks": {
+            "items": [{"track": _track_obj("One")}],
+            "next": "https://api.spotify.com/v1/me/tracks?offset=50",
+        },
+        "https://api.spotify.com/v1/me/tracks?offset=50": {
+            "items": [{"track": _track_obj("Two")}, {"track": {"name": ""}}],  # blank skipped
+            "next": None,
+        },
+    }
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        assert headers["Authorization"] == "Bearer AC"
+        return pages[url]
+
+    tracks = _oauth_client(get=get).saved_tracks("AC")
+    assert [t["title"] for t in tracks] == ["One", "Two"]
+
+
+def test_saved_tracks_respects_max() -> None:
+    page = {"items": [{"track": _track_obj(f"T{i}")} for i in range(50)], "next": "n"}
+    tracks = _oauth_client(get=lambda *_: page).saved_tracks("AC", max_tracks=10)
+    assert len(tracks) == 10
+
+
+def test_user_playlist_tracks_uses_playlist_endpoint() -> None:
+    seen: dict[str, str] = {}
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        seen["url"] = url
+        return {"items": [{"track": _track_obj("Song")}], "next": None}
+
+    tracks = _oauth_client(get=get).user_playlist_tracks("AC", "PID")
+    assert tracks[0]["title"] == "Song"
+    assert seen["url"] == "https://api.spotify.com/v1/playlists/PID/tracks"
+
+
+def test_current_user_playlists_shapes_and_paginates() -> None:
+    pages = {
+        "https://api.spotify.com/v1/me/playlists": {
+            "items": [
+                {"id": "p1", "name": "Focus", "tracks": {"total": 12}, "images": []},
+                {"id": None, "name": "skip"},  # no id -> skipped
+            ],
+            "next": "https://api.spotify.com/v1/me/playlists?offset=50",
+        },
+        "https://api.spotify.com/v1/me/playlists?offset=50": {
+            "items": [{"id": "p2", "name": "Chill", "tracks": {"total": 5}, "images": []}],
+            "next": None,
+        },
+    }
+    pls = _oauth_client(get=lambda url, *_: pages[url]).current_user_playlists("AC")
+    assert [(p["id"], p["name"], p["count"]) for p in pls] == [
+        ("p1", "Focus", 12),
+        ("p2", "Chill", 5),
+    ]
+
+
 def test_currently_playing_shapes_track() -> None:
     def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
         assert url.endswith("/currently-playing")

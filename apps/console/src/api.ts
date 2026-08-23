@@ -339,8 +339,11 @@ export const api = {
     ),
   spotifyStatus: () => get<SpotifyStatus>("/api/spotify/status"),
   spotifyPlayer: (signal?: AbortSignal) => get<PlayerState>("/api/spotify/player", signal),
-  spotifyLoginUrl: "/api/spotify/login",
   eventsUrl: "/api/events",
+  // Per-user library import (Phase 2).
+  libraryPlaylists: () => get<Playlist[]>("/api/library/playlists"),
+  importLibrary: (body: { source: "liked" | "playlist"; playlist_id?: string; name?: string }) =>
+    send<BulkResult>("POST", "/api/library/import", body),
   // Login with Spotify (Phase 2). me() resolves the current user, or null when
   // logged out (401) so the app can render the login gate.
   me: async (): Promise<Me | null> => {
@@ -363,4 +366,11 @@ export interface Me {
   email: string | null;
   avatar_url: string | null;
   is_admin: boolean;
+}
+
+export interface Playlist {
+  id: string;
+  name: string;
+  count: number;
+  image: string | null;
 }
