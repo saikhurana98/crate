@@ -76,9 +76,35 @@ export interface Source {
   required_env: string[];
 }
 
+// A shared-feed row (Phase C): who requested a track and how fast it was served.
+// ttf_playable_s = request -> first playable file (usually the lossy rip);
+// ttf_final_s = request -> final FLAC. Either is null until its mark lands.
+export interface FeedRow {
+  id: string;
+  query: string;
+  status: string;
+  artist: string | null;
+  title: string | null;
+  created_at: string;
+  finished_at: string | null;
+  first_playable_at: string | null;
+  final_flac_at: string | null;
+  tier_won: number | null;
+  source_won: string | null;
+  error: string | null;
+  user_id: string | null;
+  user_name: string | null;
+  user_avatar: string | null;
+  quality_label: string | null;
+  lossless: number | null;
+  ttf_playable_s: number | null;
+  ttf_final_s: number | null;
+}
+
 export interface LiveEvent {
   stats: Stats;
   in_flight: RequestRow[];
+  feed: FeedRow[];
 }
 
 export interface TierCfg {
@@ -337,6 +363,8 @@ export const api = {
       `/api/review/${encodeURIComponent(id)}/dismiss`,
       {},
     ),
+  // Shared activity feed (Phase C) — everyone sees everything.
+  feed: (limit = 50) => get<FeedRow[]>(`/api/feed?limit=${limit}`),
   spotifyStatus: () => get<SpotifyStatus>("/api/spotify/status"),
   spotifyPlayer: (signal?: AbortSignal) => get<PlayerState>("/api/spotify/player", signal),
   eventsUrl: "/api/events",

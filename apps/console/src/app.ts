@@ -7,6 +7,7 @@ import {
   api,
   type Batch,
   type BatchDetail,
+  type FeedRow,
   type Layout,
   type LiveEvent,
   type Me,
@@ -142,9 +143,10 @@ interface State {
   importPlaylists: Playlist[] | null; // the user's playlists (lazy-loaded on open)
   importBusy: Record<string, boolean>; // "liked" | playlist id -> import in flight
   importErr: string | null;
+  feed: FeedRow[]; // shared activity feed (Phase C) — who requested what + latencies
   isMobile: boolean; // viewport <= 640px -> tabbed app layout
   activeTab: "cascade" | "activity" | "tracks"; // mobile bottom-nav selection
-  page: "console" | "bulk" | "review"; // top-level page
+  page: "console" | "bulk" | "review" | "feed"; // top-level page
   bulkPanel: boolean; // right-side bulk drawer open
   bulkText: string; // paste box (playlist link / track list)
   bulkBusy: boolean; // submit in flight
@@ -204,6 +206,7 @@ const state: State = {
   importPlaylists: null,
   importBusy: {},
   importErr: null,
+  feed: [],
   isMobile: typeof matchMedia !== "undefined" ? matchMedia("(max-width: 640px)").matches : false,
   activeTab: "cascade",
   page: "console",
@@ -295,6 +298,7 @@ function connectLive(): void {
       const e = JSON.parse(ev.data) as LiveEvent;
       state.stats = e.stats;
       state.inflight = e.in_flight;
+      if (e.feed) state.feed = e.feed;
       render();
       // a re-download finishing changes the review list — refresh it on the page
       if (state.page === "review") void loadReview().then(render);
@@ -1423,6 +1427,7 @@ function navTabsHtml(): string {
     active ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#99a091";
   return `<nav style="display:flex;align-items:center;gap:3px;background:#131612;border:1px solid #22261f;border-radius:20px;padding:3px;margin-left:4px;flex-shrink:0">
       <button data-act="gotoConsole" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "console")};transition:.15s">console</button>
+      <button data-act="gotoFeed" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "feed")};transition:.15s">feed</button>
       <button data-act="gotoBulk" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "bulk")};transition:.15s">downloads${dlBadge}</button>
       <button data-act="gotoReview" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "review")};transition:.15s">review${rvBadge}</button>
     </nav>`;
@@ -1705,7 +1710,7 @@ function viewMobile(): string {
   else if (state.activeTab === "activity")
     tab = `<h1 style="margin:0 0 14px;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Activity</h1>
       ${statCardsHtml()}
-      <div style="display:flex;flex-direction:column;gap:12px">${liveHtml()}${winsHtml()}${historyHtml()}</div>`;
+      <div style="display:flex;flex-direction:column;gap:12px">${liveHtml()}${mFeedHtml()}${winsHtml()}${historyHtml()}</div>`;
   else tab = mTracksTab();
   return `<div style="max-width:640px;margin:0 auto;position:relative">
     ${mHeaderHtml()}
@@ -2160,6 +2165,118 @@ function reviewItemHtml(item: ReviewItem): string {
   return `<section style="background:#111411;border:1px solid ${cardBorder};border-radius:20px;margin-bottom:12px;overflow:hidden;transition:border-color .2s">${head}${body}</section>`;
 }
 
+// ---------- shared feed (Phase C) ----------
+// Compact latency: sub-minute as "3.2s", longer as "1m 04s". Serves both chips.
+function fmtLatency(s: number): string {
+  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${String(Math.round(s % 60)).padStart(2, "0")}s`;
+}
+
+// One latency chip. `pending` = the mark hasn't landed yet (e.g. FLAC still racing
+// after the playable rip) — render a muted, softly-pulsing placeholder instead of a
+// value. `absent` = never applicable (a failed request) — render nothing.
+function latencyChip(label: string, seconds: number | null, pending: boolean): string {
+  if (seconds == null && !pending) return "";
+  const dot = (col: string, anim: boolean): string =>
+    `<span style="width:6px;height:6px;border-radius:50%;background:${col};flex-shrink:0${anim ? ";animation:pulse 1.6s ease-in-out infinite" : ""}"></span>`;
+  if (seconds == null) {
+    return `<span style="display:inline-flex;align-items:center;gap:6px;background:#131612;border:1px solid #22261f;border-radius:11px;padding:4px 10px;font:600 10.5px 'JetBrains Mono';color:#5d6456">${dot("#5d6456", true)}${label} …</span>`;
+  }
+  return `<span style="display:inline-flex;align-items:center;gap:6px;background:rgba(233,237,227,.06);border:1px solid #272c25;border-radius:11px;padding:4px 10px;font:600 10.5px 'JetBrains Mono';color:#aeb5a3">${dot("#7c8371", false)}${label} ${fmtLatency(seconds)}</span>`;
+}
+
+// A stable per-user accent so avatars/initials read as the same person across rows.
+function userHue(id: string | null): number {
+  const key = id ?? "service";
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 360;
+  return h;
+}
+
+function feedAvatarHtml(row: FeedRow): string {
+  const name = row.user_name ?? (row.user_id === "service" ? "service" : "unknown");
+  const hue = userHue(row.user_id);
+  if (row.user_avatar) {
+    return `<img src="${esc(row.user_avatar)}" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0" />`;
+  }
+  const initial = esc((name[0] ?? "?").toUpperCase());
+  return `<span style="width:28px;height:28px;border-radius:50%;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;background:hsl(${hue} 30% 22%);color:hsl(${hue} 55% 78%);font:700 12px 'Instrument Sans'">${initial}</span>`;
+}
+
+function feedTrackLabel(row: FeedRow): string {
+  const artist = (row.artist ?? "").trim();
+  const title = (row.title ?? "").trim();
+  if (title) return artist ? `${artist} — ${title}` : title;
+  return row.query;
+}
+
+function feedRowHtml(row: FeedRow): string {
+  const name = esc(row.user_name ?? (row.user_id === "service" ? "service" : "someone"));
+  const meta = statusMeta(row.status);
+  const failed = row.status === "failed";
+  // playable chip: shows once first_playable_at lands (any successful grab).
+  const playable = latencyChip("playable in", row.ttf_playable_s, false);
+  // FLAC chip: value once final_flac_at lands; while playable exists but FLAC
+  // doesn't yet, show the pending placeholder (the endgoal tier is still racing).
+  const flacPending =
+    !failed && row.ttf_final_s == null && (row.ttf_playable_s != null || row.status === "done");
+  const flac = failed ? "" : latencyChip("FLAC in", row.ttf_final_s, flacPending);
+  const src =
+    row.source_won && row.status === "done"
+      ? `<span style="font:600 10px 'JetBrains Mono';color:${tierColor(row.tier_won)}">${esc(row.source_won)}</span>`
+      : "";
+  const statusPill = failed
+    ? `<span style="font:600 10px 'JetBrains Mono';color:${C.bad}">failed</span>`
+    : row.status !== "done"
+      ? `<span style="font:600 10px 'JetBrains Mono';color:${meta.color}">${esc(row.status)}</span>`
+      : "";
+  const chips = [playable, flac].filter(Boolean).join("");
+  return `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid #1a1e19">
+      ${feedAvatarHtml(row)}
+      <div style="min-width:0;flex:1">
+        <div style="font:600 13px 'Instrument Sans';color:#e9ede3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(feedTrackLabel(row))}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:2px;font:500 11px 'Instrument Sans';color:#99a091">
+          <span style="color:#aeb5a3">${name}</span>
+          <span style="color:#3a4035">·</span>
+          <span style="color:#5d6456">${esc(relTime(row.finished_at ?? row.created_at))}</span>
+          ${src ? `<span style="color:#3a4035">·</span>${src}` : ""}
+          ${statusPill ? `<span style="color:#3a4035">·</span>${statusPill}` : ""}
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:7px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">${chips}</div>
+    </div>`;
+}
+
+// Mobile: the shared feed as a card inside the Activity tab (capped; the desktop
+// Feed page shows the full stream).
+function mFeedHtml(): string {
+  if (!state.feed.length) return "";
+  const rows = state.feed.slice(0, 20).map(feedRowHtml).join("");
+  return `<section style="background:#0e100d;border:1px solid #1d211c;border-radius:18px;overflow:hidden">
+      <div style="padding:12px 16px;font:600 12px 'JetBrains Mono';letter-spacing:.04em;color:#99a091">SHARED FEED</div>
+      ${rows}
+    </section>`;
+}
+
+function feedPageHtml(): string {
+  const rows = state.feed.map(feedRowHtml).join("");
+  const body = state.feed.length
+    ? `<div style="background:#0e100d;border:1px solid #1d211c;border-radius:20px;overflow:hidden">${rows}</div>`
+    : `<div style="background:#111411;border:1px dashed #272c25;border-radius:20px;padding:48px 20px;text-align:center">
+        <div style="font:600 14px 'Instrument Sans';color:#99a091">No activity yet</div>
+        <div style="font:400 12px 'Instrument Sans';color:#5d6456;margin-top:6px">Every request lands here with who asked for it and how fast it was served.</div>
+      </div>`;
+  const pad = state.isMobile ? "16px 16px 96px" : "22px 28px 72px";
+  return `<main style="max-width:1100px;margin:0 auto;padding:${pad};animation:fadein .25s ease">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Feed</h1>
+      <p style="margin:0;font:400 12.5px 'Instrument Sans';color:#99a091">Everyone's requests, newest first — time to a playable file and time to the final FLAC.</p>
+    </div>
+    ${body}
+  </main>`;
+}
+
 function reviewPageHtml(): string {
   const items = state.reviewItems.map(reviewItemHtml).join("");
   const empty = state.reviewItems.length
@@ -2212,6 +2329,9 @@ function view(): string {
   }
   if (state.page === "review") {
     return `${headerHtml()}${reviewPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
+  }
+  if (state.page === "feed" && !state.isMobile) {
+    return `${headerHtml()}${feedPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
   }
   return `${state.isMobile ? viewMobile() : viewDesktop()}${bulkPanelHtml()}`;
 }
@@ -2351,6 +2471,15 @@ function bindEvents(): void {
       state.page = "console";
       window.scrollTo(0, 0);
       render();
+    } else if (act === "gotoFeed") {
+      state.page = "feed";
+      state.bulkPanel = false;
+      window.scrollTo(0, 0);
+      render();
+      void api.feed().then((f) => {
+        state.feed = f;
+        render();
+      });
     } else if (act === "gotoReview") {
       state.page = "review";
       state.bulkPanel = false;

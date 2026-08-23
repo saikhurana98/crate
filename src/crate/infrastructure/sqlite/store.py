@@ -39,6 +39,19 @@ def _identity_cols(
     return identity.artist, identity.title, identity.isrc, identity.duration_s
 
 
+def _delta_s(start_iso: str | None, end_iso: str | None) -> float | None:
+    """Seconds between two UTC ISO-8601 timestamps, or ``None`` if either is
+    missing/unparseable. Used to turn the feed's stored ``*_at`` marks into the
+    two latencies (created -> first-playable, created -> final-FLAC)."""
+    if not start_iso or not end_iso:
+        return None
+    try:
+        delta = datetime.fromisoformat(end_iso) - datetime.fromisoformat(start_iso)
+    except ValueError:
+        return None
+    return max(delta.total_seconds(), 0.0)
+
+
 def _row_identity(row: Any) -> TrackIdentity:
     """Reconstruct a TrackIdentity from a row that selected the identity columns."""
     return TrackIdentity(
@@ -190,11 +203,26 @@ class RequestStore:
         outcome, info, verdict = report.outcome, report.info, report.verdict
         if outcome is None or info is None or verdict is None:  # defensive; a winner has all three
             return
+        now = now_iso()
         with self._lock:
+            # first_playable_at is COALESCE-once: the first landing (usually the
+            # lossy rip) sets it and a later lossless upgrade — which re-enters this
+            # method via dedup._upgrade — must not overwrite it. final_flac_at is
+            # set only on a lossless landing, so the two columns bracket the split.
             self._conn.execute(
-                "UPDATE requests SET status='done', tier_won=?, source_won=?, finished_at=? "
+                "UPDATE requests SET status='done', tier_won=?, source_won=?, finished_at=?, "
+                "first_playable_at=COALESCE(first_playable_at, ?), "
+                "final_flac_at=CASE WHEN ? THEN ? ELSE final_flac_at END "
                 "WHERE id=?",
-                (outcome.tier, outcome.source, now_iso(), request_id),
+                (
+                    outcome.tier,
+                    outcome.source,
+                    now,
+                    now,
+                    1 if verdict.lossless else 0,
+                    now,
+                    request_id,
+                ),
             )
             self._conn.execute(
                 "INSERT OR REPLACE INTO downloads(request_id, path, size_bytes, codec, bitrate, "
@@ -288,6 +316,31 @@ class RequestStore:
             ).fetchone()
             out["download"] = dict(dl) if dl else None
             return out
+
+    _FEED_SELECT = (
+        "SELECT r.id, r.query, r.status, r.artist, r.title, r.created_at, r.finished_at, "
+        "r.first_playable_at, r.final_flac_at, r.tier_won, r.source_won, r.error, "
+        "r.user_id, u.display_name AS user_name, u.avatar_url AS user_avatar, "
+        "d.quality_label, d.lossless "
+        "FROM requests r LEFT JOIN downloads d ON d.request_id = r.id "
+        "LEFT JOIN users u ON u.id = r.user_id "
+        "ORDER BY COALESCE(r.finished_at, r.created_at) DESC, r.created_at DESC "
+        "LIMIT ? OFFSET ?"
+    )
+
+    def list_feed(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        """The shared activity feed: every request (any user), newest activity
+        first, each carrying who asked for it and both latencies —
+        ``ttf_playable_s`` (request -> first playable file) and ``ttf_final_s``
+        (request -> final FLAC). A latency is ``None`` until its mark lands, so the
+        UI can show "playable in Xs" the instant the rip arrives and fill in "FLAC
+        in Ys" when the upgrade completes."""
+        with self._lock:
+            rows = [dict(r) for r in self._conn.execute(self._FEED_SELECT, (limit, offset))]
+        for row in rows:
+            row["ttf_playable_s"] = _delta_s(row["created_at"], row["first_playable_at"])
+            row["ttf_final_s"] = _delta_s(row["created_at"], row["final_flac_at"])
+        return rows
 
     def stats(self) -> dict[str, Any]:
         """Aggregate dashboard counters. Cached for ``_STATS_TTL_S`` (the SSE poll
@@ -518,11 +571,26 @@ class RequestStore:
     def complete_as_duplicate(self, request_id: str, existing: dict[str, Any]) -> None:
         """Resolve a request as done from an existing library file — no download.
         Copies the prior download row (elapsed 0) and marks it done."""
+        now = now_iso()
+        # A de-dup reuse is an instant playable file. dedup only reuses lossless
+        # matches, so the existing file is the final FLAC too — set both latencies
+        # to now (keying final on the copied lossless flag stays correct if a lossy
+        # reuse is ever wired in).
         with self._lock:
             self._conn.execute(
-                "UPDATE requests SET status='done', tier_won=?, source_won=?, finished_at=? "
+                "UPDATE requests SET status='done', tier_won=?, source_won=?, finished_at=?, "
+                "first_playable_at=COALESCE(first_playable_at, ?), "
+                "final_flac_at=CASE WHEN ? THEN ? ELSE final_flac_at END "
                 "WHERE id=?",
-                (existing.get("tier_won"), existing.get("source_won"), now_iso(), request_id),
+                (
+                    existing.get("tier_won"),
+                    existing.get("source_won"),
+                    now,
+                    now,
+                    1 if existing.get("lossless") else 0,
+                    now,
+                    request_id,
+                ),
             )
             self._conn.execute(
                 "INSERT OR REPLACE INTO downloads(request_id, path, size_bytes, codec, bitrate, "
