@@ -143,6 +143,8 @@ interface State {
   importPlaylists: Playlist[] | null; // the user's playlists (lazy-loaded on open)
   importBusy: Record<string, boolean>; // "liked" | playlist id -> import in flight
   importErr: string | null;
+  synced: Record<string, boolean>; // spotify playlist id -> continuously synced (Phase D)
+  syncBusy: Record<string, boolean>; // playlist id -> sync toggle in flight
   feed: FeedRow[]; // shared activity feed (Phase C) — who requested what + latencies
   isMobile: boolean; // viewport <= 640px -> tabbed app layout
   activeTab: "cascade" | "activity" | "tracks"; // mobile bottom-nav selection
@@ -206,6 +208,8 @@ const state: State = {
   importPlaylists: null,
   importBusy: {},
   importErr: null,
+  synced: {},
+  syncBusy: {},
   feed: [],
   isMobile: typeof matchMedia !== "undefined" ? matchMedia("(max-width: 640px)").matches : false,
   activeTab: "cascade",
@@ -333,10 +337,38 @@ async function toggleImport(): Promise<void> {
   if (state.importOpen && state.importPlaylists === null) {
     state.importErr = null;
     try {
-      state.importPlaylists = await api.libraryPlaylists();
+      const [playlists, synced] = await Promise.all([api.libraryPlaylists(), api.syncList()]);
+      state.importPlaylists = playlists;
+      state.synced = Object.fromEntries(
+        synced.filter((s) => s.active).map((s) => [s.spotify_ref, true]),
+      );
     } catch (err) {
       state.importErr = (err as Error).message;
     }
+    render();
+  }
+}
+// Toggle continuous sync for a playlist — subscribe (future additions auto-queue)
+// or pause. Optimistic; reverts on failure.
+async function toggleSync(pid: string, name: string): Promise<void> {
+  if (state.syncBusy[pid]) return;
+  const on = !state.synced[pid];
+  state.syncBusy = { ...state.syncBusy, [pid]: true };
+  state.synced = { ...state.synced, [pid]: on };
+  render();
+  try {
+    if (on) {
+      await api.syncAdd(pid, name);
+      toast(`Syncing “${name}” — new tracks will queue automatically`);
+    } else {
+      await api.syncRemove(pid);
+      toast(`Stopped syncing “${name}”`);
+    }
+  } catch (err) {
+    state.synced = { ...state.synced, [pid]: !on }; // revert
+    toast(`Sync failed: ${(err as Error).message}`);
+  } finally {
+    state.syncBusy = { ...state.syncBusy, [pid]: false };
     render();
   }
 }
@@ -1055,11 +1087,24 @@ function importHtml(): string {
         return `<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-top:1px solid #1a1e19">
           ${art}
           <div style="flex:1;min-width:0"><div style="font:500 12px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</div><div style="font:400 10px 'JetBrains Mono';color:#5d6456">${p.count} track${p.count === 1 ? "" : "s"}</div></div>
+          ${syncBtn(p.id, p.name)}
           ${importBtn("importPlaylist", busy, p.id, p.name)}</div>`;
       })
       .join("");
   }
   return header + liked + body;
+}
+
+// Per-playlist continuous-sync toggle: a small pill that reads "Sync" (off) or
+// "Synced ✓" (on, tinted). Continuous sync tracks *future* additions — the Import
+// button next to it is for pulling the current contents.
+function syncBtn(pid: string, name: string): string {
+  const on = !!state.synced[pid];
+  const busy = !!state.syncBusy[pid];
+  const col = on ? "#1db954" : "#5d6456";
+  const bg = on ? "rgba(29,185,84,.10)" : "transparent";
+  const bd = on ? "rgba(29,185,84,.35)" : "#272c25";
+  return `<button data-act="toggleSync" data-pid="${esc(pid)}" data-name="${esc(name)}" ${busy ? "disabled" : ""} title="${on ? "Stop auto-queuing new tracks" : "Auto-queue tracks added later"}" style="flex-shrink:0;background:${bg};border:1px solid ${bd};border-radius:12px;color:${col};font:600 11px 'Instrument Sans';padding:7px 11px;cursor:${busy ? "default" : "pointer"};transition:.15s">${on ? "Synced ✓" : "Sync"}</button>`;
 }
 
 function importBtn(act: string, busy: boolean, pid?: string, name?: string): string {
@@ -2435,6 +2480,7 @@ function bindEvents(): void {
     else if (act === "importLiked") void runImport("liked", "liked");
     else if (act === "importPlaylist")
       void runImport("playlist", el.dataset.pid!, el.dataset.pid!, el.dataset.name!);
+    else if (act === "toggleSync") void toggleSync(el.dataset.pid!, el.dataset.name!);
     else if (act === "strategy") setStrategy(el.dataset.tier!, el.dataset.strategy as "all" | "uniform");
     else if (act === "openPanel") {
       state.panelSource = el.dataset.source!;

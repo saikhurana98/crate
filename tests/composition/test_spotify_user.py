@@ -39,6 +39,9 @@ class FakeClient:
     ) -> list[dict[str, Any]]:
         return [{"query": f"pl {playlist_id}", "artist": "A", "title": "T"}]
 
+    def user_playlist_snapshot(self, token: str, playlist_id: str) -> str | None:
+        return f"snap-{playlist_id}"
+
 
 def _wire(tmp_path: Path) -> tuple[SpotifyUser, ConfigStore, RequestStore, FakeClient, list[float]]:
     config = ConfigStore(connect(tmp_path / "cfg.db"), SecretBox(bytes(range(32))))
@@ -75,6 +78,7 @@ def test_library_methods_delegate(tmp_path: Path) -> None:
     assert su.my_playlists("u1")[0]["name"] == "Focus"
     assert su.liked_songs("u1")[0]["query"] == "liked"
     assert su.playlist_tracks("u1", "PID")[0]["query"] == "pl PID"
+    assert su.playlist_snapshot("u1", "PID") == "snap-PID"
 
 
 def test_not_connected_raises(tmp_path: Path) -> None:
