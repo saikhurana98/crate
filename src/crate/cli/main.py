@@ -113,6 +113,7 @@ def serve(  # pragma: no cover - network server loop
         build_maintenance,
         build_queue_worker,
         build_shim_download,
+        build_sync_watcher,
         prune_attempts,
         reap_orphans,
     )
@@ -144,6 +145,12 @@ def serve(  # pragma: no cover - network server loop
     concurrency = max(1, int(os.environ.get("CRATE_BULK_CONCURRENCY", "4")))
     for _ in range(concurrency):
         threading.Thread(target=build_queue_worker(), args=(stop,), daemon=True).start()
+    # Continuous playlist sync (opt-in CRATE_PLAYLIST_SYNC=1): a background sweep
+    # that enqueues newly-added tracks from tracked playlists. None when off.
+    watcher = build_sync_watcher()
+    if watcher is not None:
+        threading.Thread(target=watcher, args=(stop,), daemon=True).start()
+        typer.echo("continuous playlist sync enabled")
     typer.echo(
         f"crate slskd-shim listening on {host}:{port}  downloads -> {downloads}  "
         f"(queue workers: {concurrency})"

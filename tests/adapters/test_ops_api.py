@@ -58,6 +58,24 @@ def test_feed_limit_is_bounded(tmp_path: Path) -> None:
     assert client.get("/api/feed", params={"limit": 500}).status_code == 422
 
 
+def test_playlist_sync_subscribe_list_and_remove(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    assert client.get("/api/library/sync").json() == []  # nothing synced yet
+    r = client.post("/api/library/sync", json={"playlist_id": "p1", "name": "Road Trip"})
+    assert r.status_code == 200 and r.json()["active"] is True
+    rows = client.get("/api/library/sync").json()
+    assert len(rows) == 1 and rows[0]["spotify_ref"] == "p1" and rows[0]["active"] is True
+    # unsubscribe -> the row stays (ledger preserved) but goes inactive
+    assert client.delete("/api/library/sync/p1").json()["active"] is False
+    assert client.get("/api/library/sync").json()[0]["active"] is False
+
+
+def test_playlist_sync_validation_and_404(tmp_path: Path) -> None:
+    client = TestClient(create_app(_seeded_store(tmp_path)))
+    assert client.post("/api/library/sync", json={"name": "x"}).status_code == 400
+    assert client.delete("/api/library/sync/never-synced").status_code == 404
+
+
 def test_health_needs_no_key(tmp_path: Path) -> None:
     client = TestClient(create_app(_seeded_store(tmp_path), api_key="secret"))
     r = client.get("/api/health")

@@ -287,6 +287,18 @@ class SpotifyClient:
         url = f"{PLAYLIST_URL}{playlist_id}/tracks"
         return self._paged_tracks(url, access_token, {}, max_tracks)
 
+    def user_playlist_snapshot(self, access_token: str, playlist_id: str) -> str | None:
+        """The playlist's current ``snapshot_id`` — a cheap ``fields=snapshot_id``
+        fetch the sync watcher uses to skip unchanged playlists without pulling the
+        whole track list. ``None`` if the playlist is gone / the field is absent."""
+        data = self._get_json(
+            f"{PLAYLIST_URL}{playlist_id}",
+            {"fields": "snapshot_id"},
+            {"Authorization": f"Bearer {access_token}"},
+        )
+        snap = (data or {}).get("snapshot_id")
+        return str(snap) if snap else None
+
     def current_user_playlists(
         self, access_token: str, max_playlists: int = 200
     ) -> list[dict[str, Any]]:
@@ -305,6 +317,7 @@ class SpotifyClient:
                         "name": str(pl.get("name") or "Playlist"),
                         "count": int(((pl.get("tracks") or {}).get("total")) or 0),
                         "image": _best_art(pl.get("images") or []),
+                        "snapshot_id": (str(pl["snapshot_id"]) if pl.get("snapshot_id") else None),
                     }
                 )
                 if len(out) >= max_playlists:

@@ -732,6 +732,49 @@ def build_maintenance() -> Callable[[threading.Event], None]:  # pragma: no cove
     return loop
 
 
+def sync_enabled() -> bool:  # pragma: no cover - env read
+    """Continuous playlist sync is opt-in (CRATE_PLAYLIST_SYNC=1)."""
+    return os.environ.get("CRATE_PLAYLIST_SYNC", "").strip() in ("1", "true", "yes")
+
+
+def build_sync_watcher() -> (
+    Callable[[threading.Event], None] | None
+):  # pragma: no cover - IO wiring
+    """A poll loop (serve process) that keeps tracked playlists in sync: every
+    ``CRATE_SYNC_INTERVAL`` s (default 300) it sweeps active subscriptions and
+    enqueues newly-added tracks, attributed to the subscribing user. Returns
+    ``None`` when sync is off or Spotify creds are absent (nothing to poll).
+
+    Mirrors ``build_maintenance``: build collaborators once, then loop until the
+    shared ``stop`` Event. The existing identity de-dup in ``resolve_request`` is a
+    second net, so a track that's already in the library is skipped at download."""
+    from crate.application.library_import import to_identity
+    from crate.application.playlist_sync import sync_tick
+
+    config = _config_store_if_enabled()
+    if config is None or not sync_enabled():
+        return None
+    store = build_recorder("serve")
+    source = build_spotify_user(config, store)
+    if source is None:
+        return None
+    interval = float(os.environ.get("CRATE_SYNC_INTERVAL", "300"))
+
+    def enqueue(track: dict[str, Any], user_id: str) -> None:
+        store.enqueue(track["query"], identity=to_identity(track), user_id=user_id)
+
+    def loop(stop: threading.Event) -> None:
+        # First sleep, then sweep — a subscription's baseline is seeded on its first
+        # sweep, so there's no urgency to run at t=0 (and it avoids a restart storm).
+        while not stop.wait(interval):
+            try:
+                sync_tick(store, source, enqueue, log=lambda m: None)
+            except Exception:  # never let one bad sweep kill the thread
+                continue
+
+    return loop
+
+
 def build_spotify_search() -> Callable[[str, int], list[dict[str, Any]]] | None:
     """Spotify track search for the console, or ``None`` when creds are absent
     (the /api/search endpoint then reports 503 and the UI hides search)."""
@@ -873,6 +916,11 @@ class SpotifyUser:
         self, user_id: str, playlist_id: str, max_tracks: int = 2000
     ) -> list[dict[str, Any]]:
         return self._client.user_playlist_tracks(self._bearer(user_id), playlist_id, max_tracks)
+
+    def playlist_snapshot(self, user_id: str, playlist_id: str) -> str | None:
+        """The playlist's current ``snapshot_id`` (for the sync watcher's cheap
+        unchanged-playlist short-circuit)."""
+        return self._client.user_playlist_snapshot(self._bearer(user_id), playlist_id)
 
 
 def build_spotify_user(

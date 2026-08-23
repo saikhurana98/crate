@@ -300,6 +300,32 @@ def test_current_user_playlists_shapes_and_paginates() -> None:
     ]
 
 
+def test_current_user_playlists_includes_snapshot() -> None:
+    page = {
+        "items": [{"id": "p1", "name": "Focus", "tracks": {"total": 1}, "snapshot_id": "SNAP"}],
+        "next": None,
+    }
+    pls = _oauth_client(get=lambda *_: page).current_user_playlists("AC")
+    assert pls[0]["snapshot_id"] == "SNAP"
+
+
+def test_user_playlist_snapshot_fetches_field() -> None:
+    seen: dict[str, Any] = {}
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        seen["url"], seen["params"] = url, params
+        return {"snapshot_id": "SNAP7"}
+
+    snap = _oauth_client(get=get).user_playlist_snapshot("AC", "PID")
+    assert snap == "SNAP7"
+    assert seen["url"] == "https://api.spotify.com/v1/playlists/PID"
+    assert seen["params"] == {"fields": "snapshot_id"}
+
+
+def test_user_playlist_snapshot_none_when_absent() -> None:
+    assert _oauth_client(get=lambda *_: {}).user_playlist_snapshot("AC", "PID") is None
+
+
 def test_currently_playing_shapes_track() -> None:
     def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
         assert url.endswith("/currently-playing")
