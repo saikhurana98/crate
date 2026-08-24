@@ -498,6 +498,28 @@ class RequestStore:
             self._invalidate_stats()
         return cur.rowcount
 
+    def restore_completed(self, request_id: str) -> bool:
+        """Return a request to ``done`` after a failed review **upgrade**.
+
+        A review upgrade that fails on a source/network error (not the fingerprint
+        gate) has NOT touched the existing library file — the original download row
+        is intact — so the request must not be left ``failed``: that would turn a
+        perfectly good (lossy) track into a scary error row. Restore it to ``done``
+        so it drops back to a normal lossy item, still upgradeable from Review.
+        No-op (returns False) when there's no existing download row to restore."""
+        with self._lock:
+            has_dl = self._conn.execute(
+                "SELECT 1 FROM downloads WHERE request_id=?", (request_id,)
+            ).fetchone()
+            if has_dl is None:
+                return False
+            self._conn.execute(
+                "UPDATE requests SET status='done', error=NULL, finished_at=? WHERE id=?",
+                (now_iso(), request_id),
+            )
+            self._invalidate_stats()
+        return True
+
     def requeue(self, request_id: str) -> bool:
         """Retry a failed (or cancelled) request: reset it to ``queued``."""
         with self._lock:

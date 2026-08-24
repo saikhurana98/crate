@@ -12,8 +12,10 @@ selection), verify it, then either
 Either way the request ends ``done`` and drops out of the review list. All IO is
 injected (``download`` / ``prober`` / ``finalizer`` / ``replace`` / ``fingerprinter``
 / the recorder) so the decision tree is unit tested without a DB, network, or
-filesystem. On any failure the caller (the queue worker) marks the request failed —
-this raises.
+filesystem. ``run_review_download`` raises on a source/probe failure; the caller
+routes that through :func:`handle_review_error`, which keeps an upgrade's existing
+file (restoring it to ``done``) and otherwise fails the request with a clean,
+attributed message — a transient source blip never discards a good download.
 
 **Fingerprint gate (ADR-0019):** before an *upgrade* replaces the existing file, the
 new download and the existing file are fingerprint-compared. Below ``threshold`` the
@@ -64,6 +66,48 @@ class ReviewRecorder(Protocol):
     ) -> None: ...
     def finish_request(self, request_id: str, report: DownloadReport) -> None: ...
     def set_match_similarity(self, request_id: str, score: float) -> None: ...
+    def restore_completed(self, request_id: str) -> bool: ...
+    def fail_request(self, request_id: str, error: str) -> None: ...
+
+
+def handle_review_error(
+    request_id: str,
+    candidate: Candidate,
+    exc: BaseException,
+    *,
+    is_upgrade: bool,
+    target_path: str | None,
+    recorder: ReviewRecorder,
+    exists: Callable[[Path], bool],
+) -> None:
+    """Recover gracefully when a review re-download fails on a **source/network**
+    error (a transient upstream 401, a timeout — anything but the fingerprint gate,
+    which the caller handles separately).
+
+    The failure is recorded as an attempt against the candidate's source (so the
+    trail is attributable, not an opaque "queue worker error"), then:
+
+    * an **upgrade** whose existing file is still present is restored to ``done`` —
+      the library file was never touched, so the track stays a normal lossy item
+      that can be upgraded again once the source recovers, rather than a scary
+      ``failed`` row;
+    * otherwise (fulfilling a failed request, or the existing file vanished) the
+      request is failed with a clean, attributed message.
+
+    This mirrors the cascade's upgrade semantics ("keep the existing file on
+    failure") so a momentary source blip can never discard a good download."""
+    recorder.record_attempt(request_id, candidate.source, candidate.tier, False, f"review: {exc}")
+    # An upgrade whose existing file is still present is restored to done (the file
+    # was never touched); restore_completed returns False only if there's no row to
+    # restore, in which case we fall through to a clean, attributed failure.
+    if (
+        is_upgrade
+        and target_path
+        and exists(Path(target_path))
+        and recorder.restore_completed(request_id)
+    ):
+        return
+    recorder.fail_request(request_id, f"review download from {candidate.source} failed: {exc}")
 
 
 def run_review_download(

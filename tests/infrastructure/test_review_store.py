@@ -227,3 +227,31 @@ def test_set_identity_hint_caches_advisory_fields(tmp_path: Path) -> None:
     assert item["acoustid_artist"] == "Avicii"
     assert item["acoustid_title"] == "Lonely Together (acoustic)"
     assert item["acoustid_mbid"] == "mbid-1"
+
+
+def test_restore_completed_returns_upgrade_row_to_done(tmp_path: Path) -> None:
+    """A failed review-upgrade re-download restores the request to done: the
+    existing (lossy) file was never touched, so it must not linger as failed."""
+    store = _store(tmp_path)
+    rid = _lossy_done(store, "Lossy Track")  # has a download row (the lossy file)
+    # simulate the worker having claimed it for an upgrade that then errored
+    store.queue_review_download(rid, _cand(), is_upgrade=True, target_path="/nas/Lossy Track.opus")
+    store.fail_request(rid, "review download from qobuz failed: 401")
+    assert store.get_request(rid)["status"] == "failed"
+
+    assert store.restore_completed(rid) is True
+    row = store.get_request(rid)
+    assert row["status"] == "done"
+    assert row["error"] is None
+    assert row["download"]["path"] == "/nas/Lossy Track.opus"  # file preserved
+    # still a lossy item in review -> upgradeable again once the source recovers
+    assert any(i["id"] == rid and i["kind"] == "lossy" for i in store.list_review())
+
+
+def test_restore_completed_noop_without_download_row(tmp_path: Path) -> None:
+    """A fulfil (failed request, no existing file) can't be 'restored' — returns
+    False so the caller fails it cleanly instead."""
+    store = _store(tmp_path)
+    rid = _failed(store, "Never Landed")
+    assert store.restore_completed(rid) is False
+    assert store.get_request(rid)["status"] == "failed"

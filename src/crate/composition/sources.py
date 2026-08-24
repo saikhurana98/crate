@@ -628,7 +628,7 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
     candidate (``review_candidates`` row) skips the cascade and downloads exactly
     that candidate, then upgrades in place (lossy) or fulfils (failed)."""
     from crate.application.dedup import resolve_request
-    from crate.application.review import MatchTooLow, run_review_download
+    from crate.application.review import MatchTooLow, handle_review_error, run_review_download
     from crate.domain.fingerprint import similarity as fp_similarity
     from crate.infrastructure.audio.fingerprint import fingerprint as fp_raw
     from crate.infrastructure.audio.fingerprint import fpcalc_available
@@ -673,6 +673,20 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
             except MatchTooLow as low:
                 # Gate refused the replace; park for the user instead of failing.
                 store.mark_needs_confirm(claimed["id"], low.score)
+            except Exception as exc:
+                # A source/network error (e.g. a transient Qobuz 401) must not nuke
+                # the request: keep an existing upgrade file, stay retryable, and
+                # fail with a clean, attributed message instead of "queue worker
+                # error: <url>".
+                handle_review_error(
+                    claimed["id"],
+                    candidate,
+                    exc,
+                    is_upgrade=bool(review["is_upgrade"]),
+                    target_path=review["target_path"],
+                    recorder=store,
+                    exists=lambda p: p.exists(),
+                )
             return
         resolve_request(
             claimed["query"],
