@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from crate.application.download import DownloadReport
-from crate.application.review import MatchTooLow, run_review_download
+from crate.application.review import MatchTooLow, handle_review_error, run_review_download
 from crate.domain.audio import AudioInfo
 from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
@@ -21,10 +21,13 @@ _FP_OTHER = [x ^ 0xFFFFFFFF for x in _FP]  # every bit differs -> similarity 0.0
 
 
 class _Recorder:
-    def __init__(self) -> None:
+    def __init__(self, restore_ok: bool = True) -> None:
         self.attempts: list[tuple[str, str, int, bool, str]] = []
         self.finished: list[tuple[str, DownloadReport]] = []
         self.similarities: list[tuple[str, float]] = []
+        self.restored: list[str] = []
+        self.failed: list[tuple[str, str]] = []
+        self.restore_ok = restore_ok
 
     def record_attempt(self, rid: str, source: str, tier: int, ok: bool, detail: str) -> None:
         self.attempts.append((rid, source, tier, ok, detail))
@@ -34,6 +37,13 @@ class _Recorder:
 
     def set_match_similarity(self, rid: str, score: float) -> None:
         self.similarities.append((rid, score))
+
+    def restore_completed(self, rid: str) -> bool:
+        self.restored.append(rid)
+        return self.restore_ok
+
+    def fail_request(self, rid: str, error: str) -> None:
+        self.failed.append((rid, error))
 
 
 def _info(codec: str) -> AudioInfo:
@@ -251,3 +261,77 @@ def test_no_fingerprinter_skips_the_gate(tmp_path: Path) -> None:
         similarity=similarity,
     )
     assert moves == [(produced, existing)]
+
+
+# --- handle_review_error: graceful recovery on a source/network failure ---
+def test_review_error_upgrade_keeps_existing_and_restores_done(tmp_path: Path) -> None:
+    """A transient source failure during an UPGRADE must not fail the request: the
+    existing file is untouched, so record the attempt and restore it to done."""
+    existing = tmp_path / "old.opus"
+    existing.write_bytes(b"OggS")
+    recorder = _Recorder()
+
+    handle_review_error(
+        "req1",
+        _cand("qobuz"),
+        RuntimeError("401 Unauthorized"),
+        is_upgrade=True,
+        target_path=str(existing),
+        recorder=recorder,
+        exists=lambda p: p.exists(),
+    )
+
+    assert recorder.restored == ["req1"]
+    assert recorder.failed == []  # not marked failed — the good lossy file stays
+    assert recorder.attempts == [("req1", "qobuz", 1, False, "review: 401 Unauthorized")]
+
+
+def test_review_error_fulfil_fails_with_clean_message(tmp_path: Path) -> None:
+    """A failure while FULFILLING a failed request (no existing file) marks it failed
+    with a clean, attributed message — not an opaque 'queue worker error'."""
+    recorder = _Recorder()
+    handle_review_error(
+        "req2",
+        _cand("qobuz"),
+        RuntimeError("timeout"),
+        is_upgrade=False,
+        target_path=None,
+        recorder=recorder,
+        exists=lambda p: False,
+    )
+    assert recorder.restored == []
+    assert recorder.failed == [("req2", "review download from qobuz failed: timeout")]
+
+
+def test_review_error_upgrade_missing_file_falls_back_to_fail(tmp_path: Path) -> None:
+    """If the existing upgrade target has vanished, there's nothing to keep — fail."""
+    recorder = _Recorder()
+    handle_review_error(
+        "req3",
+        _cand("qobuz"),
+        RuntimeError("boom"),
+        is_upgrade=True,
+        target_path=str(tmp_path / "gone.opus"),
+        recorder=recorder,
+        exists=lambda p: p.exists(),
+    )
+    assert recorder.restored == []
+    assert recorder.failed[0][0] == "req3"
+
+
+def test_review_error_upgrade_restore_noop_falls_back_to_fail(tmp_path: Path) -> None:
+    """If restore_completed can't restore (no download row), fail cleanly."""
+    existing = tmp_path / "old.opus"
+    existing.write_bytes(b"OggS")
+    recorder = _Recorder(restore_ok=False)
+    handle_review_error(
+        "req4",
+        _cand("qobuz"),
+        RuntimeError("401"),
+        is_upgrade=True,
+        target_path=str(existing),
+        recorder=recorder,
+        exists=lambda p: p.exists(),
+    )
+    assert recorder.restored == ["req4"]  # attempted
+    assert recorder.failed[0][0] == "req4"  # but fell back to fail
