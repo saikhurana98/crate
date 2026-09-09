@@ -399,3 +399,58 @@ def test_confirm_404_when_no_candidate(tmp_path: Path) -> None:
     rid = _failed(store, "Nope")
     client = TestClient(create_app(store))
     assert client.post(f"/api/review/{rid}/confirm").status_code == 404
+
+
+# --- direct cross-source search (not-on-Spotify fallback) ---
+def test_search_sources_fans_out_and_scores(tmp_path: Path) -> None:
+    cands = [
+        Candidate("deezer", 2, "1", "Str8 Outta Mumbai", "Jai Paul", None, "FLAC", True, 200, None),
+        Candidate("qobuz", 1, "2", "Wrong Song", "Someone", None, "FLAC", True, 200, None),
+    ]
+    client = TestClient(create_app(_store(tmp_path), candidate_sources=_cand_source(cands)))
+    rows = client.post("/api/search/sources", json={"q": "Jai Paul Str8 Outta Mumbai"}).json()
+    assert [r["source"] for r in rows] == ["deezer", "qobuz"]  # best match first
+    assert rows[0]["match"] > rows[1]["match"]
+    assert rows[0]["title"] == "Str8 Outta Mumbai"
+
+
+def test_search_sources_validates_and_503_without_sources(tmp_path: Path) -> None:
+    client = TestClient(create_app(_store(tmp_path), candidate_sources=_cand_source([])))
+    assert client.post("/api/search/sources", json={"q": "x"}).status_code == 400  # too short
+    # no candidate_sources wired at all -> 503
+    bare = TestClient(create_app(_store(tmp_path)))
+    assert bare.post("/api/search/sources", json={"q": "something"}).status_code == 503
+
+
+def test_download_source_candidate_opens_request_and_arms(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    client = TestClient(create_app(store))
+    cand = {
+        "source": "deezer",
+        "tier": 2,
+        "ref": "42",
+        "title": "Str8 Outta Mumbai",
+        "artist": "Jai Paul",
+        "lossless": True,
+        "duration_s": 200,
+    }
+    r = client.post(
+        "/api/search/sources/download",
+        json={"query": "Jai Paul Str8 Outta Mumbai", "candidate": cand, "artist": "Jai Paul"},
+    )
+    assert r.status_code == 200
+    out = r.json()
+    assert out["status"] == "queued" and out["source"] == "deezer"
+    # a queued request exists, attributed, with the candidate armed for the worker
+    queued = store.list_requests(status="queued")
+    assert len(queued) == 1 and queued[0]["id"] == out["id"]
+    armed = store.get_review_candidate(out["id"])
+    assert armed is not None and armed["source"] == "deezer" and armed["is_upgrade"] == 0
+
+
+def test_download_source_candidate_validation(tmp_path: Path) -> None:
+    client = TestClient(create_app(_store(tmp_path)))
+    assert client.post("/api/search/sources/download", json={"candidate": {}}).status_code == 400
+    assert (
+        client.post("/api/search/sources/download", json={"query": "x"}).status_code == 400
+    )  # candidate missing

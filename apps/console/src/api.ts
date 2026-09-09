@@ -325,6 +325,15 @@ export const api = {
     ),
   search: (q: string, signal?: AbortSignal) =>
     get<SpotifyTrack[]>(`/api/search?q=${encodeURIComponent(q)}&limit=20`, signal),
+  // Direct cross-source search (the "not on Spotify?" fallback) — fans the query
+  // out across the linked download sources and returns scored candidates.
+  searchSources: (q: string) => send<ReviewCandidate[]>("POST", "/api/search/sources", { q }),
+  downloadSourceCandidate: (query: string, candidate: ReviewCandidate) =>
+    send<{ id: string; status: string; source: string }>(
+      "POST",
+      "/api/search/sources/download",
+      { query, candidate },
+    ),
   enqueue: (payload: EnqueuePayload) => send<Enqueued>("POST", "/api/download", payload),
   bulk: (text: string) => send<BulkResult>("POST", "/api/bulk", { text }),
   batches: () => get<Batch[]>("/api/batches"),
