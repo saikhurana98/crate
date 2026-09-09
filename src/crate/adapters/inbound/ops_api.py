@@ -38,7 +38,7 @@ from crate.composition.catalog import (
     validate_layout,
 )
 from crate.domain.candidate import Candidate
-from crate.domain.identity import IdentityHint, TrackIdentity
+from crate.domain.identity import IdentityHint, TrackIdentity, from_query
 from crate.domain.matching import candidate_match
 from crate.infrastructure.sqlite.config_store import ConfigStore
 from crate.infrastructure.sqlite.store import RequestStore
@@ -65,6 +65,7 @@ _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
 _MAX_PENDING_STATES = 32  # cap the CSRF-state set; single-user tool, bounded churn
 _REVIEW_SOURCE_TIMEOUT_S = 12.0  # per-source ceiling on the review search fan-out
+_MIN_SOURCE_QUERY_LEN = 2  # shortest cross-source search query worth fanning out
 _SESSION_COOKIE = "crate_session"
 
 
@@ -294,15 +295,11 @@ def create_app(
     def review_list() -> dict[str, Any]:
         return {"items": store.list_review(), "stats": store.review_stats()}
 
-    @api.post("/review/{request_id}/search")
-    async def review_search(
-        request_id: str, body: dict[str, Any] = Body(default={})
-    ) -> list[dict[str, Any]]:
-        record = store.get_request(request_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="request not found")
-        query = str(body.get("q") or "").strip() or str(record["query"])
-        want = _identity_from_record(record)
+    async def _fanout_search(query: str, want: TrackIdentity) -> list[dict[str, Any]]:
+        """Fan a query out across every enabled candidate source (in parallel, each
+        bounded by ``_REVIEW_SOURCE_TIMEOUT_S``), score each hit against ``want``,
+        and return ``_candidate_row`` dicts sorted best-match first. Shared by the
+        Review re-download search and the direct cross-source search."""
         sources = candidate_sources() if candidate_sources is not None else {}
 
         async def run_one(fn: CandidateSearchFn) -> list[Candidate]:
@@ -327,6 +324,50 @@ def create_app(
         ]
         rows.sort(key=lambda r: r["match"], reverse=True)
         return rows
+
+    @api.post("/review/{request_id}/search")
+    async def review_search(
+        request_id: str, body: dict[str, Any] = Body(default={})
+    ) -> list[dict[str, Any]]:
+        record = store.get_request(request_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="request not found")
+        query = str(body.get("q") or "").strip() or str(record["query"])
+        return await _fanout_search(query, _identity_from_record(record))
+
+    @api.post("/search/sources")
+    async def search_sources(body: dict[str, Any] = Body(...)) -> list[dict[str, Any]]:
+        """Search the linked download sources directly (Qobuz, Deezer, arcod, …) for
+        a track that isn't on Spotify. Spotify stays the primary search; this is the
+        "not on Spotify?" fallback. Returns scored candidates the caller can audition
+        (the candidate-stream proxy) and download via ``/api/search/sources/download``."""
+        if candidate_sources is None:
+            raise HTTPException(status_code=503, detail="no candidate sources configured")
+        query = str(body.get("q", "")).strip()
+        if len(query) < _MIN_SOURCE_QUERY_LEN:
+            raise HTTPException(status_code=400, detail="query too short")
+        # Prefer a structured identity when the caller has one; else parse the query.
+        want = _identity_from_body(body) or from_query(query)
+        return await _fanout_search(query, want)
+
+    @api.post("/search/sources/download")
+    def download_source_candidate(
+        request: Request, body: dict[str, Any] = Body(...)
+    ) -> dict[str, Any]:
+        """Queue a download of one chosen source candidate (from ``/search/sources``)
+        for a track with no Spotify entry. Opens a fresh request attributed to the
+        user and arms the exact candidate, so the worker downloads precisely it
+        rather than running the free-text cascade (which might mis-match)."""
+        query = str(body.get("query", "")).strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="query required")
+        candidate = _candidate_from_body(body.get("candidate"))
+        if candidate is None:
+            raise HTTPException(status_code=400, detail="candidate required")
+        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
+        rid = store.enqueue(query, identity=_identity_from_body(body), user_id=uid)
+        store.queue_review_download(rid, candidate, is_upgrade=False, target_path=None)
+        return {"id": rid, "status": "queued", "source": candidate.source}
 
     @api.post("/review/{request_id}/download")
     def review_download(request_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:

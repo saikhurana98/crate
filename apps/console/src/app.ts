@@ -134,6 +134,13 @@ interface State {
   searchBusy: boolean;
   searchErr: string | null;
   searchOff: boolean; // /api/search returned 503 — Spotify creds absent
+  // Direct cross-source search dialog (the "not on Spotify?" fallback)
+  srcOpen: boolean;
+  srcQuery: string;
+  srcBusy: boolean;
+  srcResults: ReviewCandidate[] | null;
+  srcErr: string | null;
+  srcQueued: Record<string, boolean>; // candidate id -> queued
   searchFocus: boolean; // dropdown open only while the header field has focus
   enqueued: Record<string, boolean>; // track id -> already sent to the cascade
   spotifyConfigured: boolean; // /api/spotify/status.configured (user-OAuth set up)
@@ -199,6 +206,12 @@ const state: State = {
   searchBusy: false,
   searchErr: null,
   searchOff: false,
+  srcOpen: false,
+  srcQuery: "",
+  srcBusy: false,
+  srcResults: null,
+  srcErr: null,
+  srcQueued: {},
   searchFocus: false,
   enqueued: {},
   spotifyConfigured: false,
@@ -701,6 +714,55 @@ async function enqueueTrack(track: SpotifyTrack): Promise<void> {
   } catch (err) {
     state.enqueued[track.id] = false;
     toast(`Couldn't queue: ${(err as Error).message}`);
+    render();
+  }
+}
+
+// ---------- direct cross-source search ("not on Spotify?" dialog) ----------
+let srcTimer: number | undefined;
+function openSourceDialog(seed?: string): void {
+  state.srcOpen = true;
+  state.srcQuery = (seed ?? state.searchQuery).trim();
+  state.srcResults = null;
+  state.srcErr = null;
+  state.srcQueued = {};
+  state.searchFocus = false; // close the Spotify dropdown behind it
+  render();
+  if (state.srcQuery.length >= 2) void runSourceSearch();
+}
+function closeSourceDialog(): void {
+  state.srcOpen = false;
+  render();
+}
+async function runSourceSearch(): Promise<void> {
+  const q = state.srcQuery.trim();
+  if (q.length < 2) return;
+  state.srcBusy = true;
+  state.srcErr = null;
+  render();
+  try {
+    state.srcResults = await api.searchSources(q);
+  } catch (err) {
+    state.srcErr = (err as Error).message;
+    state.srcResults = null;
+  } finally {
+    state.srcBusy = false;
+    render();
+  }
+}
+async function downloadSourceCandidate(id: string): Promise<void> {
+  const c = state.srcResults?.find((x) => x.id === id);
+  if (!c || state.srcQueued[id]) return;
+  state.srcQueued = { ...state.srcQueued, [id]: true };
+  render();
+  try {
+    await api.downloadSourceCandidate(state.srcQuery.trim(), c);
+    toast(`Queued “${c.title}” from ${c.source}`);
+    void loadHistory().then(render);
+  } catch (err) {
+    state.srcQueued = { ...state.srcQueued, [id]: false };
+    toast(`Couldn't queue: ${(err as Error).message}`);
+  } finally {
     render();
   }
 }
@@ -1443,7 +1505,68 @@ function searchDropdownHtml(): string {
         </div>`;
       })
       .join("")}</div>`;
-  return `<div style="position:absolute;top:calc(100% + 8px);left:0;right:0;background:#111411;border:1px solid #272c25;border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.65);overflow:hidden;animation:fadein .15s ease;z-index:70">${body}</div>`;
+  // Footer: cross-source fallback for tracks Spotify doesn't have.
+  const footer = `<button data-act="openSourceDialog" class="ghost" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:#0c0e0c;border:none;border-top:1px solid #1d211c;color:#99a091;font:600 11px 'JetBrains Mono';letter-spacing:.03em;padding:11px;cursor:pointer;transition:color .15s">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>Not on Spotify? Search the sources →</button>`;
+  return `<div style="position:absolute;top:calc(100% + 8px);left:0;right:0;background:#111411;border:1px solid #272c25;border-radius:16px;box-shadow:0 24px 70px rgba(0,0,0,.65);overflow:hidden;animation:fadein .15s ease;z-index:70">${body}${footer}</div>`;
+}
+
+// A candidate row in the cross-source dialog: source + quality + match%, an
+// audition play button (streamable sources), and a Download button that queues the
+// exact candidate. Reuses the review tab's shared clip player (playBtn).
+function srcRow(c: ReviewCandidate): string {
+  const col = tierColor(c.tier);
+  const badge = `<span style="font:700 9.5px 'JetBrains Mono';letter-spacing:.04em;color:${col};border:1px solid ${col};border-radius:8px;padding:2px 7px;flex-shrink:0">${esc(c.source.toUpperCase())}</span>`;
+  const quality = `<span style="font:500 10px 'JetBrains Mono';color:${c.lossless ? "#e9ede3" : "#7c8371"}">${esc(c.quality_label || (c.lossless ? "FLAC" : "lossy"))}</span>`;
+  const durTxt = c.duration_s ? `<span style="font:500 10px 'JetBrains Mono';color:#5d6456">${dur(c.duration_s)}</span>` : "";
+  const play = c.streamable
+    ? playBtn(`src:${c.id}`, c.preview_url ?? api.reviewCandidateStreamUrl(c.source, c.ref), 30)
+    : `<span style="width:30px;height:30px;flex-shrink:0" title="no preview"></span>`;
+  const queued = !!state.srcQueued[c.id];
+  const dl = queued
+    ? `<span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:6px 11px;border-radius:14px;background:rgba(233,237,227,.09);flex-shrink:0">✓ queued</span>`
+    : `<button class="qbtn" data-act="downloadSource" data-id="${esc(c.id)}" title="Download from ${esc(c.source)}" style="width:30px;height:30px;border-radius:50%;border:1px solid #272c25;background:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#99a091;flex-shrink:0;transition:border-color .15s,color .15s">${DL_ICON}</button>`;
+  return `<div style="display:flex;align-items:center;gap:11px;padding:11px 16px;border-top:1px solid #1a1e19">
+      ${play}
+      <div style="flex:1;min-width:0">
+        <div style="font:600 13px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.title || "Untitled")}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:3px;overflow:hidden">
+          <span style="font:400 11px 'Instrument Sans';color:#99a091;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.artist || "")}</span>
+        </div>
+      </div>
+      ${badge}${quality}${durTxt}
+      <span style="font:700 11px 'Doto';color:${c.match >= 70 ? "#e9ede3" : c.match >= 40 ? "#99a091" : "#5d6456"};flex-shrink:0;min-width:34px;text-align:right">${c.match}%</span>
+      ${dl}
+    </div>`;
+}
+
+function sourceDialogHtml(): string {
+  if (!state.srcOpen) return "";
+  let body: string;
+  if (state.srcErr)
+    body = `<div style="padding:22px 18px;text-align:center;font:400 12px 'Instrument Sans';color:#ff6b58">Search error: ${esc(state.srcErr)}</div>`;
+  else if (state.srcBusy && !state.srcResults?.length)
+    body = `<div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:34px 18px;font:400 12px 'Instrument Sans';color:#99a091"><span style="width:13px;height:13px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite"></span>Searching every source…</div>`;
+  else if (state.srcResults === null)
+    body = `<div style="padding:34px 18px;text-align:center;font:400 12px 'Instrument Sans';color:#5d6456">Type a track name and search across every linked source.</div>`;
+  else if (!state.srcResults.length)
+    body = `<div style="padding:34px 18px;text-align:center;font:400 12px 'Instrument Sans';color:#5d6456">No source had a match. Try refining the query.</div>`;
+  else body = `<div style="max-height:52vh;overflow-y:auto">${state.srcResults.map(srcRow).join("")}</div>`;
+  const scrim = `<div data-act="closeSourceDialog" style="position:fixed;inset:0;background:rgba(5,7,5,.62);z-index:80;animation:fadein .18s ease"></div>`;
+  return `${scrim}<div role="dialog" style="position:fixed;top:9vh;left:50%;transform:translateX(-50%);width:min(680px,92vw);background:#111411;border:1px solid #272c25;border-radius:20px;box-shadow:0 30px 90px rgba(0,0,0,.7);z-index:81;overflow:hidden;animation:fadein .18s ease">
+    <div style="display:flex;align-items:center;gap:12px;padding:16px 18px 12px">
+      <div style="flex:1;min-width:0">
+        <div style="font:600 15px 'Instrument Sans';color:#e9ede3">Search download sources</div>
+        <div style="font:400 11.5px 'Instrument Sans';color:#5d6456;margin-top:2px">Not on Spotify? Search Qobuz, Deezer, arcod &amp; co. directly, then queue the exact match.</div>
+      </div>
+      <button data-act="closeSourceDialog" class="closebtn" style="background:#181c17;border:1px solid #272c25;border-radius:10px;color:#99a091;cursor:pointer;padding:6px 9px;flex-shrink:0;display:inline-flex"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"></path></svg></button>
+    </div>
+    <div style="padding:0 18px 14px;display:flex;align-items:center;position:relative">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:31px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+      <input data-inp="srcsearch" value="${esc(state.srcQuery)}" placeholder="Artist — Title…" autofocus style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:400 13px 'Instrument Sans';padding:10px 14px 10px 40px"/>
+    </div>
+    <div style="border-top:1px solid #1d211c">${body}</div>
+  </div>`;
 }
 
 function activeDownloads(): number {
@@ -1703,7 +1826,9 @@ function mSearchResults(q: string): string {
           ${ctrl}</div>`;
       })
       .join("");
-  return `<div style="background:#111411;border:1px solid #272c25;border-radius:16px;overflow:hidden;margin-top:10px;animation:fadein .15s ease">${body}</div>`;
+  const footer = `<button data-act="openSourceDialog" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:#0c0e0c;border:none;border-top:1px solid #1d211c;color:#99a091;font:600 11px 'JetBrains Mono';letter-spacing:.03em;padding:12px;cursor:pointer">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>Not on Spotify? Search the sources →</button>`;
+  return `<div style="background:#111411;border:1px solid #272c25;border-radius:16px;overflow:hidden;margin-top:10px;animation:fadein .15s ease">${body}${footer}</div>`;
 }
 
 function mHeaderHtml(): string {
@@ -2369,6 +2494,10 @@ function view(): string {
   if (state.error) {
     return `<div style="max-width:600px;margin:80px auto;padding:24px;color:#ff4c38;font:500 14px 'Instrument Sans';text-align:center">Failed to load console: ${esc(state.error)}</div>`;
   }
+  return _viewBody() + sourceDialogHtml();
+}
+
+function _viewBody(): string {
   if (state.page === "bulk") {
     return `${headerHtml()}${bulkPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
   }
@@ -2476,6 +2605,9 @@ function bindEvents(): void {
     e.stopPropagation();
     const act = el.dataset.act!;
     if (act === "logout") void api.logout();
+    else if (act === "openSourceDialog") openSourceDialog();
+    else if (act === "closeSourceDialog") closeSourceDialog();
+    else if (act === "downloadSource") void downloadSourceCandidate(el.dataset.id!);
     else if (act === "toggleImport") void toggleImport();
     else if (act === "importLiked") void runImport("liked", "liked");
     else if (act === "importPlaylist")
@@ -2610,15 +2742,27 @@ function bindEvents(): void {
       state.bulkText = el.value; // capture without re-render so the textarea isn't clobbered
     } else if (el.dataset.inp === "reviewq") {
       state.reviewQ[el.dataset.id!] = el.value; // capture without re-render (keep focus)
+    } else if (el.dataset.inp === "srcsearch") {
+      state.srcQuery = el.value; // capture without re-render (keep focus), debounce fan-out
+      window.clearTimeout(srcTimer);
+      srcTimer = window.setTimeout(() => void runSourceSearch(), 320);
     }
   });
 
   root.addEventListener("keydown", (e) => {
     const el = e.target as HTMLInputElement;
-    if (el.dataset.inp === "reviewq" && (e as KeyboardEvent).key === "Enter") {
+    const key = (e as KeyboardEvent).key;
+    if (el.dataset.inp === "reviewq" && key === "Enter") {
       e.preventDefault();
       state.reviewQ[el.dataset.id!] = el.value; // ensure the latest value is used
       void rescanReview(el.dataset.id!);
+    } else if (el.dataset.inp === "srcsearch" && key === "Enter") {
+      e.preventDefault();
+      window.clearTimeout(srcTimer);
+      state.srcQuery = el.value;
+      void runSourceSearch();
+    } else if (key === "Escape" && state.srcOpen) {
+      closeSourceDialog();
     }
   });
 
