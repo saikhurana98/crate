@@ -454,3 +454,72 @@ def test_download_source_candidate_validation(tmp_path: Path) -> None:
     assert (
         client.post("/api/search/sources/download", json={"query": "x"}).status_code == 400
     )  # candidate missing
+
+
+# --- cross-source search cache + pre-warm ---
+def _counting_source(cands: list[Candidate]) -> tuple[Any, dict[str, int]]:
+    calls = {"n": 0}
+
+    def search(q: str, want: Any) -> list[Candidate]:
+        calls["n"] += 1
+        return cands
+
+    def sources() -> dict[str, tuple[Any, Any]]:
+        return {"fake": (search, lambda c, o, w: None)}
+
+    return sources, calls
+
+
+def _one_cand() -> list[Candidate]:
+    return [Candidate("deezer", 2, "1", "Song", "Artist", None, "FLAC", True, 200, None)]
+
+
+def test_source_search_is_cached_between_calls(tmp_path: Path) -> None:
+    src, calls = _counting_source(_one_cand())
+    client = TestClient(create_app(_store(tmp_path), candidate_sources=src))
+    a = client.post("/api/search/sources", json={"q": "hello world"}).json()
+    b = client.post("/api/search/sources", json={"q": "hello world"}).json()
+    assert a == b and len(a) == 1
+    assert calls["n"] == 1  # second call served from cache, no second fan-out
+
+
+def test_prewarm_populates_cache_for_instant_search(tmp_path: Path) -> None:
+    src, calls = _counting_source(_one_cand())
+    # `with` runs the app lifespan on ONE persistent loop, like uvicorn, so the
+    # fire-and-forget pre-warm task survives to the follow-up search (a plain
+    # TestClient tears down a fresh loop per request and would cancel it).
+    with TestClient(create_app(_store(tmp_path), candidate_sources=src)) as client:
+        warm = client.post("/api/search/sources/prewarm", json={"q": "warm me"}).json()
+        assert warm["status"] in ("warming", "warm")
+        rows = client.post("/api/search/sources", json={"q": "warm me"}).json()
+    assert len(rows) == 1
+    assert calls["n"] == 1  # the click reused the pre-warmed fan-out
+
+
+def test_prewarm_is_deduped_and_gated(tmp_path: Path) -> None:
+    src, _ = _counting_source(_one_cand())
+    client = TestClient(create_app(_store(tmp_path), candidate_sources=src))
+    client.post("/api/search/sources", json={"q": "abc"})  # now cached
+    assert client.post("/api/search/sources/prewarm", json={"q": "abc"}).json()["status"] == "warm"
+    assert client.post("/api/search/sources/prewarm", json={"q": "x"}).json()["status"] == "skip"
+    # no candidate sources wired at all -> unavailable (never raises)
+    bare = TestClient(create_app(_store(tmp_path)))
+    assert bare.post("/api/search/sources/prewarm", json={"q": "abc"}).json()["status"] == (
+        "unavailable"
+    )
+
+
+def test_source_search_cache_expires_after_ttl(tmp_path: Path, monkeypatch: Any) -> None:
+    import crate.adapters.inbound.ops_api as mod
+
+    clock = [1000.0]
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    src, calls = _counting_source(_one_cand())
+    client = TestClient(create_app(_store(tmp_path), candidate_sources=src))
+    client.post("/api/search/sources", json={"q": "tick"})
+    clock[0] += 10  # still within TTL -> cached
+    client.post("/api/search/sources", json={"q": "tick"})
+    assert calls["n"] == 1
+    clock[0] += mod._SOURCE_SEARCH_TTL_S + 1  # past TTL -> swept + re-fanned
+    client.post("/api/search/sources", json={"q": "tick"})
+    assert calls["n"] == 2

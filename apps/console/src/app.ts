@@ -679,6 +679,9 @@ async function runSearch(q: string): Promise<void> {
   state.searchBusy = true;
   state.searchErr = null;
   render();
+  // Speculatively warm the cross-source cache for this query, so if the track
+  // isn't on Spotify and the user opens the dialog, results are already ready.
+  api.prewarmSources(q);
   try {
     const results = await api.search(q, ctrl.signal);
     if (ctrl.signal.aborted) return; // a newer keystroke superseded this one
