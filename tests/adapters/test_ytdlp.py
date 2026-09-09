@@ -304,6 +304,7 @@ def test_search_candidates_salvages_results_on_nonzero_exit() -> None:
     cands = search_candidates("Daft Punk Get Lucky", runner=runner)
     assert [c.ref for c in cands] == ["c1"]
     assert cands[0].title == "Daft Punk - Get Lucky"
+    assert cands[0].art_url == "https://i.ytimg.com/vi/c1/mqdefault.jpg"  # synthesized thumb
 
 
 def test_download_uses_search_results_despite_nonzero_search_exit() -> None:

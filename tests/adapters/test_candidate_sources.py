@@ -100,6 +100,7 @@ def test_deezer_search_candidates_filters_by_title() -> None:
     cands = deezer.search_candidates("Mount Kimbie Made to Stray", search=lambda q: DEEZER_SEARCH)
     assert [c.ref for c in cands] == ["555"]
     assert cands[0].tier == 2 and cands[0].lossless is True
+    assert cands[0].art_url == "x"  # album cover flows onto the candidate
 
 
 def test_deezer_download_candidate_by_ref(tmp_path: Path) -> None:

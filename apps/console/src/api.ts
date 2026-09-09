@@ -249,6 +249,7 @@ export interface ReviewCandidate {
   duration_s: number | null;
   size_bytes: number | null;
   preview_url: string | null; // ~30s source clip for the A/B ear test (null = none)
+  art: string | null; // album cover art (null = none)
   streamable: boolean; // playable via preview_url or the server stream proxy
   match: number;
 }

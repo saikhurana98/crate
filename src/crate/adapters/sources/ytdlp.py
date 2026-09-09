@@ -332,6 +332,8 @@ def search_candidates(
             lossless=False,
             duration_s=c.duration_s,
             size_bytes=None,
+            # YouTube thumbnails live at a predictable public URL keyed by video id.
+            art_url=f"https://i.ytimg.com/vi/{c.id}/mqdefault.jpg",
         )
         for c in parse_candidates(search.stdout)
         if title_matches(c.title, query)

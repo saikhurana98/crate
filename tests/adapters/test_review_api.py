@@ -523,3 +523,14 @@ def test_source_search_cache_expires_after_ttl(tmp_path: Path, monkeypatch: Any)
     clock[0] += mod._SOURCE_SEARCH_TTL_S + 1  # past TTL -> swept + re-fanned
     client.post("/api/search/sources", json={"q": "tick"})
     assert calls["n"] == 2
+
+
+def test_source_search_row_includes_album_art(tmp_path: Path) -> None:
+    cands = [
+        Candidate(
+            "deezer", 2, "1", "T", "A", None, "FLAC", True, 200, None, art_url="http://img/x.jpg"
+        )
+    ]
+    client = TestClient(create_app(_store(tmp_path), candidate_sources=_cand_source(cands)))
+    rows = client.post("/api/search/sources", json={"q": "hello"}).json()
+    assert rows[0]["art"] == "http://img/x.jpg"

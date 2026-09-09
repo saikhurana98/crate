@@ -1517,14 +1517,28 @@ function searchDropdownHtml(): string {
 // A candidate row in the cross-source dialog: source + quality + match%, an
 // audition play button (streamable sources), and a Download button that queues the
 // exact candidate. Reuses the review tab's shared clip player (playBtn).
+// Album-art tile for a candidate, with the audition play/pause overlaid when the
+// source is streamable (reuses the shared clip player via the playClip action).
+function srcArt(c: ReviewCandidate): string {
+  const tile = c.art
+    ? `<img src="${esc(c.art)}" alt="" referrerpolicy="no-referrer" style="width:46px;height:46px;border-radius:10px;object-fit:cover;background:#181c17;display:block"/>`
+    : `<span style="width:46px;height:46px;border-radius:10px;background:#181c17;border:1px solid #272c25;display:flex;align-items:center;justify-content:center;font:800 17px 'Doto';color:#99a091">${esc((c.title || "?").charAt(0).toUpperCase())}</span>`;
+  if (!c.streamable)
+    return `<div style="position:relative;flex-shrink:0;width:46px;height:46px">${tile}</div>`;
+  const key = `src:${c.id}`;
+  const url = c.preview_url ?? api.reviewCandidateStreamUrl(c.source, c.ref);
+  const sounding = playKey === key;
+  const isPlaying = sounding && !playPaused;
+  const overlay = `<button class="qbtn" data-act="playClip" data-key="${esc(key)}" data-url="${esc(url)}" title="${isPlaying ? "Pause" : "Play"}" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border:none;border-radius:10px;background:rgba(8,10,8,${sounding ? "0.34" : "0.5"});color:#e9ede3;cursor:pointer;transition:background .15s">${isPlaying ? PAUSE_ICON : PLAY_ICON}</button>`;
+  return `<div style="position:relative;flex-shrink:0;width:46px;height:46px">${tile}${overlay}</div>`;
+}
+
 function srcRow(c: ReviewCandidate): string {
   const col = tierColor(c.tier);
   const badge = `<span style="font:700 9.5px 'JetBrains Mono';letter-spacing:.04em;color:${col};border:1px solid ${col};border-radius:8px;padding:2px 7px;flex-shrink:0">${esc(c.source.toUpperCase())}</span>`;
   const quality = `<span style="font:500 10px 'JetBrains Mono';color:${c.lossless ? "#e9ede3" : "#7c8371"}">${esc(c.quality_label || (c.lossless ? "FLAC" : "lossy"))}</span>`;
   const durTxt = c.duration_s ? `<span style="font:500 10px 'JetBrains Mono';color:#5d6456">${dur(c.duration_s)}</span>` : "";
-  const play = c.streamable
-    ? playBtn(`src:${c.id}`, c.preview_url ?? api.reviewCandidateStreamUrl(c.source, c.ref), 30)
-    : `<span style="width:30px;height:30px;flex-shrink:0" title="no preview"></span>`;
+  const play = srcArt(c);
   const queued = !!state.srcQueued[c.id];
   const dl = queued
     ? `<span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:6px 11px;border-radius:14px;background:rgba(233,237,227,.09);flex-shrink:0">✓ queued</span>`
