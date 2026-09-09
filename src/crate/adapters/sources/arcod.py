@@ -276,6 +276,7 @@ def search_candidates(
             lossless=False,
             duration_s=t.duration_s,
             size_bytes=None,
+            art_url=t.cover_url or None,
         )
         for t in tracks
         if title_matches(t.title, query)

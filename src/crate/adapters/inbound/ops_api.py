@@ -919,6 +919,7 @@ def _candidate_row(
         "duration_s": c.duration_s,
         "size_bytes": c.size_bytes,
         "preview_url": c.preview_url,
+        "art": c.art_url,
         "streamable": streamable,
         "match": match,
     }
