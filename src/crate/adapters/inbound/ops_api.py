@@ -13,6 +13,7 @@ browser never handles the key. ``/api/health`` is unauthenticated for probes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import secrets
 import time
@@ -66,6 +67,14 @@ _SEARCH_CACHE_MAX = 128
 _MAX_PENDING_STATES = 32  # cap the CSRF-state set; single-user tool, bounded churn
 _REVIEW_SOURCE_TIMEOUT_S = 12.0  # per-source ceiling on the review search fan-out
 _MIN_SOURCE_QUERY_LEN = 2  # shortest cross-source search query worth fanning out
+# Cross-source search is expensive (a live fan-out with per-source timeouts), so
+# results are cached and can be pre-warmed while the user is still typing the
+# Spotify search. Entries expire after the TTL; the cache is bounded and swept
+# (lazily on every access + periodically) so nothing orphans.
+_SOURCE_SEARCH_TTL_S = 120.0
+_SOURCE_SEARCH_MAX = 64  # cap distinct cached queries (evict soonest-to-expire)
+_SOURCE_INFLIGHT_MAX = 8  # cap concurrent background pre-warm fan-outs
+_SOURCE_SWEEP_INTERVAL_S = 60.0  # background orphan-sweep cadence
 _SESSION_COOKIE = "crate_session"
 
 
@@ -139,7 +148,50 @@ def create_app(
     source_validator: SourceValidatorFn | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
-    app = FastAPI(title="crate console", docs_url=None, redoc_url=None, openapi_url=None)
+    # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
+    # query -> (expiry_monotonic, rows); an in-flight fan-out is tracked separately
+    # so a pre-warm and the eventual click share one fan-out instead of racing.
+    source_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+    source_inflight: dict[str, asyncio.Task[list[dict[str, Any]]]] = {}
+
+    def _norm_q(q: str) -> str:
+        return " ".join(q.strip().lower().split())
+
+    def _sweep_source_cache() -> None:
+        """Drop expired cache rows and forget finished in-flight tasks. Called on
+        every cache access and periodically by the lifespan sweeper, so neither the
+        cache nor the task map ever accumulates orphans."""
+        now = time.monotonic()
+        for key in [k for k, (exp, _) in source_cache.items() if exp <= now]:
+            source_cache.pop(key, None)
+        for key in [k for k, task in source_inflight.items() if task.done()]:
+            source_inflight.pop(key, None)
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        async def sweeper() -> None:  # pragma: no cover - background loop
+            try:
+                while True:
+                    await asyncio.sleep(_SOURCE_SWEEP_INTERVAL_S)
+                    _sweep_source_cache()
+            except asyncio.CancelledError:
+                pass
+
+        task = asyncio.ensure_future(sweeper())
+        try:
+            yield
+        finally:  # pragma: no cover - shutdown path
+            task.cancel()
+            for inflight in list(source_inflight.values()):  # cancel orphaned fan-outs
+                inflight.cancel()
+
+    app = FastAPI(
+        title="crate console",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=_lifespan,
+    )
 
     def require_auth(request: Request) -> None:
         """Gate the ``/api`` router on a valid session cookie OR the matching
@@ -325,6 +377,37 @@ def create_app(
         rows.sort(key=lambda r: r["match"], reverse=True)
         return rows
 
+    async def _run_and_cache(key: str, query: str) -> list[dict[str, Any]]:
+        """Fan out, store under ``key`` with a fresh TTL, then release the in-flight
+        slot. Cache is written before the slot is released so a racing caller either
+        awaits this task or sees the cached rows — never a duplicate fan-out."""
+        try:
+            rows = await _fanout_search(query, from_query(query))
+            if len(source_cache) >= _SOURCE_SEARCH_MAX:
+                source_cache.pop(min(source_cache, key=lambda k: source_cache[k][0]), None)
+            source_cache[key] = (time.monotonic() + _SOURCE_SEARCH_TTL_S, rows)
+            return rows
+        finally:
+            source_inflight.pop(key, None)
+
+    def _spawn_source_task(key: str, query: str) -> asyncio.Task[list[dict[str, Any]]]:
+        task = asyncio.ensure_future(_run_and_cache(key, query))
+        source_inflight[key] = task
+        # retrieve the exception even if nobody awaits (pre-warm only) so a failed
+        # fan-out never surfaces as an "exception never retrieved" warning.
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        return task
+
+    async def _source_search(query: str) -> list[dict[str, Any]]:
+        """Cached cross-source fan-out: fresh cache hit → instant; a pre-warm still
+        running → await it; otherwise fan out now and cache."""
+        key = _norm_q(query)
+        _sweep_source_cache()
+        hit = source_cache.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return hit[1]
+        return await (source_inflight.get(key) or _spawn_source_task(key, query))
+
     @api.post("/review/{request_id}/search")
     async def review_search(
         request_id: str, body: dict[str, Any] = Body(default={})
@@ -346,9 +429,31 @@ def create_app(
         query = str(body.get("q", "")).strip()
         if len(query) < _MIN_SOURCE_QUERY_LEN:
             raise HTTPException(status_code=400, detail="query too short")
-        # Prefer a structured identity when the caller has one; else parse the query.
-        want = _identity_from_body(body) or from_query(query)
-        return await _fanout_search(query, want)
+        return await _source_search(query)
+
+    @api.post("/search/sources/prewarm")
+    async def prewarm_sources(body: dict[str, Any] = Body(...)) -> dict[str, str]:
+        """Kick the cross-source fan-out off in the background so it's cached by the
+        time the user clicks "search the sources". Returns immediately; the console
+        fires this while the user is still typing the Spotify search. Idempotent per
+        query (deduped against a fresh cache entry / an in-flight fan-out) and capped
+        so speculative warming can't spawn unbounded work."""
+        if candidate_sources is None:
+            return {"status": "unavailable"}
+        query = str(body.get("q", "")).strip()
+        if len(query) < _MIN_SOURCE_QUERY_LEN:
+            return {"status": "skip"}
+        key = _norm_q(query)
+        _sweep_source_cache()
+        hit = source_cache.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return {"status": "warm"}
+        if key in source_inflight:
+            return {"status": "pending"}
+        if len(source_inflight) >= _SOURCE_INFLIGHT_MAX:
+            return {"status": "busy"}
+        _spawn_source_task(key, query)
+        return {"status": "warming"}
 
     @api.post("/search/sources/download")
     def download_source_candidate(

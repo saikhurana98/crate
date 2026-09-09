@@ -328,6 +328,15 @@ export const api = {
   // Direct cross-source search (the "not on Spotify?" fallback) — fans the query
   // out across the linked download sources and returns scored candidates.
   searchSources: (q: string) => send<ReviewCandidate[]>("POST", "/api/search/sources", { q }),
+  // Fire-and-forget: warm the backend cross-source cache while the user is still
+  // typing, so opening the dialog returns instantly. Never throws.
+  prewarmSources: (q: string): void => {
+    void fetch("/api/search/sources/prewarm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q }),
+    }).catch(() => {});
+  },
   downloadSourceCandidate: (query: string, candidate: ReviewCandidate) =>
     send<{ id: string; status: string; source: string }>(
       "POST",
