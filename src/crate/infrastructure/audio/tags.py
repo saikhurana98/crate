@@ -57,6 +57,31 @@ def read_tags(path: Path) -> TrackTags:  # pragma: no cover - thin mutagen wrapp
     )
 
 
+def has_cover(path: Path) -> bool:  # pragma: no cover - thin mutagen wrapper
+    """True when the file carries embedded artwork (FLAC picture, ID3 APIC, MP4
+    covr, or an Ogg METADATA_BLOCK_PICTURE)."""
+    try:
+        audio = mutagen.File(path)
+    except Exception:
+        audio = None
+    if audio is None:
+        return False
+    if isinstance(audio, FLAC):
+        return bool(audio.pictures)
+    return _tags_have_cover(audio)
+
+
+def _tags_have_cover(audio: Any) -> bool:  # pragma: no cover - thin mutagen wrapper
+    tags = audio.tags
+    if tags is None:
+        return False
+    if isinstance(audio, MP4):
+        return bool(tags.get("covr"))
+    if isinstance(tags, ID3):
+        return bool(tags.getall("APIC"))
+    return bool(tags.get("metadata_block_picture")) if hasattr(tags, "get") else False
+
+
 def write_tags(path: Path, tags: TrackTags) -> None:  # pragma: no cover - thin mutagen wrapper
     audio = mutagen.File(path, easy=True)
     if audio is None:  # unknown container — nothing to write, leave the file alone

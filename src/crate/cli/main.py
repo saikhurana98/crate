@@ -170,6 +170,26 @@ def serve(  # pragma: no cover - network server loop
         stop.set()
 
 
+dedup_app = typer.Typer(help="Library de-duplication.", no_args_is_help=True)
+app.add_typer(dedup_app, name="dedup")
+
+
+@dedup_app.command("scan")
+def dedup_scan() -> None:  # pragma: no cover - IO wiring
+    """Index the library now: walk, probe, fingerprint, AcoustID. This is the same
+    job serve runs nightly. Config: CRATE_DB, CRATE_LIBRARY_ROOT, CRATE_ACOUSTID_KEY."""
+    import json
+
+    from crate.composition.sources import run_job_now
+    from crate.domain.jobs import JobKind
+
+    result = run_job_now(JobKind.DEDUP_SCAN, triggered_by="cli")
+    if result.get("existing"):
+        typer.echo(f"a scan is already queued or running (job {result['job']})")
+        return
+    typer.echo(json.dumps(result.get("summary") or result, indent=2, default=str))
+
+
 @app.command()
 def console(  # pragma: no cover - network server loop
     port: Annotated[int, typer.Option("--port", "-p", help="Listen port.")] = 8788,

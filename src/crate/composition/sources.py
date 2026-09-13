@@ -1279,6 +1279,7 @@ def _job_handlers() -> dict[Any, Any]:  # pragma: no cover - IO wiring
         JobKind.LISTEN_POLL: _listen_poll_job,
         JobKind.HISTORY_IMPORT: _history_import_job,
         JobKind.LIBRARY_SYNC: _library_sync_job,
+        JobKind.DEDUP_SCAN: _dedup_scan_job,
     }
 
 
@@ -1471,6 +1472,100 @@ def _library_sync_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover
         )
     finally:
         conn.close()
+
+
+def _nice_runner(cmd: list[str]) -> Any:  # pragma: no cover - subprocess
+    """Run an analysis tool at low CPU priority, so a full-library scan never starves
+    serve's downloads or Navidrome, and with a bounded deadline."""
+    import subprocess
+
+    return subprocess.run(
+        ["nice", "-n", "10", *cmd], capture_output=True, text=True, check=True, timeout=60
+    )
+
+
+def _analyze_file(path: Path) -> Any:  # pragma: no cover - IO wiring
+    """probe + tags + embedded cover + one fpcalc run (decoded locally to raw)."""
+    from crate.application.library_scan import FileAnalysis
+    from crate.domain.audio import classify
+    from crate.domain.chromaprint import decompress
+    from crate.infrastructure.audio.fingerprint import fingerprint_compressed
+    from crate.infrastructure.audio.probe import probe
+    from crate.infrastructure.audio.tags import has_cover, read_tags
+
+    info = probe(path, runner=_nice_runner)
+    fp_duration, fp = fingerprint_compressed(path, runner=_nice_runner)
+    return FileAnalysis(
+        codec=info.codec,
+        container=info.container,
+        lossless=classify(info).lossless,
+        bitrate=info.bitrate_bps,
+        bit_depth=info.bit_depth,
+        sample_rate=info.sample_rate_hz,
+        channels=info.channels,
+        duration_s=info.duration_s,
+        tags=read_tags(path),
+        has_cover=has_cover(path),
+        fp_duration=fp_duration,
+        fp_compressed=fp,
+        fp_raw=decompress(fp).raw,
+    )
+
+
+def _dedup_scan_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
+    """``dedup_scan`` (nightly + Run now + ``crate dedup scan``): index the library
+    (orchestration in ``application.library_scan``). Needs CRATE_LIBRARY_ROOT and
+    fpcalc; AcoustID lookups also need CRATE_ACOUSTID_KEY."""
+    from crate.application.library_scan import RateLimiter, run_dedup_scan
+    from crate.infrastructure.audio.fingerprint import fpcalc_available
+    from crate.infrastructure.fs.library_walk import walk_library
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.library_store import SqliteLibraryStore
+
+    root = os.environ.get("CRATE_LIBRARY_ROOT")
+    if not root:
+        ctx.warn("CRATE_LIBRARY_ROOT is not set; nothing to scan", code="no_root")
+        return {"skipped": "no library root"}
+    if not fpcalc_available():
+        ctx.warn("fpcalc is not installed; can't fingerprint", code="no_fpcalc")
+        return {"skipped": "no fpcalc"}
+    lookup = None
+    key = os.environ.get("CRATE_ACOUSTID_KEY")
+    if key:
+        from crate.infrastructure.acoustid.client import AcoustidClient
+
+        lookup = AcoustidClient(key).lookup
+    rate = float(os.environ.get("CRATE_ACOUSTID_RATE", "2.5"))
+    conn = connect(db_path())
+    try:
+        return run_dedup_scan(
+            ctx,
+            Path(root),
+            walk=walk_library,
+            store=SqliteLibraryStore(conn),
+            analyze=_analyze_file,
+            lookup=lookup,
+            limiter=RateLimiter(rate),
+        )
+    finally:
+        conn.close()
+
+
+def run_job_now(kind: Any, *, triggered_by: str = "cli") -> dict[str, Any]:  # pragma: no cover
+    """Queue ``kind`` and run it in this process (the CLI's "run it now"). If one is
+    already queued or running, report it instead of starting a second."""
+    from crate.application.jobs import run_claimed
+    from crate.domain.jobs import LANE_OF
+
+    store = build_job_store()
+    job_id, existing = store.enqueue(kind, triggered_by=triggered_by)
+    if existing:
+        return {"job": job_id, "existing": True}
+    job = store.claim_next(LANE_OF[kind].value)
+    if job is None:  # serve's runner claimed it first; it runs there
+        return {"job": job_id, "claimed_by": "serve"}
+    run_claimed(job, _job_handlers(), store)
+    return dict(store.get(job.id) or {})
 
 
 # Kinds a user may start with "Run now" (history import has its own upload flow;
