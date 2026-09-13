@@ -1,17 +1,24 @@
-"""Jobs REST (the Library Sync / Dedup engine): list and inspect jobs, replay a
-job's log, trigger an allow-listed kind, cancel.
+"""Jobs REST + live log (the Library Sync / Dedup engine).
 
-Mounted under the authenticated ``/api`` router by :func:`create_app`. The live
-tail is the WebSocket hub (``/api/ws/jobs``, next PR); these endpoints are its
-REST fallback and the history view. Job metadata is shared, but log lines tagged
-with a user are only returned to that user.
+REST (mounted under the authenticated ``/api`` router): list and inspect jobs,
+replay a job's log, trigger an allow-listed kind, cancel. **WebSocket**
+``/api/ws/jobs``: a backlog then a live tail of job events (ADR-0020). The
+cross-process transport is still the shared DB (ADR-0018): each socket tails
+``job_events`` by id cursor. Job metadata is shared; log lines tagged with a user
+reach only that user.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi import APIRouter, Body, FastAPI, HTTPException, Query, Request, WebSocket
+from starlette.requests import HTTPConnection
+from starlette.websockets import WebSocketDisconnect
 
 from crate.application.auth import SERVICE_USER_ID
 from crate.domain.jobs import JobKind
@@ -36,6 +43,18 @@ class JobsPort(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     def request_cancel(self, job_id: str) -> str | None: ...
+
+    def events_since(
+        self, cursor: int, *, limit: int = 500, viewer: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def tail_events(
+        self, *, limit: int = 200, viewer: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def max_event_id(self) -> int: ...
+
+    def active_jobs(self) -> list[dict[str, Any]]: ...
 
 
 def jobs_router(jobs: JobsPort, *, manual_kinds: frozenset[JobKind]) -> APIRouter:
@@ -92,3 +111,102 @@ def jobs_router(jobs: JobsPort, *, manual_kinds: frozenset[JobKind]) -> APIRoute
         return {"id": job_id, "status": status}
 
     return router
+
+
+# --- WebSocket live log (ADR-0020) ---
+WS_CLOSE_UNAUTHORIZED = 4401
+WS_CLOSE_BAD_ORIGIN = 4403
+_WS_BACKLOG = 200  # events replayed on a fresh connect
+_WS_BATCH = 500  # max events per live frame
+
+Authenticate = Callable[[HTTPConnection], "str | None"]
+
+
+def origin_allowed(headers: Mapping[str, str]) -> bool:
+    """Same-origin check on the WebSocket upgrade (the cross-site WebSocket
+    hijacking guard). Browsers always send ``Origin``, and it must match ``Host``.
+    Non-browser clients (no ``Origin``) pass; they still need a session or the key."""
+    origin = headers.get("origin")
+    if not origin:
+        return True
+    return urlparse(origin).netloc.lower() == (headers.get("host") or "").lower()
+
+
+def job_frame(
+    events: list[dict[str, Any]], cursor: int, active: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """One server->client frame: new events, the resume cursor, and the
+    currently queued/running jobs (so the UI can show a running sync)."""
+    return {"type": "events", "events": events, "cursor": cursor, "active": active}
+
+
+def mount_jobs_ws(
+    app: FastAPI,
+    jobs: JobsPort,
+    authenticate: Authenticate,
+    *,
+    poll_s: float = 1.0,
+    ping_s: float = 25.0,
+) -> None:
+    """Register ``/api/ws/jobs`` on ``app`` (not the ``/api`` router: HTTP
+    dependencies don't apply to WebSocket routes, so auth is checked here).
+
+    Protocol: connect (optionally ``?since=<event id>`` to resume), receive one
+    backlog frame, then a frame whenever new events land, plus a ``ping`` after
+    ``ping_s`` of silence. Close codes: 4401 unauthenticated, 4403 cross-origin."""
+
+    @app.websocket("/api/ws/jobs")
+    async def jobs_ws(ws: WebSocket) -> None:
+        await ws.accept()
+        if not origin_allowed(ws.headers):
+            await ws.close(code=WS_CLOSE_BAD_ORIGIN)
+            return
+        uid = authenticate(ws)
+        if uid is None:
+            await ws.close(code=WS_CLOSE_UNAUTHORIZED)
+            return
+
+        async def until_disconnect() -> None:
+            # Drains client messages (ignored) so a disconnect is noticed within one
+            # poll, instead of only at the next send.
+            with contextlib.suppress(Exception):
+                while (await ws.receive())["type"] != "websocket.disconnect":
+                    pass
+
+        watcher = asyncio.create_task(until_disconnect())
+        try:
+            since = ws.query_params.get("since", "")
+            if since.isdigit():
+                cursor = int(since)
+                rows = await asyncio.to_thread(
+                    jobs.events_since, cursor, limit=_WS_BATCH, viewer=uid
+                )
+            else:
+                rows = await asyncio.to_thread(jobs.tail_events, limit=_WS_BACKLOG, viewer=uid)
+                cursor = 0
+            if rows:
+                cursor = int(rows[-1]["id"])
+            elif not since.isdigit():
+                cursor = await asyncio.to_thread(jobs.max_event_id)
+            active = await asyncio.to_thread(jobs.active_jobs)
+            await ws.send_json(job_frame(rows, cursor, active))
+            idle = 0.0
+            while not watcher.done():
+                await asyncio.sleep(poll_s)
+                rows = await asyncio.to_thread(
+                    jobs.events_since, cursor, limit=_WS_BATCH, viewer=uid
+                )
+                if rows:
+                    cursor = int(rows[-1]["id"])
+                    active = await asyncio.to_thread(jobs.active_jobs)
+                    await ws.send_json(job_frame(rows, cursor, active))
+                    idle = 0.0
+                    continue
+                idle += poll_s
+                if idle >= ping_s:
+                    await ws.send_json({"type": "ping", "cursor": cursor})
+                    idle = 0.0
+        except (WebSocketDisconnect, RuntimeError):  # client went away mid-send
+            return
+        finally:
+            watcher.cancel()

@@ -6,7 +6,8 @@ export default defineConfig({
   base: "./",
   server: {
     proxy: {
-      "/api": { target: "http://localhost:8788", changeOrigin: true },
+      // ws: true also proxies the /api/ws/jobs WebSocket upgrade (live job log).
+      "/api": { target: "http://localhost:8788", changeOrigin: true, ws: true },
     },
   },
   build: { outDir: "dist", emptyOutDir: true },
