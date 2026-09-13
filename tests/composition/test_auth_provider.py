@@ -18,20 +18,26 @@ class FakeClient:
     def __init__(self, me: dict[str, Any]) -> None:
         self._me = me
         self.exchanged: str | None = None
+        self.scope: str | None = None
 
     def authorize_url(self, redirect: str, state: str, scope: str) -> str:
         return f"https://auth?scope={scope}&state={state}&redirect_uri={redirect}"
 
     def exchange_code_tokens(self, code: str, redirect: str) -> dict[str, str]:
         self.exchanged = code
-        return {"access_token": "acc", "refresh_token": "ref-tok"}
+        out = {"access_token": "acc", "refresh_token": "ref-tok"}
+        if self.scope is not None:
+            out["scope"] = self.scope
+        return out
 
     def me(self, access_token: str) -> dict[str, Any]:
         assert access_token == "acc"
         return self._me
 
 
-def _provider(tmp_path: Path, me: dict[str, Any]) -> tuple[AuthProvider, ConfigStore, FakeClient]:
+def _provider(
+    tmp_path: Path, me: dict[str, Any], admins: frozenset[str] = frozenset()
+) -> tuple[AuthProvider, ConfigStore, FakeClient]:
     conn = connect(tmp_path / "c.db")
     config = ConfigStore(connect(tmp_path / "cfg.db"), SecretBox(bytes(range(32))))
     client = FakeClient(me)
@@ -41,6 +47,7 @@ def _provider(tmp_path: Path, me: dict[str, Any]) -> tuple[AuthProvider, ConfigS
         config,
         SqliteUserRepository(conn),
         SqliteSessionStore(conn),
+        admin_spotify_ids=admins,
     )
     return provider, config, client
 
@@ -80,3 +87,41 @@ def test_complete_login_rejects_profile_without_id(tmp_path: Path) -> None:
         raise AssertionError("expected RuntimeError")
     except RuntimeError:
         pass
+
+
+def test_login_url_requests_top_read_for_library_sync(tmp_path: Path) -> None:
+    provider, _, _ = _provider(tmp_path, {"id": "x"})
+    assert "user-top-read" in provider.login_url("s")
+
+
+def test_complete_login_persists_granted_scopes(tmp_path: Path) -> None:
+    me = {"id": "spot9", "display_name": "Sai", "email": None, "avatar": None}
+    provider, config, client = _provider(tmp_path, me)
+    client.scope = "user-read-email user-top-read"
+    user, _ = provider.complete_login("c")
+    assert config.get_secret(f"spotify:{user.id}", "scopes") == "user-read-email user-top-read"
+
+
+def test_admin_bootstrap_grants_listed_spotify_id(tmp_path: Path) -> None:
+    me = {"id": "spot9", "display_name": "Sai", "email": None, "avatar": None}
+    provider, _, _ = _provider(tmp_path, me, admins=frozenset({"spot9"}))
+    user, _ = provider.complete_login("c")
+    assert user.is_admin is True
+
+
+def test_admin_env_is_source_of_truth_revokes_when_unlisted(tmp_path: Path) -> None:
+    me = {"id": "spot9", "display_name": "Sai", "email": None, "avatar": None}
+    granted, _, _ = _provider(tmp_path, me, admins=frozenset({"spot9"}))
+    assert granted.complete_login("c")[0].is_admin is True
+    # same DB, env now lists someone else -> revoked at next login
+    revoked, _, _ = _provider(tmp_path, me, admins=frozenset({"other"}))
+    assert revoked.complete_login("c")[0].is_admin is False
+
+
+def test_admin_untouched_when_env_unset(tmp_path: Path) -> None:
+    me = {"id": "spot9", "display_name": "Sai", "email": None, "avatar": None}
+    first, _, _ = _provider(tmp_path, me, admins=frozenset({"spot9"}))
+    first.complete_login("c")
+    # no env list -> the stored flag is left alone (not silently revoked)
+    plain, _, _ = _provider(tmp_path, me)
+    assert plain.complete_login("c")[0].is_admin is True

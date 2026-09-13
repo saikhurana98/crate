@@ -69,3 +69,16 @@ def test_session_expiry_and_sweep(tmp_path: Path) -> None:
     assert sessions.resolve(raw) is None
     assert sessions.sweep_expired() == 1
     assert conn.execute("SELECT COUNT(*) c FROM sessions").fetchone()["c"] == 0
+
+
+def test_set_admin_grants_revokes_and_survives_relogin(tmp_path: Path) -> None:
+    repo = SqliteUserRepository(connect(tmp_path / "u.db"))
+    user = repo.upsert_spotify_user(_profile())
+    assert user.is_admin is False
+    granted = repo.set_admin(user.id, True)
+    assert granted is not None and granted.is_admin is True
+    # a later login (upsert) must not reset the admin flag
+    assert repo.upsert_spotify_user(_profile(name="Renamed")).is_admin is True
+    revoked = repo.set_admin(user.id, False)
+    assert revoked is not None and revoked.is_admin is False
+    assert repo.set_admin("nope", True) is None

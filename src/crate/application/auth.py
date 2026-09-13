@@ -58,6 +58,10 @@ class UserRepository(Protocol):
 
     def by_spotify_id(self, spotify_id: str) -> User | None: ...
 
+    def set_admin(self, user_id: str, is_admin: bool) -> User | None:
+        """Grant/revoke admin (destructive library actions); return the updated row."""
+        ...
+
 
 class SessionStore(Protocol):
     """Opaque bearer sessions. ``create`` returns the RAW token (shown once, set

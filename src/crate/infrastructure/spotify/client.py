@@ -16,6 +16,7 @@ import base64
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
@@ -28,24 +29,72 @@ PLAYLIST_URL = "https://api.spotify.com/v1/playlists/"
 ME_URL = "https://api.spotify.com/v1/me"
 SAVED_TRACKS_URL = "https://api.spotify.com/v1/me/tracks"
 MY_PLAYLISTS_URL = "https://api.spotify.com/v1/me/playlists"
+TOP_TRACKS_URL = "https://api.spotify.com/v1/me/top/tracks"
+TRACKS_URL = "https://api.spotify.com/v1/tracks"
+ALBUM_URL = "https://api.spotify.com/v1/albums/"
 
 _PLAYLIST_ID = re.compile(r"playlist[/:]([A-Za-z0-9]+)")
 
 # user-scoped read of playback — the client-credentials flow cannot reach these.
 USER_SCOPES = "user-read-currently-playing user-read-recently-played"
 # Login-with-Spotify needs identity (/v1/me) + private library reads (Phase B
-# import). Requesting these forces re-consent for anyone connected under the old
-# player-only scopes — that's expected (see the plan's Risks).
-LOGIN_SCOPES = (
+# import). A stored token with no recorded scope was minted under this set.
+LEGACY_LOGIN_SCOPES = (
     "user-read-email user-library-read "
     "playlist-read-private playlist-read-collaborative " + USER_SCOPES
 )
+# Library Sync tiers add ``user-top-read`` (top tracks per time range). Adding a
+# scope forces a one-time re-consent; ``missing_scopes`` drives the UI banner.
+LOGIN_SCOPES = LEGACY_LOGIN_SCOPES + " user-top-read"
 
 PostForm = Callable[[str, dict[str, str], dict[str, str]], Any]
 GetJson = Callable[[str, dict[str, Any], dict[str, str]], Any]
 
 _TOKEN_SKEW_S = 30.0
 _MIN_ART = 64
+_MAX_429_RETRIES = 2  # bounded back-off: never hang a sync on a rate limit
+_MAX_RETRY_AFTER_S = 30.0  # a longer Retry-After raises instead of sleeping
+_BATCH = 50  # Spotify's page / several-ids cap
+_TOP_TRACKS_MAX = 100  # a top-tracks time range serves ~100 at most
+
+
+def missing_scopes(granted: str | None) -> list[str]:
+    """Scopes current features need that a user's token lacks (sorted). ``None``
+    — a token minted before scopes were recorded — is read as the legacy login
+    set, so those users are prompted to re-login once."""
+    have = set((granted if granted is not None else LEGACY_LOGIN_SCOPES).split())
+    return sorted(set(LOGIN_SCOPES.split()) - have)
+
+
+def _status_of(exc: BaseException) -> int | None:
+    """HTTP status carried by a transport error (httpx.HTTPStatusError shape),
+    duck-typed so this client stays transport-agnostic."""
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def _retry_after_s(exc: BaseException) -> float | None:
+    """Seconds to back off for a 429 (``Retry-After``, default 1 s); ``None`` when
+    the error isn't a rate limit."""
+    if _status_of(exc) != 429:  # noqa: PLR2004 - HTTP status
+        return None
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    raw = headers.get("Retry-After") if headers is not None else None
+    try:
+        return max(0.0, float(raw)) if raw is not None else 1.0
+    except (TypeError, ValueError):
+        return 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshedTokens:
+    """A user-token refresh. Spotify may **rotate** the refresh token and reports
+    the granted ``scope``; callers persist both (a dropped rotated token eventually
+    breaks the user's session)."""
+
+    access_token: str
+    refresh_token: str | None
+    scope: str | None
 
 
 def _best_art(images: list[dict[str, Any]]) -> str | None:
@@ -109,14 +158,29 @@ class SpotifyClient:
         post_form: PostForm,
         get_json: GetJson,
         now: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._id = client_id
         self._secret = client_secret
         self._post_form = post_form
         self._get_json = get_json
         self._now = now
+        self._sleep = sleep
         self._token: str | None = None
         self._expires_at = 0.0
+
+    def _get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        """``get_json`` with a bounded 429 back-off: honour ``Retry-After`` (up to
+        ``_MAX_RETRY_AFTER_S``) at most ``_MAX_429_RETRIES`` times, then raise."""
+        for attempt in range(_MAX_429_RETRIES + 1):
+            try:
+                return self._get_json(url, params, headers)
+            except Exception as exc:
+                wait = _retry_after_s(exc)
+                if wait is None or wait > _MAX_RETRY_AFTER_S or attempt == _MAX_429_RETRIES:
+                    raise
+                self._sleep(wait)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _bearer(self) -> str:
         if self._token is not None and self._now() < self._expires_at:
@@ -132,7 +196,7 @@ class SpotifyClient:
         return self._token
 
     def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
-        data = self._get_json(
+        data = self._get(
             SEARCH_URL,
             {"q": query, "type": "track", "limit": limit},
             {"Authorization": f"Bearer {self._bearer()}"},
@@ -150,7 +214,7 @@ class SpotifyClient:
         m = _PLAYLIST_ID.search(ref)
         pid = m.group(1) if m else ref.strip()
         headers = {"Authorization": f"Bearer {self._bearer()}"}
-        data = self._get_json(
+        data = self._get(
             f"{PLAYLIST_URL}{pid}",
             {
                 "fields": "name,owner(display_name),tracks(items(track(name,artists(name),"
@@ -172,7 +236,7 @@ class SpotifyClient:
         collect(tracks_obj.get("items") or [])
         nxt = tracks_obj.get("next")
         while nxt and len(tracks) < max_tracks:
-            page = self._get_json(str(nxt), {}, headers)
+            page = self._get(str(nxt), {}, headers)
             collect((page or {}).get("items") or [])
             nxt = (page or {}).get("next")
         return {"name": name, "owner": owner, "tracks": tracks[:max_tracks]}
@@ -206,6 +270,7 @@ class SpotifyClient:
         return {
             "access_token": str(data["access_token"]),
             "refresh_token": str(data["refresh_token"]),
+            "scope": str(data.get("scope") or ""),  # what the user actually granted
         }
 
     def exchange_code(self, code: str, redirect_uri: str) -> str:
@@ -215,7 +280,7 @@ class SpotifyClient:
     def me(self, access_token: str) -> dict[str, Any]:
         """The authenticated user's profile from ``GET /v1/me``:
         ``{id, display_name, email, avatar}``."""
-        data = self._get_json(ME_URL, {}, {"Authorization": f"Bearer {access_token}"}) or {}
+        data = self._get(ME_URL, {}, {"Authorization": f"Bearer {access_token}"}) or {}
         return {
             "id": str(data.get("id") or ""),
             "display_name": str(data.get("display_name") or data.get("id") or ""),
@@ -223,17 +288,25 @@ class SpotifyClient:
             "avatar": _best_art(data.get("images") or []),
         }
 
-    def refresh_access_token(self, refresh_token: str) -> str:
+    def refresh_tokens(self, refresh_token: str) -> RefreshedTokens:
+        """Refresh a user token, keeping any rotated refresh token + granted scope."""
         data = self._post_form(
             TOKEN_URL,
             {"grant_type": "refresh_token", "refresh_token": refresh_token},
             {"Authorization": f"Basic {self._basic()}"},
         )
-        return str(data["access_token"])
+        return RefreshedTokens(
+            access_token=str(data["access_token"]),
+            refresh_token=str(data["refresh_token"]) if data.get("refresh_token") else None,
+            scope=str(data["scope"]) if data.get("scope") else None,
+        )
+
+    def refresh_access_token(self, refresh_token: str) -> str:
+        return self.refresh_tokens(refresh_token).access_token
 
     def currently_playing(self, access_token: str) -> dict[str, Any] | None:
         """The track playing now, or ``None`` (nothing playing / 204 empty body)."""
-        data = self._get_json(NOW_PLAYING_URL, {}, {"Authorization": f"Bearer {access_token}"})
+        data = self._get(NOW_PLAYING_URL, {}, {"Authorization": f"Bearer {access_token}"})
         item = (data or {}).get("item")
         if not item:
             return None
@@ -243,9 +316,7 @@ class SpotifyClient:
         return track
 
     def recently_played(self, access_token: str, limit: int = 8) -> list[dict[str, Any]]:
-        data = self._get_json(
-            RECENT_URL, {"limit": limit}, {"Authorization": f"Bearer {access_token}"}
-        )
+        data = self._get(RECENT_URL, {"limit": limit}, {"Authorization": f"Bearer {access_token}"})
         out: list[dict[str, Any]] = []
         for entry in (data or {}).get("items") or []:
             item = entry.get("track")
@@ -264,7 +335,7 @@ class SpotifyClient:
         shaped ``{track: {...}}`` (Liked Songs and playlist-track endpoints)."""
         headers = {"Authorization": f"Bearer {access_token}"}
         out: list[dict[str, Any]] = []
-        data = self._get_json(url, {"limit": 50, **params}, headers)
+        data = self._get(url, {"limit": 50, **params}, headers)
         while data:
             for entry in (data or {}).get("items") or []:
                 track = _min_track((entry or {}).get("track") or {})
@@ -273,7 +344,7 @@ class SpotifyClient:
                 if len(out) >= max_tracks:
                     return out
             nxt = (data or {}).get("next")
-            data = self._get_json(str(nxt), {}, headers) if nxt else None
+            data = self._get(str(nxt), {}, headers) if nxt else None
         return out
 
     def saved_tracks(self, access_token: str, max_tracks: int = 2000) -> list[dict[str, Any]]:
@@ -291,7 +362,7 @@ class SpotifyClient:
         """The playlist's current ``snapshot_id`` — a cheap ``fields=snapshot_id``
         fetch the sync watcher uses to skip unchanged playlists without pulling the
         whole track list. ``None`` if the playlist is gone / the field is absent."""
-        data = self._get_json(
+        data = self._get(
             f"{PLAYLIST_URL}{playlist_id}",
             {"fields": "snapshot_id"},
             {"Authorization": f"Bearer {access_token}"},
@@ -306,7 +377,7 @@ class SpotifyClient:
         ``{id, name, count, image}`` dicts."""
         headers = {"Authorization": f"Bearer {access_token}"}
         out: list[dict[str, Any]] = []
-        data = self._get_json(MY_PLAYLISTS_URL, {"limit": 50}, headers)
+        data = self._get(MY_PLAYLISTS_URL, {"limit": 50}, headers)
         while data:
             for pl in (data or {}).get("items") or []:
                 if not pl or not pl.get("id"):
@@ -323,5 +394,99 @@ class SpotifyClient:
                 if len(out) >= max_playlists:
                     return out
             nxt = (data or {}).get("next")
-            data = self._get_json(str(nxt), {}, headers) if nxt else None
+            data = self._get(str(nxt), {}, headers) if nxt else None
         return out
+
+    # --- Library Sync reads (top tracks / play ledger / metadata / albums) ---
+    def top_tracks(
+        self, access_token: str, time_range: str, limit: int = _TOP_TRACKS_MAX
+    ) -> list[dict[str, Any]]:
+        """The user's top tracks for ``short_term`` (~4 weeks), ``medium_term``
+        (~6 months) or ``long_term`` (~1 year), best first. Needs ``user-top-read``."""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        out: list[dict[str, Any]] = []
+        while len(out) < limit:
+            page = (
+                self._get(
+                    TOP_TRACKS_URL,
+                    {
+                        "time_range": time_range,
+                        "limit": min(_BATCH, limit - len(out)),
+                        "offset": len(out),
+                    },
+                    headers,
+                )
+                or {}
+            )
+            items = [it for it in page.get("items") or [] if it]
+            out.extend(_track(it) for it in items)
+            if not items or not page.get("next"):
+                break
+        return out[:limit]
+
+    def recently_played_after(
+        self, access_token: str, after_ms: int | None = None
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Plays newer than ``after_ms`` (epoch ms), oldest first, plus the cursor to
+        pass next time. Spotify keeps only the last 50 plays, so the ledger polls
+        often enough that none fall off between calls."""
+        params: dict[str, Any] = {"limit": _BATCH}
+        if after_ms is not None:
+            params["after"] = after_ms
+        data = self._get(RECENT_URL, params, {"Authorization": f"Bearer {access_token}"}) or {}
+        plays: list[dict[str, Any]] = []
+        for entry in data.get("items") or []:
+            item = (entry or {}).get("track")
+            if not item or not entry.get("played_at"):
+                continue
+            track = _track(item)
+            track["played_at"] = str(entry["played_at"])
+            track["uri"] = item.get("uri") or (
+                f"spotify:track:{track['id']}" if track["id"] else None
+            )
+            plays.append(track)
+        plays.sort(key=lambda p: p["played_at"])
+        cursor = (data.get("cursors") or {}).get("after")
+        return plays, (int(cursor) if cursor else after_ms)
+
+    def tracks_batch(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Full track objects (ISRC, art, duration) for ``ids`` via client
+        credentials, 50 per call. Falls back to one call per id when the
+        several-tracks endpoint is refused (403/404 — restricted dev-mode apps)."""
+        headers = {"Authorization": f"Bearer {self._bearer()}"}
+        out: list[dict[str, Any]] = []
+        clean = [i for i in ids if i]
+        for start in range(0, len(clean), _BATCH):
+            chunk = clean[start : start + _BATCH]
+            try:
+                data = self._get(TRACKS_URL, {"ids": ",".join(chunk)}, headers) or {}
+                out.extend(_track(t) for t in data.get("tracks") or [] if t)
+            except Exception as exc:
+                if _status_of(exc) not in (403, 404):
+                    raise
+                for tid in chunk:
+                    single = self._get(f"{TRACKS_URL}/{tid}", {}, headers)
+                    if single:
+                        out.append(_track(single))
+        return out
+
+    def album_tracks(self, album_id: str, max_tracks: int = 200) -> dict[str, Any]:
+        """An album as ``{name, artist, tracks}`` (client credentials) — for the
+        "queue whole album" suggestion. Tracks are cascade-ready ``_min_track`` dicts."""
+        headers = {"Authorization": f"Bearer {self._bearer()}"}
+        data = self._get(f"{ALBUM_URL}{album_id}", {}, headers) or {}
+        artist = ", ".join(a["name"] for a in data.get("artists") or [] if a.get("name"))
+        tracks: list[dict[str, Any]] = []
+        page: dict[str, Any] | None = data.get("tracks") or {}
+        while page and len(tracks) < max_tracks:
+            for item in page.get("items") or []:
+                track = _min_track(item or {})
+                if track is not None:
+                    tracks.append(track)
+            nxt = page.get("next")
+            page = self._get(str(nxt), {}, headers) if nxt else None
+        return {
+            "name": str(data.get("name") or "Album"),
+            "artist": artist,
+            "tracks": tracks[:max_tracks],
+        }

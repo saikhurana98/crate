@@ -1726,10 +1726,21 @@ function headerHtml(): string {
         ${userChipHtml()}
       </div>
     </div>
-  </header>`;
+  </header>${reloginBannerHtml()}`;
 }
 
 // Logged-in user + logout, shown only when Login-with-Spotify is active.
+// Shown when the user's Spotify token lacks a scope a feature needs (e.g.
+// user-top-read for Library Sync tiers). One click re-runs the login consent.
+function reloginBannerHtml(): string {
+  const missing = state.me?.missing_scopes ?? [];
+  if (!missing.length) return "";
+  return `<div style="background:rgba(242,193,78,.08);border-bottom:1px solid rgba(242,193,78,.3);padding:9px 18px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;font:500 12px 'Instrument Sans';color:#f2c14e">
+    <span>Library Sync needs one more Spotify permission (${esc(missing.join(", "))}) — re-login once to grant it.</span>
+    <a href="${api.loginUrl}" style="background:#f2c14e;color:#14170f;font:700 11.5px 'Instrument Sans';padding:6px 13px;border-radius:14px;text-decoration:none">Re-login with Spotify</a>
+  </div>`;
+}
+
 function userChipHtml(): string {
   const me = state.me;
   if (!me || !me.spotify_id) return "";
@@ -1928,7 +1939,7 @@ function mHeaderHtml(): string {
       </div>
       <div style="display:flex;align-items:center;gap:7px;padding:6px 11px;background:#131612;border:1px solid #272c25;border-radius:20px"><span style="width:6px;height:6px;border-radius:50%;background:${live ? "#ff4c38" : C.faint};animation:pulse 2s ease-in-out infinite"></span><span style="font:500 10px 'JetBrains Mono';color:#99a091;letter-spacing:.06em">${live ? "live" : "…"}</span></div>
     </div>
-  </header>`;
+  </header>${reloginBannerHtml()}`;
 }
 
 function mBottomNav(): string {

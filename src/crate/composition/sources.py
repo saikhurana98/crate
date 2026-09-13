@@ -933,9 +933,25 @@ class SpotifyUser:
         refresh = self._config.get_secret(*self._key(user_id))
         if refresh is None:
             raise RuntimeError("spotify not connected")
-        token = self._client.refresh_access_token(refresh)
-        self._access[user_id] = (token, self._now() + _ACCESS_TTL_S)
-        return token
+        tokens = self._client.refresh_tokens(refresh)
+        vault = f"spotify:{user_id}"
+        if tokens.refresh_token and tokens.refresh_token != refresh:
+            # Spotify rotated it — persist, or the old one eventually stops working
+            # (and the other process, which shares the vault, would be stranded).
+            self._config.put_secret(vault, "refresh_token", tokens.refresh_token)
+        if tokens.scope is not None:
+            self._config.put_secret(vault, "scopes", tokens.scope)
+        self._access[user_id] = (tokens.access_token, self._now() + _ACCESS_TTL_S)
+        return tokens.access_token
+
+    def missing_scopes(self, user_id: str) -> list[str]:
+        """OAuth scopes this user must re-consent to (drives the re-login banner).
+        Empty when not connected — there's no token to upgrade yet."""
+        from crate.infrastructure.spotify.client import missing_scopes
+
+        if not self.connected(user_id):
+            return []
+        return missing_scopes(self._config.get_secret(f"spotify:{user_id}", "scopes"))
 
     def _in_library(self, query: str) -> bool:
         return bool(self._store.list_requests(query=query, status="done", limit=1))
@@ -1015,12 +1031,15 @@ class AuthProvider:
         config: _ConfigStore,
         users: UserRepository,
         sessions: SessionStore,
+        *,
+        admin_spotify_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._client = client
         self._redirect = redirect_uri
         self._config = config
         self._users = users
         self._sessions = sessions
+        self._admins = admin_spotify_ids
 
     def login_url(self, state: str) -> str:
         from crate.infrastructure.spotify.client import LOGIN_SCOPES
@@ -1040,7 +1059,15 @@ class AuthProvider:
                 avatar_url=me.get("avatar"),
             )
         )
+        if self._admins:
+            # CRATE_ADMIN_SPOTIFY_IDS is the source of truth when set: grant or
+            # revoke at every login so the env always wins.
+            want_admin = me["id"] in self._admins
+            if user.is_admin != want_admin:
+                user = self._users.set_admin(user.id, want_admin) or user
         self._config.put_secret(f"spotify:{user.id}", "refresh_token", tokens["refresh_token"])
+        if tokens.get("scope"):
+            self._config.put_secret(f"spotify:{user.id}", "scopes", tokens["scope"])
         raw = self._sessions.create(user.id)
         return user, raw
 
@@ -1081,12 +1108,16 @@ def build_auth(
         return resp.json() if resp.content else None
 
     client = SpotifyClient(client_id, client_secret, post_form=post_form, get_json=get_json)
+    admins = frozenset(
+        s.strip() for s in os.environ.get("CRATE_ADMIN_SPOTIFY_IDS", "").split(",") if s.strip()
+    )
     return AuthProvider(
         client,
         redirect_uri,
         config,
         SqliteUserRepository(conn),
         SqliteSessionStore(conn),
+        admin_spotify_ids=admins,
     )
 
 

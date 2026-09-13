@@ -5,7 +5,12 @@ without any network."""
 
 from typing import Any
 
-from crate.infrastructure.spotify.client import SpotifyClient
+from crate.infrastructure.spotify.client import (
+    LOGIN_SCOPES,
+    RefreshedTokens,
+    SpotifyClient,
+    missing_scopes,
+)
 
 _SEARCH_PAYLOAD: dict[str, Any] = {
     "tracks": {
@@ -210,7 +215,7 @@ def test_exchange_code_tokens_returns_both() -> None:
         return {"access_token": "acc", "refresh_token": "ref", "expires_in": 3600}
 
     tokens = _oauth_client(post=post).exchange_code_tokens("code", "https://c/cb")
-    assert tokens == {"access_token": "acc", "refresh_token": "ref"}
+    assert tokens == {"access_token": "acc", "refresh_token": "ref", "scope": ""}
 
 
 def test_me_shapes_profile() -> None:
@@ -410,3 +415,233 @@ def test_playlist_resolves_tracks_with_pagination() -> None:
         "duration_s": 210,
     }
     assert pl["tracks"][1]["isrc"] is None and pl["tracks"][1]["duration_s"] is None
+
+
+# --- PR 1: scopes, token rotation, 429 back-off, Library Sync reads ---
+class _Resp:
+    def __init__(self, status: int, headers: dict[str, str] | None = None) -> None:
+        self.status_code = status
+        self.headers = headers or {}
+
+
+class _StatusError(Exception):
+    """httpx.HTTPStatusError-shaped: carries ``.response.status_code/headers``."""
+
+    def __init__(self, status: int, headers: dict[str, str] | None = None) -> None:
+        super().__init__(f"HTTP {status}")
+        self.response = _Resp(status, headers)
+
+
+def _cc_post(url: str, data: dict[str, str], headers: dict[str, str]) -> Any:
+    return {"access_token": "cc", "expires_in": 3600}
+
+
+def _sleepy_client(get: Any) -> tuple[SpotifyClient, list[float]]:
+    sleeps: list[float] = []
+    client = SpotifyClient("cid", "csec", post_form=_cc_post, get_json=get, sleep=sleeps.append)
+    return client, sleeps
+
+
+def test_login_scopes_include_top_read_and_missing_scopes() -> None:
+    assert "user-top-read" in LOGIN_SCOPES.split()
+    assert missing_scopes(None) == ["user-top-read"]  # legacy token, no scope recorded
+    assert missing_scopes(LOGIN_SCOPES) == []
+    assert "user-top-read" in missing_scopes("user-read-email")
+
+
+def test_exchange_code_tokens_captures_granted_scope() -> None:
+    post = lambda *_: {"access_token": "a", "refresh_token": "r", "scope": "x y"}  # noqa: E731
+    assert _oauth_client(post=post).exchange_code_tokens("c", "https://cb")["scope"] == "x y"
+    bare = lambda *_: {"access_token": "a", "refresh_token": "r"}  # noqa: E731
+    assert _oauth_client(post=bare).exchange_code_tokens("c", "https://cb")["scope"] == ""
+
+
+def test_refresh_tokens_keeps_rotation_and_scope() -> None:
+    rotated = lambda *_: {"access_token": "a2", "refresh_token": "r2", "scope": "s"}  # noqa: E731
+    client = _oauth_client(post=rotated)
+    assert client.refresh_tokens("r1") == RefreshedTokens("a2", "r2", "s")
+    assert client.refresh_access_token("r1") == "a2"  # back-compat wrapper
+    plain = lambda *_: {"access_token": "a3"}  # noqa: E731
+    assert _oauth_client(post=plain).refresh_tokens("r1") == RefreshedTokens("a3", None, None)
+
+
+def test_get_retries_429_honouring_retry_after() -> None:
+    calls = {"n": 0}
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _StatusError(429, {"Retry-After": "2"})
+        return {"id": "me1", "display_name": "Sai"}
+
+    client, sleeps = _sleepy_client(get)
+    assert client.me("tok")["id"] == "me1"
+    assert sleeps == [2.0] and calls["n"] == 2
+
+
+def test_get_429_without_header_defaults_to_one_second() -> None:
+    calls = {"n": 0}
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _StatusError(429)
+        return {"id": "me1"}
+
+    client, sleeps = _sleepy_client(get)
+    client.me("tok")
+    assert sleeps == [1.0]
+
+
+def test_get_gives_up_when_retry_after_exceeds_cap() -> None:
+    def get(*_: Any) -> Any:
+        raise _StatusError(429, {"Retry-After": "120"})
+
+    client, sleeps = _sleepy_client(get)
+    try:
+        client.me("tok")
+        raise AssertionError("expected the 429 to surface")
+    except _StatusError:
+        pass
+    assert sleeps == []  # never parks a sync thread for two minutes
+
+
+def test_get_429_retries_are_bounded() -> None:
+    def get(*_: Any) -> Any:
+        raise _StatusError(429, {"Retry-After": "1"})
+
+    client, sleeps = _sleepy_client(get)
+    try:
+        client.me("tok")
+        raise AssertionError("expected the 429 to surface")
+    except _StatusError:
+        pass
+    assert sleeps == [1.0, 1.0]  # 3 attempts, 2 back-offs, then raise
+
+
+def test_non_429_errors_propagate_immediately() -> None:
+    def get(*_: Any) -> Any:
+        raise _StatusError(500)
+
+    client, sleeps = _sleepy_client(get)
+    try:
+        client.me("tok")
+        raise AssertionError("expected a 500 to surface")
+    except _StatusError:
+        pass
+    assert sleeps == []
+
+
+def _sp_track(i: int) -> dict[str, Any]:
+    return {
+        "id": f"t{i}",
+        "uri": f"spotify:track:t{i}",
+        "name": f"Song {i}",
+        "artists": [{"name": "Artist"}],
+        "album": {"name": "Album", "images": []},
+        "duration_ms": 200_000,
+        "external_ids": {"isrc": f"ISRC{i}"},
+    }
+
+
+def test_top_tracks_pages_by_offset_and_time_range() -> None:
+    seen: list[dict[str, Any]] = []
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        seen.append(dict(params))
+        if params["offset"] == 0:
+            return {"items": [_sp_track(i) for i in range(50)], "next": "more"}
+        return {"items": [_sp_track(i) for i in range(50, 70)], "next": None}
+
+    tracks = _oauth_client(get=get).top_tracks("tok", "long_term")
+    assert len(tracks) == 70 and tracks[0]["isrc"] == "ISRC0"
+    assert [p["offset"] for p in seen] == [0, 50]
+    assert all(p["time_range"] == "long_term" for p in seen)
+
+
+def test_top_tracks_respects_limit() -> None:
+    get = lambda *_: {"items": [_sp_track(i) for i in range(50)], "next": "more"}  # noqa: E731
+    assert len(_oauth_client(get=get).top_tracks("tok", "short_term", limit=30)) == 30
+
+
+def test_recently_played_after_orders_oldest_first_and_returns_cursor() -> None:
+    seen: dict[str, Any] = {}
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        seen.update(params)
+        return {
+            "items": [
+                {"played_at": "2026-09-01T10:05:00Z", "track": _sp_track(2)},
+                {"played_at": "2026-09-01T10:00:00Z", "track": _sp_track(1)},
+                {"played_at": None, "track": _sp_track(3)},  # unusable -> dropped
+            ],
+            "cursors": {"after": "1788000300000"},
+        }
+
+    plays, cursor = _oauth_client(get=get).recently_played_after("tok", 1788000000000)
+    assert seen["after"] == 1788000000000 and seen["limit"] == 50
+    assert [p["id"] for p in plays] == ["t1", "t2"]  # oldest first
+    assert plays[0]["uri"] == "spotify:track:t1" and plays[0]["played_at"].endswith("Z")
+    assert cursor == 1788000300000
+
+
+def test_recently_played_after_keeps_cursor_when_nothing_new() -> None:
+    get = lambda *_: {"items": [], "cursors": None}  # noqa: E731
+    plays, cursor = _oauth_client(get=get).recently_played_after("tok", 42)
+    assert plays == [] and cursor == 42
+
+
+def test_tracks_batch_chunks_by_fifty() -> None:
+    calls: list[str] = []
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        ids = params["ids"].split(",")
+        calls.append(params["ids"])
+        return {"tracks": [_sp_track(int(i[1:])) for i in ids]}
+
+    client = SpotifyClient("cid", "csec", post_form=_cc_post, get_json=get)
+    tracks = client.tracks_batch([f"t{i}" for i in range(120)] + [""])
+    assert len(calls) == 3 and len(tracks) == 120  # 50 + 50 + 20; blank id dropped
+    assert tracks[119]["isrc"] == "ISRC119"
+
+
+def test_tracks_batch_falls_back_to_single_gets_on_403() -> None:
+    singles: list[str] = []
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        if "ids" in params:
+            raise _StatusError(403)  # several-tracks refused for this app
+        singles.append(url.rsplit("/", 1)[-1])
+        return _sp_track(int(url.rsplit("/t", 1)[-1]))
+
+    client = SpotifyClient("cid", "csec", post_form=_cc_post, get_json=get)
+    tracks = client.tracks_batch(["t1", "t2"])
+    assert singles == ["t1", "t2"] and [t["id"] for t in tracks] == ["t1", "t2"]
+
+
+def test_tracks_batch_reraises_other_errors() -> None:
+    def get(*_: Any) -> Any:
+        raise _StatusError(500)
+
+    client = SpotifyClient("cid", "csec", post_form=_cc_post, get_json=get)
+    try:
+        client.tracks_batch(["t1"])
+        raise AssertionError("expected a 500 to surface")
+    except _StatusError:
+        pass
+
+
+def test_album_tracks_follows_pagination() -> None:
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        if url.endswith("/albums/AL1"):
+            return {
+                "name": "LP",
+                "artists": [{"name": "Band"}],
+                "tracks": {"items": [_sp_track(1), {"name": None}], "next": "page2"},
+            }
+        return {"items": [_sp_track(2)], "next": None}
+
+    client = SpotifyClient("cid", "csec", post_form=_cc_post, get_json=get)
+    album = client.album_tracks("AL1")
+    assert album["name"] == "LP" and album["artist"] == "Band"
+    assert [t["title"] for t in album["tracks"]] == ["Song 1", "Song 2"]  # nameless dropped

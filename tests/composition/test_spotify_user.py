@@ -9,6 +9,7 @@ from typing import Any
 
 from crate.composition.sources import SpotifyUser
 from crate.infrastructure.crypto import SecretBox
+from crate.infrastructure.spotify.client import LOGIN_SCOPES, RefreshedTokens
 from crate.infrastructure.sqlite.config_store import ConfigStore
 from crate.infrastructure.sqlite.db import connect
 from crate.infrastructure.sqlite.store import RequestStore
@@ -18,9 +19,12 @@ class FakeClient:
     def __init__(self) -> None:
         self.refreshes = 0
 
-    def refresh_access_token(self, refresh_token: str) -> str:
+    rotate_to: str | None = None  # a rotated refresh token Spotify hands back
+    scope: str | None = None  # the granted scope string Spotify reports
+
+    def refresh_tokens(self, refresh_token: str) -> RefreshedTokens:
         self.refreshes += 1
-        return f"acc-for-{refresh_token}"
+        return RefreshedTokens(f"acc-for-{refresh_token}", self.rotate_to, self.scope)
 
     def currently_playing(self, token: str) -> dict[str, Any] | None:
         return {"title": "Now", "query": "Now q"}
@@ -88,3 +92,31 @@ def test_not_connected_raises(tmp_path: Path) -> None:
         raise AssertionError("expected RuntimeError")
     except RuntimeError:
         pass
+
+
+def test_refresh_persists_rotated_token_and_granted_scope(tmp_path: Path) -> None:
+    su, config, _, client, _ = _wire(tmp_path)
+    config.put_secret("spotify:u1", "refresh_token", "rt")
+    client.rotate_to = "rt2"
+    client.scope = "user-top-read user-read-email"
+    su.player("u1")
+    # rotation persisted, or the old token eventually dies (and serve would be stranded)
+    assert config.get_secret("spotify:u1", "refresh_token") == "rt2"
+    assert config.get_secret("spotify:u1", "scopes") == "user-top-read user-read-email"
+
+
+def test_refresh_without_rotation_keeps_token(tmp_path: Path) -> None:
+    su, config, _, _, _ = _wire(tmp_path)
+    config.put_secret("spotify:u1", "refresh_token", "rt")
+    su.player("u1")
+    assert config.get_secret("spotify:u1", "refresh_token") == "rt"
+    assert config.get_secret("spotify:u1", "scopes") is None  # nothing reported
+
+
+def test_missing_scopes_drives_relogin(tmp_path: Path) -> None:
+    su, config, _, _, _ = _wire(tmp_path)
+    assert su.missing_scopes("u1") == []  # not connected -> nothing to upgrade
+    config.put_secret("spotify:u1", "refresh_token", "rt")
+    assert su.missing_scopes("u1") == ["user-top-read"]  # legacy token, no scope recorded
+    config.put_secret("spotify:u1", "scopes", LOGIN_SCOPES)
+    assert su.missing_scopes("u1") == []
