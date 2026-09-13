@@ -118,6 +118,10 @@ class SpotifyPort(Protocol):
         """``{now_playing, recent}`` — this user's current + recent tracks."""
         ...
 
+    def missing_scopes(self, user_id: str) -> list[str]:
+        """OAuth scopes this user's token lacks for current features (→ re-login)."""
+        ...
+
 
 class LibraryPort(Protocol):
     """Per-user Spotify library reads for import (Phase 2)."""
@@ -819,7 +823,12 @@ def create_app(
         raw = request.cookies.get(_SESSION_COOKIE) or ""
         user = auth.resolve_session(raw) if auth is not None and raw else None
         if user is not None:
-            return _user_dict(user)
+            out = _user_dict(user)
+            try:
+                out["missing_scopes"] = spotify.missing_scopes(user.id) if spotify else []
+            except Exception:  # vault/provider hiccup must not break /api/me
+                out["missing_scopes"] = []
+            return out
         uid = getattr(request.state, "user_id", SERVICE_USER_ID)
         return {
             "id": uid,
@@ -828,6 +837,7 @@ def create_app(
             "email": None,
             "avatar_url": None,
             "is_admin": False,
+            "missing_scopes": [],
         }
 
     # --- Login with Spotify (unauthenticated: these establish the session) ---

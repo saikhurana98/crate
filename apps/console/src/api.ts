@@ -462,6 +462,7 @@ export interface Me {
   email: string | null;
   avatar_url: string | null;
   is_admin: boolean;
+  missing_scopes?: string[]; // OAuth scopes to re-consent to (drives the re-login banner)
 }
 
 export interface Playlist {

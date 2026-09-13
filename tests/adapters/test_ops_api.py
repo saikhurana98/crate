@@ -242,6 +242,7 @@ def test_me_without_auth_returns_service_user(tmp_path: Path) -> None:
     client = TestClient(create_app(_seeded_store(tmp_path)))
     me = client.get("/api/me").json()
     assert me["id"] == "service" and me["display_name"] == "service"
+    assert me["missing_scopes"] == []
 
 
 def test_session_required_when_auth_configured(tmp_path: Path) -> None:
@@ -397,6 +398,13 @@ class _FakePort:
     def __init__(self, connected: bool = False) -> None:
         self._connected = connected
         self.seen: list[str] = []
+        self.missing: list[str] = []
+        self.boom = False
+
+    def missing_scopes(self, user_id: str) -> list[str]:
+        if self.boom:
+            raise RuntimeError("vault down")
+        return self.missing
 
     def connected(self, user_id: str) -> bool:
         return self._connected
@@ -610,3 +618,25 @@ def test_validate_source_unknown_source_404(tmp_path: Path) -> None:
 def test_validate_source_503_without_validator(tmp_path: Path) -> None:
     client = TestClient(create_app(_seeded_store(tmp_path)))
     assert client.post("/api/sources/qobuz/validate").status_code == 503
+
+
+def test_me_reports_missing_scopes_for_session_user(tmp_path: Path) -> None:
+    port = _FakePort(connected=True)
+    port.missing = ["user-top-read"]
+    client = TestClient(create_app(_seeded_store(tmp_path), auth=_FakeAuth(), spotify=port))
+    me = client.get("/api/me", cookies={"crate_session": _FakeAuth.RAW}).json()
+    assert me["spotify_id"] == "spot1"
+    assert me["missing_scopes"] == ["user-top-read"]  # -> the console re-login banner
+
+
+def test_me_missing_scopes_degrades_to_empty(tmp_path: Path) -> None:
+    port = _FakePort(connected=True)
+    port.boom = True  # a vault hiccup must not break /api/me
+    client = TestClient(create_app(_seeded_store(tmp_path), auth=_FakeAuth(), spotify=port))
+    me = client.get("/api/me", cookies={"crate_session": _FakeAuth.RAW}).json()
+    assert me["missing_scopes"] == []
+    # and without a spotify port configured at all
+    bare = TestClient(create_app(_seeded_store(tmp_path), auth=_FakeAuth()))
+    assert (
+        bare.get("/api/me", cookies={"crate_session": _FakeAuth.RAW}).json()["missing_scopes"] == []
+    )

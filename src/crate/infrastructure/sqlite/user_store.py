@@ -81,6 +81,16 @@ class SqliteUserRepository:
             ).fetchone()
         return _user(row) if row else None
 
+    def set_admin(self, user_id: str, is_admin: bool) -> User | None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE users SET is_admin=? WHERE id=?", (1 if is_admin else 0, user_id)
+            )
+            row = self._conn.execute(
+                f"SELECT {_USER_COLS} FROM users WHERE id=?", (user_id,)
+            ).fetchone()
+        return _user(row) if row else None
+
 
 class SqliteSessionStore:
     def __init__(
