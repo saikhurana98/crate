@@ -23,9 +23,18 @@ import {
   type Source,
   type SpotifyTrack,
   type TierCfg,
+  type HistoryStatus,
+  type JobEvent,
+  type JobSummary,
+  type SyncMode,
+  type SyncOverview,
+  type SyncPlaylist,
+  type SyncTierCard,
+  type TierMember,
 } from "./api";
 import { bytes, dur, ago as relTime, pct, esc } from "./format";
 import { createRenderer, effect } from "./reactive";
+import { connectJobLog, type JobFrame } from "./ws";
 
 // Monolithic sage-on-black palette. Tier hierarchy = brightness steps of one hue.
 const C = {
@@ -108,6 +117,17 @@ const PANELDEF: Record<string, PanelDef> = {
 
 type SaveState = "idle" | "saving" | "saved";
 
+// Switching auto-sync on: how many songs are missing, then backfill or future-only.
+interface SyncConfirm {
+  apply: "tier" | "playlist";
+  scope: string; // core | affinity:<n> | playlist:<id>
+  label: string;
+  missing: number;
+  tier?: number;
+  playlist?: string;
+  mode?: SyncMode;
+}
+
 interface State {
   tick: number;
   stats: LiveEvent["stats"] | null;
@@ -154,7 +174,22 @@ interface State {
   feed: FeedRow[]; // shared activity feed (Phase C) — who requested what + latencies
   isMobile: boolean; // viewport <= 640px -> tabbed app layout
   activeTab: "cascade" | "activity" | "tracks"; // mobile bottom-nav selection
-  page: "console" | "bulk" | "review" | "feed"; // top-level page
+  page: "console" | "bulk" | "review" | "feed" | "sync"; // top-level page (#/page)
+  moreOpen: boolean; // mobile MORE sheet (Feed / Downloads / Review)
+  // Library Sync page
+  sync: SyncOverview | null;
+  syncErr: string | null;
+  syncRunBusy: boolean;
+  syncOpenTier: Record<number, boolean>; // tier -> song list expanded
+  syncMembers: Record<number, TierMember[]>; // tier -> loaded songs
+  syncBusy: Record<string, boolean>; // "tier:<n>" | "pl:<id>" -> toggle in flight
+  syncConfirm: SyncConfirm | null; // the backfill-or-future-only choice
+  syncLog: JobEvent[]; // live tail (or a replayed job's log)
+  syncLogLive: boolean; // websocket connected
+  syncLogJob: string | null; // replaying this job's log; null = live
+  syncJobs: JobSummary[]; // recent library_sync runs
+  historyStatus: HistoryStatus | null;
+  historyUploading: boolean;
   bulkPanel: boolean; // right-side bulk drawer open
   bulkText: string; // paste box (playlist link / track list)
   bulkBusy: boolean; // submit in flight
@@ -233,6 +268,20 @@ const state: State = {
   isMobile: typeof matchMedia !== "undefined" ? matchMedia("(max-width: 640px)").matches : false,
   activeTab: "cascade",
   page: "console",
+  moreOpen: false,
+  sync: null,
+  syncErr: null,
+  syncRunBusy: false,
+  syncOpenTier: {},
+  syncMembers: {},
+  syncBusy: {},
+  syncConfirm: null,
+  syncLog: [],
+  syncLogLive: false,
+  syncLogJob: null,
+  syncJobs: [],
+  historyStatus: null,
+  historyUploading: false,
   bulkPanel: false,
   bulkText: "",
   bulkBusy: false,
@@ -358,19 +407,6 @@ async function loadPlayer(): Promise<void> {
 }
 
 // ---------- library import ----------
-async function toggleImport(): Promise<void> {
-  state.importOpen = !state.importOpen;
-  render();
-  if (state.importOpen && state.importPlaylists === null) {
-    state.importErr = null;
-    try {
-      state.importPlaylists = await api.libraryPlaylists();
-    } catch (err) {
-      state.importErr = (err as Error).message;
-    }
-    render();
-  }
-}
 async function runImport(source: "liked" | "playlist", key: string, pid?: string, name?: string): Promise<void> {
   if (state.importBusy[key]) return;
   state.importBusy = { ...state.importBusy, [key]: true };
@@ -1148,43 +1184,7 @@ function listeningHtml(): string {
         })
         .join("")}`
     : "";
-  return wrap(nowBlock + recentBlock + importHtml());
-}
-
-// "Import from Spotify" — pull the user's Liked Songs or a playlist into the queue.
-function importHtml(): string {
-  const chevron = state.importOpen ? "▾" : "▸";
-  const header = `<button data-act="toggleImport" class="ghost" style="margin-top:12px;width:100%;display:flex;align-items:center;gap:8px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:11px 14px;cursor:pointer;color:#e9ede3;font:600 12px 'Instrument Sans';transition:border-color .15s">
-    <span style="width:8px;height:8px;border-radius:50%;background:#1db954"></span>Import from Spotify
-    <span style="margin-left:auto;color:#5d6456">${chevron}</span></button>`;
-  if (!state.importOpen) return header;
-
-  const likedBusy = !!state.importBusy["liked"];
-  const liked = `<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-top:1px solid #1a1e19">
-    <span style="width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#4300a0,#c13584);display:flex;align-items:center;justify-content:center;flex-shrink:0">♥</span>
-    <div style="flex:1;min-width:0"><div style="font:600 12px 'Instrument Sans';color:#e9ede3">Liked Songs</div></div>
-    ${importBtn("importLiked", likedBusy)}</div>`;
-
-  let body: string;
-  if (state.importErr) {
-    body = `<div style="padding:10px 4px;font:400 11px 'Instrument Sans';color:#ff4c38">${esc(state.importErr)}</div>`;
-  } else if (state.importPlaylists === null) {
-    body = `<div style="padding:10px 4px;font:400 11px 'Instrument Sans';color:#5d6456">Loading playlists…</div>`;
-  } else {
-    body = state.importPlaylists
-      .map((p) => {
-        const busy = !!state.importBusy[p.id];
-        const art = p.image
-          ? `<img src="${esc(p.image)}" alt="" style="width:30px;height:30px;border-radius:8px;object-fit:cover;flex-shrink:0"/>`
-          : `<span style="width:30px;height:30px;border-radius:8px;background:#181c17;border:1px solid #272c25;display:flex;align-items:center;justify-content:center;font:800 12px 'Doto';color:#5d6456;flex-shrink:0">${esc((p.name[0] || "?").toUpperCase())}</span>`;
-        return `<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-top:1px solid #1a1e19">
-          ${art}
-          <div style="flex:1;min-width:0"><div style="font:500 12px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</div><div style="font:400 10px 'JetBrains Mono';color:#5d6456">${p.count} track${p.count === 1 ? "" : "s"}</div></div>
-          ${importBtn("importPlaylist", busy, p.id, p.name)}</div>`;
-      })
-      .join("");
-  }
-  return header + liked + body;
+  return wrap(nowBlock + recentBlock);
 }
 
 function importBtn(act: string, busy: boolean, pid?: string, name?: string): string {
@@ -1627,6 +1627,7 @@ function navTabsHtml(): string {
     active ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#99a091";
   return `<nav style="display:flex;align-items:center;gap:3px;background:#131612;border:1px solid #22261f;border-radius:20px;padding:3px;margin-left:4px;flex-shrink:0">
       <button data-act="gotoConsole" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "console")};transition:.15s">console</button>
+      <button data-act="gotoSync" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "sync")};transition:.15s">sync${syncBadgeHtml()}</button>
       <button data-act="gotoFeed" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "feed")};transition:.15s">feed</button>
       <button data-act="gotoBulk" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "bulk")};transition:.15s">downloads${dlBadge}</button>
       <button data-act="gotoReview" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "review")};transition:.15s">review${rvBadge}</button>
@@ -1840,7 +1841,7 @@ function mTracksTab(): string {
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:14px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
         <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks or paste a Spotify / YouTube playlist link…" style="width:100%;background:#111411;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 13px 'Instrument Sans';padding:11px 15px 11px 38px"/>
       </div>${mSearchResults(q)}`;
-  return `<h1 style="margin:0 0 12px;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Tracks</h1>
+  return `<h1 style="margin:0 0 12px;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Library</h1>
     ${searchBox}
     <div style="margin-top:14px">${listeningHtml()}</div>`;
 }
@@ -1898,17 +1899,41 @@ function mHeaderHtml(): string {
 }
 
 function mBottomNav(): string {
+  const onConsole = state.page === "console" && !state.moreOpen;
   const tab = state.activeTab;
-  const cInk = (t: string) => (tab === t ? "#e9ede3" : "#5d6456");
+  const ink = (on: boolean) => (on ? "#e9ede3" : "#5d6456");
   const liveBadge = state.inflight.length > 0;
+  const dot = `<span style="position:absolute;top:6px;left:calc(50% + 8px);width:7px;height:7px;border-radius:50%;background:#ff4c38;animation:pulse 1.6s ease-in-out infinite"></span>`;
   const btn = (t: string, label: string, icon: string, badge = false) =>
-    `<button data-tab="${t}" data-act="setTab" style="flex:1;background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0;color:${cInk(t)};transition:color .15s;position:relative">${icon}<span style="font:600 9.5px 'JetBrains Mono';letter-spacing:.08em">${label}</span>${badge && liveBadge ? `<span style="position:absolute;top:6px;left:calc(50% + 8px);width:7px;height:7px;border-radius:50%;background:#ff4c38;animation:pulse 1.6s ease-in-out infinite"></span>` : ""}</button>`;
+    `<button data-tab="${t}" data-act="setTab" style="flex:1;background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0;color:${ink(onConsole && tab === t)};transition:color .15s;position:relative">${icon}<span style="font:600 9.5px 'JetBrains Mono';letter-spacing:.08em">${label}</span>${badge && liveBadge ? dot : ""}</button>`;
   const casc = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5"></path><path d="M12 8l-6 5v8"></path><path d="M12 8l6 5v8"></path><path d="M12 8v13"></path></svg>`;
   const act = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>`;
-  const trk = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle><path d="M11 18V5l10-2v13"></path></svg>`;
+  const lib = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle><path d="M11 18V5l10-2v13"></path></svg>`;
+  const moreIcon = `<svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>`;
+  const moreOn = state.moreOpen || state.page === "feed" || state.page === "bulk" || state.page === "review";
+  const moreBadge = activeReview() + activeDownloads() > 0;
+  const more = `<button data-act="openMore" style="flex:1;background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0;color:${ink(moreOn)};transition:color .15s;position:relative">${moreIcon}<span style="font:600 9.5px 'JetBrains Mono';letter-spacing:.08em">MORE</span>${moreBadge ? dot : ""}</button>`;
   return `<nav style="position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:640px;z-index:45;background:rgba(12,14,12,.92);backdrop-filter:blur(14px);border-top:1px solid #1d211c;display:flex;padding:6px 8px calc(14px + env(safe-area-inset-bottom))">
-    ${btn("cascade", "CASCADE", casc)}${btn("activity", "ACTIVITY", act, true)}${btn("tracks", "TRACKS", trk)}
+    ${btn("cascade", "CASCADE", casc)}${btn("activity", "ACTIVITY", act, true)}${btn("tracks", "LIBRARY", lib)}${more}
   </nav>`;
+}
+
+// Mobile MORE sheet: the pages that don't get a bottom tab.
+function moreSheetHtml(): string {
+  const badge = (n: number) =>
+    n > 0
+      ? `<span style="font:700 10px 'Doto';min-width:18px;height:18px;padding:0 5px;border-radius:10px;background:#ff4c38;color:#0c0e0c;display:inline-flex;align-items:center;justify-content:center">${n}</span>`
+      : "";
+  const item = (act: string, label: string, sub: string, n: number) =>
+    `<button data-act="${act}" style="width:100%;display:flex;align-items:center;gap:12px;background:none;border:none;border-top:1px solid #1a1e19;padding:15px 20px;cursor:pointer;color:#e9ede3;text-align:left">
+      <div style="flex:1;min-width:0"><div style="font:600 14px 'Instrument Sans'">${label}</div><div style="font:400 11px 'Instrument Sans';color:#5d6456;margin-top:2px">${sub}</div></div>
+      ${badge(n)}<span style="color:#5d6456;font:400 18px 'Instrument Sans'">›</span></button>`;
+  const inner = `<div style="padding:6px 20px 12px;font:600 12px 'JetBrains Mono';letter-spacing:.06em;color:#99a091">MORE</div>
+    ${item("gotoFeed", "Feed", "Everyone's requests and how fast they landed", 0)}
+    ${item("gotoBulk", "Downloads", "Bulk batches and their progress", activeDownloads())}
+    ${item("gotoReview", "Review", "Failed and lossy grabs to fix", activeReview())}
+    <div style="height:calc(14px + env(safe-area-inset-bottom))"></div>`;
+  return sheetChrome(inner, state.moreOpen, "closeMore", 50, "380px");
 }
 
 function toastHtml(): string {
@@ -1924,11 +1949,12 @@ function viewMobile(): string {
     tab = `<h1 style="margin:0 0 14px;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Activity</h1>
       ${statCardsHtml()}
       <div style="display:flex;flex-direction:column;gap:12px">${liveHtml()}${mFeedHtml()}${winsHtml()}${historyHtml()}</div>`;
-  else tab = mTracksTab();
+  else tab = `${mTracksTab()}<div style="margin-top:18px">${syncSectionsHtml()}</div>${syncConfirmHtml()}`;
   return `<div style="max-width:640px;margin:0 auto;position:relative">
     ${mHeaderHtml()}
     <main style="padding:16px 16px calc(104px + env(safe-area-inset-bottom));animation:fadein .25s ease">${tab}</main>
     ${mBottomNav()}
+    ${moreSheetHtml()}
     ${drawerHtml()}
     ${panelHtml()}
     ${toastHtml()}
@@ -2614,16 +2640,20 @@ function view(): string {
   return _viewBody() + sourceDialogHtml();
 }
 
+// A page with the right chrome: the desktop header, or on mobile the mobile
+// header + bottom nav + MORE sheet, so every page keeps a way back.
+function pageShell(body: string): string {
+  if (state.isMobile) {
+    return `<div style="max-width:640px;margin:0 auto;position:relative">${mHeaderHtml()}${body}${mBottomNav()}${moreSheetHtml()}${drawerHtml()}${panelHtml()}${toastHtml()}</div>${bulkPanelHtml()}`;
+  }
+  return `${headerHtml()}${body}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
+}
+
 function _viewBody(): string {
-  if (state.page === "bulk") {
-    return `${headerHtml()}${bulkPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
-  }
-  if (state.page === "review") {
-    return `${headerHtml()}${reviewPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
-  }
-  if (state.page === "feed" && !state.isMobile) {
-    return `${headerHtml()}${feedPageHtml()}${drawerHtml()}${panelHtml()}${bulkPanelHtml()}${toastHtml()}`;
-  }
+  if (state.page === "bulk") return pageShell(bulkPageHtml());
+  if (state.page === "review") return pageShell(reviewPageHtml());
+  if (state.page === "feed") return pageShell(feedPageHtml());
+  if (state.page === "sync" && !state.isMobile) return pageShell(syncPageHtml());
   return `${state.isMobile ? viewMobile() : viewDesktop()}${bulkPanelHtml()}`;
 }
 
@@ -2725,7 +2755,6 @@ function bindEvents(): void {
     else if (act === "openSourceDialog") openSourceDialog();
     else if (act === "closeSourceDialog") closeSourceDialog();
     else if (act === "downloadSource") void downloadSourceCandidate(el.dataset.id!);
-    else if (act === "toggleImport") void toggleImport();
     else if (act === "importLiked") void runImport("liked", "liked");
     else if (act === "importPlaylist")
       void runImport("playlist", el.dataset.pid!, el.dataset.pid!, el.dataset.name!);
@@ -2753,34 +2782,16 @@ function bindEvents(): void {
       if (t) void enqueueTrack(t);
     } else if (act === "setTab") {
       state.activeTab = (el.dataset.tab as State["activeTab"]) || "cascade";
+      if (state.page !== "console" || location.hash) goto("console");
+      state.moreOpen = false;
+      if (state.activeTab === "tracks") openSync();
       window.scrollTo(0, 0);
       render();
-    } else if (act === "gotoBulk") {
-      state.page = "bulk";
-      state.bulkPanel = false;
-      window.scrollTo(0, 0);
-      render();
-      void loadBatches().then(render);
-    } else if (act === "gotoConsole") {
-      state.page = "console";
-      window.scrollTo(0, 0);
-      render();
-    } else if (act === "gotoFeed") {
-      state.page = "feed";
-      state.bulkPanel = false;
-      window.scrollTo(0, 0);
-      render();
-      void api.feed().then((f) => {
-        state.feed = f;
-        render();
-      });
-    } else if (act === "gotoReview") {
-      state.page = "review";
-      state.bulkPanel = false;
-      window.scrollTo(0, 0);
-      render();
-      void loadReview().then(render);
-    } else if (act === "toggleReview") {
+    } else if (act === "gotoBulk") goto("bulk");
+    else if (act === "gotoConsole") goto("console");
+    else if (act === "gotoFeed") goto("feed");
+    else if (act === "gotoReview") goto("review");
+    else if (act === "toggleReview") {
       const id = el.dataset.id!;
       state.reviewOpen[id] = !state.reviewOpen[id];
       if (state.reviewOpen[id]) void loadReviewDetail(id);
@@ -3003,6 +3014,528 @@ function bindEvents(): void {
   });
 }
 
+// ---------- pages + hash routing ----------
+const PAGES: readonly State["page"][] = ["console", "feed", "bulk", "review", "sync"];
+function pageFromHash(): State["page"] {
+  const h = location.hash.replace(/^#\/?/, "");
+  return (PAGES as readonly string[]).includes(h) ? (h as State["page"]) : "console";
+}
+// Show a page (no history entry). On mobile the Sync page is the LIBRARY tab.
+function applyPage(p: State["page"]): void {
+  if (p === "sync" && state.isMobile) {
+    state.page = "console";
+    state.activeTab = "tracks";
+  } else state.page = p;
+  state.bulkPanel = false;
+  state.moreOpen = false;
+  window.scrollTo(0, 0);
+  render();
+  if (p === "bulk") void loadBatches().then(render);
+  else if (p === "feed")
+    void api.feed().then((f) => {
+      state.feed = f;
+      render();
+    });
+  else if (p === "review") void loadReview().then(render);
+  else if (p === "sync") openSync();
+}
+// Navigate: push #/page (console = no hash) so reload and back/forward work.
+function goto(p: State["page"]): void {
+  const want = p === "console" ? "" : `#/${p}`;
+  if (location.hash !== want) history.pushState(null, "", want || location.pathname + location.search);
+  applyPage(p);
+}
+
+// ---------- Library Sync page ----------
+let syncStop: (() => void) | null = null;
+async function loadSync(): Promise<void> {
+  try {
+    state.sync = await api.syncOverview();
+    state.syncErr = null;
+  } catch (err) {
+    state.syncErr = (err as Error).message;
+  }
+}
+async function loadSyncExtras(): Promise<void> {
+  const [jobs, hist] = await Promise.allSettled([api.jobs("library_sync"), api.historyStatus()]);
+  if (jobs.status === "fulfilled") state.syncJobs = jobs.value.slice(0, 12);
+  if (hist.status === "fulfilled") state.historyStatus = hist.value;
+}
+// Load the page's data and start the live log (one socket, kept open).
+function openSync(): void {
+  void Promise.all([loadSync(), loadSyncExtras()]).then(render);
+  if (!syncStop) {
+    syncStop = connectJobLog(onJobFrame, {
+      onStatus: (live) => {
+        state.syncLogLive = live;
+        render();
+      },
+    });
+  }
+}
+const DONE_CODES = new Set(["finished", "failed", "cancelled"]);
+function onJobFrame(frame: JobFrame): void {
+  if (state.syncLogJob === null) state.syncLog = [...state.syncLog, ...frame.events].slice(-400);
+  const running = frame.active.find((j) => j.kind === "library_sync") ?? null;
+  const ended = frame.events.some((e) => e.level === "status" && DONE_CODES.has(e.code ?? ""));
+  if (state.sync && (ended || !!state.sync.running !== !!running)) {
+    void Promise.all([loadSync(), loadSyncExtras()]).then(render);
+  } else if (state.sync && running && state.sync.running) {
+    state.sync.running = { ...state.sync.running, ...running };
+  }
+  render();
+}
+function backToLive(): void {
+  state.syncLogJob = null;
+  state.syncLog = [];
+  syncStop?.();
+  syncStop = null;
+  openSync(); // reconnect -> the backlog replays, then live lines
+}
+async function replayJob(id: string): Promise<void> {
+  state.syncLogJob = id;
+  state.syncLog = [];
+  render();
+  try {
+    state.syncLog = await api.jobEvents(id);
+  } catch (err) {
+    toast(`Couldn't load that log: ${(err as Error).message}`);
+  }
+  render();
+}
+async function runSyncNow(): Promise<void> {
+  if (state.syncRunBusy) return;
+  state.syncRunBusy = true;
+  if (state.syncLogJob !== null) backToLive();
+  render();
+  try {
+    const r = await api.runJob("library_sync");
+    toast(r.existing ? "A sync is already running — following it" : "Sync started");
+    await loadSync();
+  } catch (err) {
+    toast(`Couldn't start a sync: ${(err as Error).message}`);
+  } finally {
+    state.syncRunBusy = false;
+    render();
+  }
+}
+async function uploadHistory(file: File): Promise<void> {
+  state.historyUploading = true;
+  render();
+  try {
+    const r = await api.uploadHistory(file);
+    toast(`Uploaded ${bytes(r.bytes)} — importing your history…`);
+    if (state.syncLogJob !== null) backToLive();
+  } catch (err) {
+    toast(`Upload failed: ${(err as Error).message}`);
+  } finally {
+    state.historyUploading = false;
+    render();
+  }
+}
+
+const tierScope = (tier: number): string => (tier === 1 ? "core" : `affinity:${tier}`);
+function busyKey(c: Pick<SyncConfirm, "apply" | "tier" | "playlist">): string {
+  return c.apply === "tier" ? `tier:${c.tier}` : `pl:${c.playlist}`;
+}
+// Turning a scope on: count what's missing; if anything is, ask backfill vs future-only.
+async function askBackfill(c: Omit<SyncConfirm, "missing">): Promise<void> {
+  const key = busyKey(c);
+  if (state.syncBusy[key]) return;
+  state.syncBusy = { ...state.syncBusy, [key]: true };
+  render();
+  try {
+    const { missing } = await api.syncMissing(c.scope);
+    state.syncBusy = { ...state.syncBusy, [key]: false };
+    if (missing === 0) await applyConfirm({ ...c, missing }, false);
+    else state.syncConfirm = { ...c, missing };
+  } catch (err) {
+    state.syncBusy = { ...state.syncBusy, [key]: false };
+    toast(`Couldn't check that: ${(err as Error).message}`);
+  }
+  render();
+}
+async function applyConfirm(c: SyncConfirm, backfill: boolean): Promise<void> {
+  state.syncConfirm = null;
+  if (c.apply === "tier") await applyTier(c.tier!, true, backfill);
+  else await applyPlaylist(c.playlist!, c.mode!, backfill, c.label);
+}
+async function applyTier(tier: number, on: boolean, backfill: boolean): Promise<void> {
+  const key = `tier:${tier}`;
+  state.syncBusy = { ...state.syncBusy, [key]: true };
+  render();
+  try {
+    const r = await api.syncSetTier(tier, on, backfill);
+    toast(
+      !on
+        ? "Auto-sync off"
+        : backfill && r.missing
+          ? `Auto-sync on — ${r.missing} song${r.missing === 1 ? "" : "s"} download on the next sync`
+          : "Auto-sync on — new songs will download as they arrive",
+    );
+    state.syncMembers = {};
+    await loadSync();
+  } catch (err) {
+    toast(`Couldn't change auto-sync: ${(err as Error).message}`);
+  } finally {
+    state.syncBusy = { ...state.syncBusy, [key]: false };
+    render();
+  }
+}
+async function applyPlaylist(id: string, mode: SyncMode, backfill: boolean, label: string): Promise<void> {
+  const key = `pl:${id}`;
+  state.syncBusy = { ...state.syncBusy, [key]: true };
+  render();
+  try {
+    const r = await api.syncSetPlaylist(id, mode, backfill);
+    toast(
+      r.auto_sync
+        ? `“${label}” auto-syncs${backfill && r.missing ? ` — ${r.missing} to download` : ""}`
+        : `“${label}” won't auto-sync`,
+    );
+    await loadSync();
+  } catch (err) {
+    toast(`Couldn't change “${label}”: ${(err as Error).message}`);
+  } finally {
+    state.syncBusy = { ...state.syncBusy, [key]: false };
+    render();
+  }
+}
+async function toggleTier(tier: number): Promise<void> {
+  const card = state.sync?.tiers.find((c) => c.tier === tier);
+  if (!card || state.syncBusy[`tier:${tier}`]) return;
+  if (card.auto_sync) await applyTier(tier, false, false);
+  else await askBackfill({ apply: "tier", tier, scope: tierScope(tier), label: card.label });
+}
+async function setPlaylistMode(id: string, mode: SyncMode): Promise<void> {
+  const p = state.sync?.playlists.find((x) => x.spotify_id === id);
+  if (!p || p.sync_mode === mode || state.syncBusy[`pl:${id}`]) return;
+  const tier1 = !!state.sync?.tiers.find((t) => t.tier === 1)?.auto_sync;
+  const next = mode === "on" || (mode === "inherit" && tier1 && !p.generated);
+  if (next && !p.auto_sync)
+    await askBackfill({ apply: "playlist", playlist: id, mode, scope: `playlist:${id}`, label: p.name });
+  else await applyPlaylist(id, mode, false, p.name);
+}
+async function toggleTierOpen(tier: number): Promise<void> {
+  state.syncOpenTier = { ...state.syncOpenTier, [tier]: !state.syncOpenTier[tier] };
+  render();
+  if (!state.syncOpenTier[tier] || state.syncMembers[tier]) return;
+  try {
+    state.syncMembers = { ...state.syncMembers, [tier]: await api.syncMembers(tier) };
+  } catch (err) {
+    toast(`Couldn't load songs: ${(err as Error).message}`);
+  }
+  render();
+}
+async function queueMember(tier: number, key: string): Promise<void> {
+  const m = state.syncMembers[tier]?.find((x) => x.merge_key === key);
+  if (!m || state.enqueued[key]) return;
+  state.enqueued[key] = true;
+  render();
+  try {
+    await api.enqueue({ query: `${m.artist ?? ""} ${m.title ?? ""}`.trim(), artist: m.artist, title: m.title });
+    toast(`Queued: ${m.title ?? "track"}`);
+  } catch (err) {
+    state.enqueued[key] = false;
+    toast(`Couldn't queue: ${(err as Error).message}`);
+    render();
+  }
+}
+
+function bindSyncEvents(): void {
+  root.addEventListener("click", (e) => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>("[data-act]");
+    if (!el) return;
+    const act = el.dataset.act!;
+    if (act === "gotoSync") goto("sync");
+    else if (act === "openMore" || act === "closeMore") {
+      // explicit open/close (not a toggle) so a doubled tap can't undo itself
+      state.moreOpen = act === "openMore";
+      render();
+    } else if (act === "runSync") void runSyncNow();
+    else if (act === "toggleTier") void toggleTier(Number(el.dataset.tier));
+    else if (act === "toggleTierOpen") void toggleTierOpen(Number(el.dataset.tier));
+    else if (act === "queueMember") void queueMember(Number(el.dataset.tier), el.dataset.key!);
+    else if (act === "setPlMode") void setPlaylistMode(el.dataset.pid!, el.dataset.mode as SyncMode);
+    else if (act === "syncBackfill" && state.syncConfirm) void applyConfirm(state.syncConfirm, true);
+    else if (act === "syncFuture" && state.syncConfirm) void applyConfirm(state.syncConfirm, false);
+    else if (act === "syncCancel") {
+      state.syncConfirm = null;
+      render();
+    } else if (act === "replayJob") void replayJob(el.dataset.id!);
+    else if (act === "syncLogLive") backToLive();
+  });
+  root.addEventListener("change", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.dataset?.inp === "historyFile" && el.files?.[0]) {
+      void uploadHistory(el.files[0]);
+      el.value = "";
+    }
+  });
+  window.addEventListener("popstate", () => applyPage(pageFromHash()));
+}
+
+// --- Sync page view ---
+function untilText(iso: string): string {
+  const mins = Math.round((Date.parse(iso) - Date.now()) / 60000);
+  if (mins <= 0) return "due now";
+  return mins < 60 ? `in ${mins}m` : `in ${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+function clockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+function monthYear(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", year: "numeric" });
+}
+function syncBadgeHtml(): string {
+  const s = state.sync;
+  if (!s) return "";
+  if (s.running)
+    return `<span title="Syncing now" style="width:7px;height:7px;border-radius:50%;background:#ff4c38;animation:pulse 1.2s ease-in-out infinite"></span>`;
+  const t = s.last_sync?.finished_at;
+  return t ? `<span style="font:500 9.5px 'JetBrains Mono';opacity:.65">${esc(relTime(t))}</span>` : "";
+}
+function summaryText(sum: Record<string, unknown> | null | undefined): string {
+  if (!sum) return "";
+  const n = (k: string): number => Number(sum[k] ?? 0);
+  const queued = sum.dry_run ? `${n("would_enqueue")} would queue` : `${n("enqueued")} queued`;
+  return `${n("playlists_changed")} changed · ${queued}${n("deferred") ? ` · ${n("deferred")} deferred` : ""}`;
+}
+function switchHtml(on: boolean, busy: boolean, attrs: string): string {
+  return `<button ${attrs} ${busy ? "disabled" : ""} role="switch" aria-checked="${on}" title="${on ? "Auto-sync is on" : "Auto-sync is off"}" style="width:42px;height:24px;border-radius:13px;border:1px solid ${on ? "#e9ede3" : "#39402f"};background:${on ? "#e9ede3" : "#181c17"};position:relative;cursor:${busy ? "wait" : "pointer"};transition:.15s;flex-shrink:0;opacity:${busy ? ".55" : "1"}"><span style="position:absolute;top:2px;left:${on ? "20px" : "2px"};width:18px;height:18px;border-radius:50%;background:${on ? "#0c0e0c" : "#5d6456"};transition:left .15s"></span></button>`;
+}
+const cardBox = "background:#111411;border:1px solid #22261f;border-radius:18px";
+
+function syncStatusHtml(s: SyncOverview): string {
+  const run = s.running;
+  const last = s.last_sync;
+  const lastTxt = last?.finished_at ? relTime(last.finished_at) : "never";
+  const failed = last?.status === "failed";
+  const nextTxt = run ? "running now" : s.next_run_at ? untilText(s.next_run_at) : "not scheduled";
+  const prog =
+    run && run.progress_total
+      ? `<span style="font:500 10.5px 'JetBrains Mono';color:#99a091">${run.progress_done ?? 0}/${run.progress_total} users</span>`
+      : "";
+  const busy = state.syncRunBusy || !!run;
+  const cell = (label: string, value: string, extra = "") =>
+    `<div style="display:flex;flex-direction:column;gap:3px;min-width:0"><span style="font:600 9px 'JetBrains Mono';letter-spacing:.14em;color:#464d40">${label}</span><span style="font:600 13px 'Instrument Sans';color:#e9ede3;white-space:nowrap">${value}${extra}</span></div>`;
+  return `<section style="${cardBox};padding:15px 18px;display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+    ${cell("LAST SYNCED", esc(lastTxt), failed ? ` <span style="color:#ff4c38;font:600 11px 'JetBrains Mono'">failed</span>` : "")}
+    ${cell("NEXT RUN", esc(nextTxt))}
+    ${last?.summary ? cell("LAST RUN", `<span style="font:500 11.5px 'JetBrains Mono';color:#99a091">${esc(summaryText(last.summary))}</span>`) : ""}
+    <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+      ${run ? `<span style="width:8px;height:8px;border-radius:50%;background:#ff4c38;animation:pulse 1.2s ease-in-out infinite"></span>${prog}` : ""}
+      <button data-act="runSync" ${busy ? "disabled" : ""} style="display:inline-flex;align-items:center;gap:8px;background:${busy ? "#181c17" : "#e9ede3"};color:${busy ? "#5d6456" : "#0c0e0c"};border:none;border-radius:16px;padding:9px 16px;font:700 12px 'Instrument Sans';cursor:${busy ? "default" : "pointer"}">${run ? "Syncing…" : state.syncRunBusy ? "Starting…" : "Run now"}</button>
+    </div>
+  </section>`;
+}
+
+function historyBannerHtml(): string {
+  const h = state.historyStatus;
+  const busy = state.historyUploading;
+  const upload = `<label style="display:inline-flex;align-items:center;gap:7px;background:${busy ? "#181c17" : h?.export ? "transparent" : "#e9ede3"};border:1px solid ${h?.export ? "#272c25" : "transparent"};color:${busy ? "#5d6456" : h?.export ? "#99a091" : "#0c0e0c"};font:700 11px 'Instrument Sans';padding:7px 13px;border-radius:14px;cursor:${busy ? "wait" : "pointer"};flex-shrink:0">${busy ? "Uploading…" : h?.export ? "Re-upload" : "Upload export"}<input type="file" data-inp="historyFile" accept=".zip,.json,application/zip,application/json" ${busy ? "disabled" : ""} style="display:none"/></label>`;
+  if (h?.export) {
+    const span = `${h.export.start.slice(0, 4)}–${h.export.end.slice(0, 4)}`;
+    return `<div style="margin-top:12px;display:flex;align-items:center;gap:12px;${cardBox};padding:11px 16px">
+      <span style="width:7px;height:7px;border-radius:50%;background:#1db954;flex-shrink:0"></span>
+      <span style="flex:1;font:400 12px 'Instrument Sans';color:#99a091">Streaming history ${esc(span)} · ${h.plays.toLocaleString()} plays · tiers are exact</span>
+      ${upload}
+    </div>`;
+  }
+  const plays = h ? `${h.plays.toLocaleString()} plays logged so far.` : "";
+  return `<div style="margin-top:12px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:rgba(242,193,78,.06);border:1px solid rgba(242,193,78,.25);border-radius:18px;padding:13px 16px">
+    <div style="flex:1;min-width:220px;font:400 12px 'Instrument Sans';color:#c9cfbf;line-height:1.5"><b style="color:#f2c14e">Tiers 2–3 are approximate</b> (from Spotify's top-tracks lists). For exact tiers, request your <b>Extended streaming history</b> in Spotify → Account → Privacy settings, then upload the zip here. ${esc(plays)}</div>
+    ${upload}
+  </div>`;
+}
+
+const TIER_BLURB: Record<number, string> = {
+  1: "Liked Songs and every playlist you made or follow. Spotify-made mixes stay out unless you switch them on.",
+  2: "Songs you keep coming back to: many plays, spread over more than two quarters.",
+  3: "Songs you played intensely for a few weeks, then mostly forgot.",
+};
+function memberStat(tier: number, m: TierMember): string {
+  const s = m.stats ?? {};
+  if (m.approximate) return s.rank ? `#${s.rank} in your top tracks` : "from your top tracks";
+  if (tier === 3 && s.burst_plays && s.burst_end) return `${s.burst_plays} plays · ${monthYear(s.burst_end)}`;
+  return s.plays != null ? `${s.plays} plays${s.span ? ` · ${s.span}` : ""}` : "";
+}
+function memberRowHtml(tier: number, m: TierMember): string {
+  const key = m.merge_key;
+  const ctrl = m.in_library
+    ? `<span style="font:500 9.5px 'JetBrains Mono';color:#5d6456;padding:4px 9px;border-radius:12px;border:1px solid #272c25;flex-shrink:0">in library</span>`
+    : state.enqueued[key]
+      ? `<span style="font:600 9.5px 'JetBrains Mono';color:#e9ede3;padding:4px 9px;border-radius:12px;background:rgba(233,237,227,.09);flex-shrink:0">✓ queued</span>`
+      : `<button class="qbtn" data-act="queueMember" data-tier="${tier}" data-key="${esc(key)}" title="Download this song" style="width:28px;height:28px;border-radius:50%;border:1px solid #272c25;background:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#99a091;flex-shrink:0">${DL_ICON}</button>`;
+  return `<div style="display:flex;align-items:center;gap:11px;padding:9px 2px;border-top:1px solid #1a1e19">
+    <div style="flex:1;min-width:0"><div style="font:500 12.5px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.title ?? "?")}</div><div style="font:400 10.5px 'Instrument Sans';color:#99a091;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.artist ?? "")}</div></div>
+    <span style="font:500 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0;text-align:right">${esc(memberStat(tier, m))}</span>
+    ${ctrl}
+  </div>`;
+}
+function tierCardHtml(c: SyncTierCard): string {
+  const pctIn = c.count ? Math.round((c.in_library / c.count) * 100) : 0;
+  const open = !!state.syncOpenTier[c.tier];
+  const approx = c.approximate
+    ? `<span title="From Spotify's top-tracks lists until your streaming-history export is imported" style="font:600 9px 'JetBrains Mono';letter-spacing:.08em;color:#f2c14e;border:1px solid rgba(242,193,78,.35);border-radius:10px;padding:2px 7px">APPROXIMATE</span>`
+    : "";
+  const expand =
+    c.tier === 1 || !c.count
+      ? ""
+      : `<button data-act="toggleTierOpen" data-tier="${c.tier}" class="ghost" style="background:none;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:5px 10px;cursor:pointer;flex-shrink:0">${open ? "hide" : "songs"} ${open ? "▾" : "▸"}</button>`;
+  const rows = state.syncMembers[c.tier];
+  const members = !open
+    ? ""
+    : !rows
+      ? `<div style="padding:12px 2px 0;font:400 11px 'Instrument Sans';color:#5d6456">Loading songs…</div>`
+      : `<div style="margin-top:12px;max-height:420px;overflow:auto">${rows.map((m) => memberRowHtml(c.tier, m)).join("")}</div>`;
+  const hint = c.tier === 1 ? `<span style="font:400 10px 'JetBrains Mono';color:#464d40">per playlist →</span>` : "";
+  return `<section style="${cardBox};padding:16px 18px">
+    <div style="display:flex;align-items:flex-start;gap:14px">
+      <span style="font:800 24px 'Doto';color:#e9ede3;line-height:1;width:18px">${c.tier}</span>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font:600 14px 'Instrument Sans'">${esc(c.label)}</span>${approx}</div>
+        <div style="font:400 11.5px 'Instrument Sans';color:#99a091;margin-top:3px;line-height:1.45">${TIER_BLURB[c.tier] ?? ""}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0"><span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.14em;color:#464d40">AUTO-SYNC</span>${switchHtml(c.auto_sync, !!state.syncBusy[`tier:${c.tier}`], `data-act="toggleTier" data-tier="${c.tier}"`)}</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:14px">
+      <span style="font:800 20px 'Doto'">${c.count}</span><span style="font:500 10.5px 'JetBrains Mono';color:#5d6456">songs</span>
+      <div style="flex:1;height:5px;background:#272c25;border-radius:3px;overflow:hidden"><div style="height:100%;width:${pctIn}%;background:#e9ede3;border-radius:3px"></div></div>
+      <span style="font:500 10.5px 'JetBrains Mono';color:#99a091;white-space:nowrap">${c.in_library} in library</span>
+      ${hint}${expand}
+    </div>
+    ${members}
+  </section>`;
+}
+
+function playlistRowHtml(p: SyncPlaylist): string {
+  const liked = p.spotify_id === "liked";
+  const art = liked
+    ? `<span style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#4300a0,#c13584);display:flex;align-items:center;justify-content:center;flex-shrink:0">♥</span>`
+    : p.image
+      ? `<img src="${esc(p.image)}" alt="" referrerpolicy="no-referrer" style="width:32px;height:32px;border-radius:8px;object-fit:cover;flex-shrink:0"/>`
+      : `<span style="width:32px;height:32px;border-radius:8px;background:#181c17;border:1px solid #272c25;display:flex;align-items:center;justify-content:center;font:800 12px 'Doto';color:#5d6456;flex-shrink:0">${esc((p.name[0] || "?").toUpperCase())}</span>`;
+  const pctIn = p.track_count ? Math.round((p.in_library_count / p.track_count) * 100) : 0;
+  const fresh = p.last_changed_at && Date.now() - Date.parse(p.last_changed_at) < 86_400_000;
+  const changed = fresh ? `<span title="Changed on Spotify in the last day" style="width:6px;height:6px;border-radius:50%;background:#f2c14e;flex-shrink:0"></span>` : "";
+  const who = liked ? "liked" : p.generated ? "spotify-made" : p.owned ? "yours" : "following";
+  const busy = !!state.syncBusy[`pl:${p.spotify_id}`];
+  const seg = (m: SyncMode) =>
+    `<button data-act="setPlMode" data-pid="${esc(p.spotify_id)}" data-mode="${m}" ${busy ? "disabled" : ""} title="${m === "inherit" ? "Follow tier 1's auto-sync" : m === "on" ? "Always auto-sync" : "Never auto-sync"}" style="border:none;border-radius:9px;cursor:${busy ? "wait" : "pointer"};font:600 9.5px 'JetBrains Mono';padding:4px 7px;${p.sync_mode === m ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#5d6456"}">${m}</button>`;
+  const dot = `<span title="${p.auto_sync ? "Auto-syncing" : "Not auto-syncing"}" style="width:7px;height:7px;border-radius:50%;background:${p.auto_sync ? "#1db954" : "#39402f"};flex-shrink:0"></span>`;
+  const importKey = liked ? "liked" : p.spotify_id;
+  const imp = importBtn(liked ? "importLiked" : "importPlaylist", !!state.importBusy[importKey], liked ? undefined : p.spotify_id, p.name);
+  return `<div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid #1a1e19">
+    ${art}
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;align-items:center;gap:6px"><span style="font:500 12px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span>${changed}</div>
+      <div style="display:flex;align-items:center;gap:7px;margin-top:4px">
+        <span style="font:400 9.5px 'JetBrains Mono';color:#5d6456;white-space:nowrap">${who} · ${p.in_library_count}/${p.track_count}</span>
+        <div style="flex:1;max-width:80px;height:3px;background:#272c25;border-radius:2px;overflow:hidden"><div style="height:100%;width:${pctIn}%;background:#99a091"></div></div>
+      </div>
+    </div>
+    ${dot}
+    <div style="display:flex;gap:1px;background:#0c0e0c;border:1px solid #22261f;border-radius:11px;padding:2px;flex-shrink:0">${(["inherit", "on", "off"] as const).map(seg).join("")}</div>
+    ${imp}
+  </div>`;
+}
+function playlistsHtml(s: SyncOverview): string {
+  const rows = s.playlists.length
+    ? s.playlists.map(playlistRowHtml).join("")
+    : `<div style="padding:16px;font:400 12px 'Instrument Sans';color:#5d6456">No playlists yet — they appear after the first sync.</div>`;
+  const checked = s.playlists.reduce<string | null>((a, p) => (p.last_checked_at && (!a || p.last_checked_at > a) ? p.last_checked_at : a), null);
+  return `<section style="${cardBox};overflow:hidden">
+    <div style="display:flex;align-items:center;gap:9px;padding:14px 16px">
+      <span style="font:600 13px 'Instrument Sans'">Playlists</span>
+      <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">${s.playlists.length}${checked ? ` · checked ${esc(relTime(checked))}` : ""}</span>
+      <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#464d40">inherit = follow tier 1</span>
+    </div>
+    <div style="max-height:${state.isMobile ? "none" : "520px"};overflow:auto">${rows}</div>
+  </section>`;
+}
+const LOG_INK: Record<JobEvent["level"], string> = {
+  info: "#99a091",
+  warn: "#f2c14e",
+  error: "#ff4c38",
+  status: "#e9ede3",
+  progress: "#5d6456",
+};
+function syncLogHtml(): string {
+  const lines = state.syncLog.filter((e) => e.level !== "progress").slice(-150);
+  const body = lines.length
+    ? lines
+        .map(
+          (e) =>
+            `<div style="display:flex;gap:9px"><span style="color:#464d40;flex-shrink:0">${esc(clockTime(e.ts))}</span><span style="color:${LOG_INK[e.level]};word-break:break-word">${esc(e.message)}</span></div>`,
+        )
+        .join("")
+    : `<div style="color:#464d40">${state.syncLogJob ? "No log lines for that run." : "Waiting for sync activity…"}</div>`;
+  const head = state.syncLogJob
+    ? `<span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">replaying a past run</span><button data-act="syncLogLive" class="ghost" style="margin-left:auto;background:none;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:4px 10px;cursor:pointer">back to live</button>`
+    : `<span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;font:500 10.5px 'JetBrains Mono';color:#99a091"><span style="width:6px;height:6px;border-radius:50%;background:${state.syncLogLive ? "#ff4c38" : "#39402f"};${state.syncLogLive ? "animation:pulse 2s ease-in-out infinite" : ""}"></span>${state.syncLogLive ? "live" : "offline"}</span>`;
+  return `<section style="${cardBox};overflow:hidden">
+    <div style="display:flex;align-items:center;gap:9px;padding:12px 16px"><span style="font:600 13px 'Instrument Sans'">Log</span>${head}</div>
+    <div style="max-height:300px;overflow:auto;background:#0a0c0a;border-top:1px solid #1a1e19;display:flex;flex-direction:column-reverse"><div style="padding:10px 14px;font:400 10.5px/1.6 'JetBrains Mono';display:flex;flex-direction:column;gap:1px">${body}</div></div>
+  </section>`;
+}
+function syncJobsHtml(): string {
+  if (!state.syncJobs.length) return "";
+  const ink = (st: string) => (st === "done" ? "#e9ede3" : st === "failed" ? "#ff4c38" : st === "cancelled" ? "#5d6456" : "#f2c14e");
+  const rows = state.syncJobs
+    .map((j) => {
+      const on = state.syncLogJob === j.id;
+      return `<button data-act="replayJob" data-id="${esc(j.id)}" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 16px;border:none;border-top:1px solid #1a1e19;background:${on ? "#181c17" : "none"};cursor:pointer;text-align:left">
+        <span style="width:7px;height:7px;border-radius:50%;background:${ink(j.status)};flex-shrink:0"></span>
+        <span style="font:500 11px 'JetBrains Mono';color:#e9ede3;white-space:nowrap">${esc(relTime(j.created_at))}</span>
+        <span style="font:400 10px 'JetBrains Mono';color:#5d6456">${esc(j.triggered_by)}</span>
+        <span style="margin-left:auto;font:400 10px 'JetBrains Mono';color:#99a091;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.error ? j.error : summaryText(j.summary))}</span>
+      </button>`;
+    })
+    .join("");
+  return `<section style="${cardBox};overflow:hidden"><div style="padding:12px 16px;font:600 13px 'Instrument Sans'">Recent syncs</div>${rows}</section>`;
+}
+function syncConfirmHtml(): string {
+  const c = state.syncConfirm;
+  if (!c) return "";
+  return `<div data-act="syncCancel" style="position:fixed;inset:0;background:rgba(5,7,5,.66);z-index:70;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadein .15s ease">
+    <div data-act="noop" style="background:#111411;border:1px solid #272c25;border-radius:20px;padding:22px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.6);cursor:default">
+      <div style="font:600 15px 'Instrument Sans'">Auto-sync “${esc(c.label)}”</div>
+      <div style="font:400 12.5px 'Instrument Sans';color:#99a091;margin-top:8px;line-height:1.55"><b style="color:#e9ede3">${c.missing}</b> song${c.missing === 1 ? " is" : "s are"} here but not in your library yet. Download ${c.missing === 1 ? "it" : "them"} too, or only pick up songs added from now on?</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:18px">
+        <button data-act="syncBackfill" style="background:#e9ede3;color:#0c0e0c;border:none;border-radius:14px;padding:11px;font:700 12.5px 'Instrument Sans';cursor:pointer">Download ${c.missing === 1 ? "it" : `all ${c.missing}`} too</button>
+        <button data-act="syncFuture" style="background:#181c17;color:#e9ede3;border:1px solid #272c25;border-radius:14px;padding:11px;font:600 12.5px 'Instrument Sans';cursor:pointer">Only future additions</button>
+        <button data-act="syncCancel" style="background:none;color:#5d6456;border:none;padding:6px;font:500 12px 'Instrument Sans';cursor:pointer">Cancel</button>
+      </div>
+    </div>
+  </div>`;
+}
+function syncSectionsHtml(): string {
+  const s = state.sync;
+  if (!s) {
+    const needsLogin = (state.syncErr ?? "").startsWith("400");
+    const msg = needsLogin
+      ? "Log in with Spotify to use Library Sync."
+      : state.syncErr
+        ? `Couldn't load Library Sync: ${state.syncErr}`
+        : "Loading Library Sync…";
+    return `<div style="${cardBox};padding:28px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">${esc(msg)}</div>`;
+  }
+  const left = `${syncStatusHtml(s)}${historyBannerHtml()}<div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">${s.tiers.map(tierCardHtml).join("")}</div>`;
+  const right = `<div style="display:flex;flex-direction:column;gap:14px">${playlistsHtml(s)}${syncLogHtml()}${syncJobsHtml()}</div>`;
+  if (state.isMobile) return `${left}<div style="margin-top:14px">${right}</div>`;
+  return `<div class="grid2" style="display:grid;grid-template-columns:58fr 42fr;gap:16px;align-items:start"><div>${left}</div>${right}</div>`;
+}
+function syncPageHtml(): string {
+  return `<main style="max-width:1560px;margin:0 auto;padding:22px 28px 72px;animation:fadein .25s ease">
+    <div style="display:flex;align-items:baseline;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Library Sync</h1>
+      <p style="margin:0;font:400 12.5px 'Instrument Sans';color:#99a091">What to keep downloaded: your playlists, your long-term constants and your short-term flings. Auto-synced tiers download in the background every ${state.sync ? Math.round(state.sync.interval_s / 3600) || 1 : 2} h.</p>
+    </div>
+    ${syncSectionsHtml()}
+  </main>${syncConfirmHtml()}`;
+}
+
 // ---------- boot ----------
 function flashOAuthResult(): void {
   const params = new URLSearchParams(location.search);
@@ -3031,6 +3564,7 @@ function watchViewport(): void {
 
 async function boot(): Promise<void> {
   bindEvents(); // once
+  bindSyncEvents(); // once
   watchViewport(); // desktop <-> mobile layout switch
   flashOAuthResult();
   render(); // header/skeleton
@@ -3055,6 +3589,8 @@ async function boot(): Promise<void> {
   render();
   void loadSpotifyStatus().then(render);
   void loadBatches().then(render);
+  applyPage(pageFromHash()); // #/sync etc. survives a reload
+  void loadSync().then(render); // nav badge: last synced
 
   // side effects — run once
   effect(connectLive);
@@ -3071,6 +3607,13 @@ async function boot(): Promise<void> {
         void loadBatches().then(render);
       }
     }, 3000);
+    // sync overview: every 30 s on the Sync page, every 2 min for the nav badge
+    let syncTicks = 0;
+    window.setInterval(() => {
+      syncTicks++;
+      const onSync = state.page === "sync" || (state.isMobile && state.activeTab === "tracks");
+      if (onSync || syncTicks % 4 === 0) void loadSync().then(render);
+    }, 30000);
     // review: poll while on the page so completed re-downloads drop out live
     window.setInterval(() => {
       if (state.page === "review") void loadReview().then(render);
