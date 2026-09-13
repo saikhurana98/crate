@@ -14,6 +14,7 @@ are injected, so ``identify`` runs without a subprocess or the network.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,41 @@ def parse_acoustid(data: dict[str, Any]) -> IdentityHint | None:
     if not artist and not title:
         return None
     return IdentityHint(canonical_artist=artist, canonical_title=title, mbid=rec.get("id"))
+
+
+@dataclass(frozen=True)
+class AcoustidMatch:
+    """The top AcoustID result: its *track id* (the dedup grouping key), score, and
+    the first linked recording's name and MBID when present."""
+
+    track_id: str
+    score: float
+    mbid: str | None
+    artist: str | None
+    title: str | None
+
+
+def parse_acoustid_match(data: dict[str, Any]) -> AcoustidMatch | None:
+    """The top result of an AcoustID lookup, or ``None`` when nothing matched.
+
+    Unlike :func:`parse_acoustid` this keeps a result that has no linked
+    recording, because the track id alone is enough to group duplicates. An
+    API-level error (bad key, rate limit) raises, so the caller can back off."""
+    if data.get("status") == "error":
+        err = data.get("error") or {}
+        raise RuntimeError(f"AcoustID error: {err.get('message') or err}")
+    results = data.get("results") or []
+    if not results or not results[0].get("id"):
+        return None
+    top = results[0]
+    hint = parse_acoustid(data)
+    return AcoustidMatch(
+        track_id=str(top["id"]),
+        score=float(top.get("score") or 0.0),
+        mbid=hint.mbid if hint else None,
+        artist=hint.canonical_artist if hint else None,
+        title=hint.canonical_title if hint else None,
+    )
 
 
 def identify(
