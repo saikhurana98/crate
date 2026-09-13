@@ -46,6 +46,14 @@ class FakeClient:
     def user_playlist_snapshot(self, token: str, playlist_id: str) -> str | None:
         return f"snap-{playlist_id}"
 
+    def recently_played_after(
+        self, token: str, after_ms: int | None
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        return [{"id": "t1", "title": "Past", "played_at": "2026-09-01T10:00:00Z"}], 42
+
+    def top_tracks(self, token: str, time_range: str, limit: int = 100) -> list[dict[str, Any]]:
+        return [{"id": f"top-{time_range}", "title": "Top"}][:limit]
+
 
 def _wire(tmp_path: Path) -> tuple[SpotifyUser, ConfigStore, RequestStore, FakeClient, list[float]]:
     config = ConfigStore(connect(tmp_path / "cfg.db"), SecretBox(bytes(range(32))))
@@ -120,3 +128,11 @@ def test_missing_scopes_drives_relogin(tmp_path: Path) -> None:
     assert su.missing_scopes("u1") == ["user-top-read"]  # legacy token, no scope recorded
     config.put_secret("spotify:u1", "scopes", LOGIN_SCOPES)
     assert su.missing_scopes("u1") == []
+
+
+def test_ledger_and_tier_reads_delegate_with_the_user_token(tmp_path: Path) -> None:
+    su, config, _, _, _ = _wire(tmp_path)
+    config.put_secret("spotify:u1", "refresh_token", "rt")
+    plays, cursor = su.recent_plays_after("u1", None)
+    assert plays[0]["id"] == "t1" and cursor == 42
+    assert su.top_tracks("u1", "long_term")[0]["id"] == "top-long_term"

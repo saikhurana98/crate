@@ -16,6 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from crate.application.auth import (
+    SERVICE_USER_ID,
     SESSION_TTL_S,
     SpotifyProfile,
     User,
@@ -80,6 +81,17 @@ class SqliteUserRepository:
                 f"SELECT {_USER_COLS} FROM users WHERE spotify_id=?", (spotify_id,)
             ).fetchone()
         return _user(row) if row else None
+
+    def list_users(self, *, include_service: bool = False) -> list[User]:
+        """Every app user, oldest first (the synthetic service user only on request)."""
+        sql = f"SELECT {_USER_COLS} FROM users"
+        params: tuple[str, ...] = ()
+        if not include_service:
+            sql += " WHERE id != ?"
+            params = (SERVICE_USER_ID,)
+        with self._lock:
+            rows = self._conn.execute(sql + " ORDER BY created_at", params).fetchall()
+        return [_user(r) for r in rows]
 
     def set_admin(self, user_id: str, is_admin: bool) -> User | None:
         with self._lock:
