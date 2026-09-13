@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -40,7 +41,7 @@ class _Auth:
 
 
 class _Env:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, preview: Any = None) -> None:
         conn = connect(tmp_path / "crate.db")
         self.user = SqliteUserRepository(conn).upsert_spotify_user(SpotifyProfile("sp1", "Sai"))
         self.jobs = SqliteJobStore(conn)
@@ -49,7 +50,13 @@ class _Env:
         self.queue = SqliteSyncQueue(conn, RequestStore(conn))
         self.index = LibraryIndex(frozenset(), frozenset({merge_key("A", "One")}))
         service = LibrarySyncService(self.playlists, self.affinity, self.queue, lambda: self.index)
-        app = create_app(RequestStore(conn), auth=_Auth(self.user), jobs=self.jobs, sync=service)
+        app = create_app(
+            RequestStore(conn),
+            auth=_Auth(self.user),
+            jobs=self.jobs,
+            sync=service,
+            sync_preview=preview,
+        )
         self.client = TestClient(app)
         uid = self.user.id
         mine = {"spotify_id": "p1", "name": "Mine", "owned": True}
@@ -139,3 +146,46 @@ def test_members_missing_and_validation(tmp_path: Path) -> None:
     assert c.get("/api/sync/missing", params={"scope": "bogus"}, cookies=COOKIE).status_code == 400
     assert c.put("/api/sync/tiers/7", json={"auto_sync": True}, cookies=COOKIE).status_code == 404
     assert c.put("/api/sync/tiers/2", json={"auto_sync": "yes"}, cookies=COOKIE).status_code == 400
+
+
+CLIP = "https://cdnt-preview.dzcdn.net/api/1/1/a/b/c/0/abc.mp3"
+SID = "4uLU6hMCjMI75M1A2tKUQC"
+
+
+def test_preview_redirects_to_a_fresh_clip(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def preview(sid: str) -> str:
+        calls.append(sid)
+        return CLIP
+
+    env = _Env(tmp_path, preview)
+    r = env.client.get(f"/api/sync/preview/{SID}", cookies=COOKIE, follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == CLIP and calls == [SID]
+    env.client.get(f"/api/sync/preview/{SID}", cookies=COOKIE, follow_redirects=False)
+    assert calls == [SID, SID]  # resolved every time: Deezer clip URLs expire
+
+
+def test_preview_failures_map_to_status_codes(tmp_path: Path) -> None:
+    def preview(sid: str) -> str | None:
+        if sid == "bad":
+            raise ValueError("not a Spotify track id")
+        if sid == "down":
+            raise RuntimeError("deezer down")
+        return None
+
+    env = _Env(tmp_path, preview)
+
+    def status(sid: str) -> int:
+        return env.client.get(
+            f"/api/sync/preview/{sid}", cookies=COOKIE, follow_redirects=False
+        ).status_code
+
+    assert (status(SID), status("bad"), status("down")) == (404, 400, 502)
+    assert env.client.get(f"/api/sync/preview/{SID}", follow_redirects=False).status_code == 401
+
+
+def test_preview_503_when_not_configured(tmp_path: Path) -> None:
+    env = _Env(tmp_path)
+    r = env.client.get(f"/api/sync/preview/{SID}", cookies=COOKIE, follow_redirects=False)
+    assert r.status_code == 503

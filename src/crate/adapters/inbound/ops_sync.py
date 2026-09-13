@@ -10,7 +10,8 @@ reports that user's ledger.
 - the overview: tier cards, playlists, and last synced / next run / running job;
 - tier members;
 - auto-sync toggles for tiers and playlists, with baseline or backfill;
-- missing-track counts, shown before a scope is switched on.
+- missing-track counts, shown before a scope is switched on;
+- previews: a 307 to a fresh ~30 s Deezer clip for a tier song.
 
 Everything is per logged-in user.
 """
@@ -19,11 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 
 from crate.adapters.inbound.ops_jobs import JobsPort
 from crate.application.auth import SERVICE_USER_ID
@@ -132,7 +135,16 @@ def _brief(job: dict[str, Any]) -> dict[str, Any]:
     return {k: job.get(k) for k in keys}
 
 
-def sync_router(jobs: JobsPort, sync: SyncPort, *, interval_s: float) -> APIRouter:
+PreviewFn = Callable[[str], "str | None"]
+
+
+def sync_router(
+    jobs: JobsPort,
+    sync: SyncPort,
+    *,
+    interval_s: float,
+    preview: PreviewFn | None = None,
+) -> APIRouter:
     router = APIRouter()
 
     def _uid(request: Request) -> str:
@@ -195,6 +207,24 @@ def sync_router(jobs: JobsPort, sync: SyncPort, *, interval_s: float) -> APIRout
         if res is None:
             raise HTTPException(status_code=404, detail="unknown playlist")
         return res
+
+    @router.get("/sync/preview/{spotify_id}")
+    async def preview_clip(request: Request, spotify_id: str) -> RedirectResponse:
+        """307 to the track's current Deezer preview. The URL is resolved server-side
+        from the Spotify id and must be on Deezer's CDN, so this can't be used as an
+        open redirect; it's fetched fresh because Deezer's clip URLs expire."""
+        _uid(request)
+        if preview is None:
+            raise HTTPException(status_code=503, detail="previews not configured")
+        try:
+            url = await asyncio.to_thread(preview, spotify_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # Spotify/Deezer hiccup
+            raise HTTPException(status_code=502, detail="preview lookup failed") from exc
+        if not url:
+            raise HTTPException(status_code=404, detail="no preview for this track")
+        return RedirectResponse(url, status_code=307)
 
     @router.get("/sync/missing")
     def missing(request: Request, scope: str = Query(...)) -> dict[str, Any]:

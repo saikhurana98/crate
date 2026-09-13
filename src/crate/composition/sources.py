@@ -1237,6 +1237,7 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         listening=_build_listening_store(),
         uploads_dir=uploads_dir(),
         sync=_build_sync_service(),
+        sync_preview=_build_preview_resolver(),
         sync_interval_s=float(os.environ.get("CRATE_LIBRARY_SYNC_INTERVAL", "7200")),
     )
 
@@ -1292,6 +1293,45 @@ def _build_listening_store() -> Any:  # pragma: no cover - IO wiring
     from crate.infrastructure.sqlite.listening_store import SqliteListeningStore
 
     return SqliteListeningStore(connect(db_path()))
+
+
+def _build_preview_resolver() -> Callable[[str], str | None] | None:  # pragma: no cover - IO
+    """Spotify id -> a fresh Deezer preview URL, for the Sync page's play buttons.
+    ``None`` without Spotify client creds (the id -> ISRC lookup needs them)."""
+    client_id = os.environ.get("CRATE_SPOTIFY_CLIENT_ID")
+    client_secret = os.environ.get("CRATE_SPOTIFY_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return None
+    import httpx
+
+    from crate.application.previews import resolve_preview
+    from crate.infrastructure.deezer.public import DeezerPublic
+    from crate.infrastructure.spotify.client import SpotifyClient
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.track_meta_store import SqliteTrackMetaStore
+
+    http = httpx.Client(timeout=8.0, follow_redirects=True)
+
+    def post_form(url: str, data: dict[str, str], headers: dict[str, str]) -> Any:
+        resp = http.post(url, data=data, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_json(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        resp = http.get(url, params=params, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    spotify = SpotifyClient(client_id, client_secret, post_form=post_form, get_json=get_json)
+    deezer = DeezerPublic(lambda url: http.get(url).json())
+    cache = SqliteTrackMetaStore(connect(db_path()))
+
+    def resolve(spotify_id: str) -> str | None:
+        return resolve_preview(
+            spotify_id, cache=cache, spotify_tracks=spotify.tracks_batch, deezer=deezer
+        )
+
+    return resolve
 
 
 _SYNC_INDEX_TTL_S = 30.0  # the Sync page's library-index cache
