@@ -779,49 +779,6 @@ def build_maintenance() -> Callable[[threading.Event], None]:  # pragma: no cove
     return loop
 
 
-def sync_enabled() -> bool:  # pragma: no cover - env read
-    """Continuous playlist sync is opt-in (CRATE_PLAYLIST_SYNC=1)."""
-    return os.environ.get("CRATE_PLAYLIST_SYNC", "").strip() in ("1", "true", "yes")
-
-
-def build_sync_watcher() -> (
-    Callable[[threading.Event], None] | None
-):  # pragma: no cover - IO wiring
-    """A poll loop (serve process) that keeps tracked playlists in sync: every
-    ``CRATE_SYNC_INTERVAL`` s (default 300) it sweeps active subscriptions and
-    enqueues newly-added tracks, attributed to the subscribing user. Returns
-    ``None`` when sync is off or Spotify creds are absent (nothing to poll).
-
-    Mirrors ``build_maintenance``: build collaborators once, then loop until the
-    shared ``stop`` Event. The existing identity de-dup in ``resolve_request`` is a
-    second net, so a track that's already in the library is skipped at download."""
-    from crate.application.library_import import to_identity
-    from crate.application.playlist_sync import sync_tick
-
-    config = _config_store_if_enabled()
-    if config is None or not sync_enabled():
-        return None
-    store = build_recorder("serve")
-    source = build_spotify_user(config, store)
-    if source is None:
-        return None
-    interval = float(os.environ.get("CRATE_SYNC_INTERVAL", "300"))
-
-    def enqueue(track: dict[str, Any], user_id: str) -> None:
-        store.enqueue(track["query"], identity=to_identity(track), user_id=user_id)
-
-    def loop(stop: threading.Event) -> None:
-        # First sleep, then sweep — a subscription's baseline is seeded on its first
-        # sweep, so there's no urgency to run at t=0 (and it avoids a restart storm).
-        while not stop.wait(interval):
-            try:
-                sync_tick(store, source, enqueue, log=lambda m: None)
-            except Exception:  # never let one bad sweep kill the thread
-                continue
-
-    return loop
-
-
 def build_spotify_search() -> Callable[[str, int], list[dict[str, Any]]] | None:
     """Spotify track search for the console, or ``None`` when creds are absent
     (the /api/search endpoint then reports 503 and the UI hides search)."""
@@ -1315,7 +1272,11 @@ def _job_handlers() -> dict[Any, Any]:  # pragma: no cover - IO wiring
     handler is never scheduled and can't be triggered by hand."""
     from crate.domain.jobs import JobKind
 
-    return {JobKind.LISTEN_POLL: _listen_poll_job, JobKind.HISTORY_IMPORT: _history_import_job}
+    return {
+        JobKind.LISTEN_POLL: _listen_poll_job,
+        JobKind.HISTORY_IMPORT: _history_import_job,
+        JobKind.LIBRARY_SYNC: _library_sync_job,
+    }
 
 
 def uploads_dir() -> Path:  # pragma: no cover - env read
@@ -1381,6 +1342,47 @@ def _listen_poll_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover 
             return {"skipped": "spotify not configured"}
         users = SqliteUserRepository(conn).list_users()
         return run_listen_poll(ctx, users, reader, SqliteListeningStore(conn))
+    finally:
+        conn.close()
+
+
+def _library_sync_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
+    """``library_sync`` (every 2 h + Run now): playlist sync-state + affinity tiers
+    for every linked user (orchestration in ``application.library_sync``). A dry
+    run for now: it logs what auto-sync *would* queue."""
+    from datetime import UTC, datetime
+
+    from crate.application.library_sync import LibraryIndex, run_library_sync
+    from crate.infrastructure.crypto import SecretBox
+    from crate.infrastructure.sqlite.affinity_store import SqliteAffinityStore
+    from crate.infrastructure.sqlite.config_store import ConfigStore
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.listening_store import SqliteListeningStore
+    from crate.infrastructure.sqlite.store import RequestStore
+    from crate.infrastructure.sqlite.sync_store import SqlitePlaylistSyncStore
+    from crate.infrastructure.sqlite.user_store import SqliteUserRepository
+
+    if not os.environ.get("CRATE_DB"):
+        return {"skipped": "no CRATE_DB"}
+    conn = connect(db_path())
+    try:
+        config = ConfigStore(conn, SecretBox.from_keyfile(_keyfile()))
+        requests = RequestStore(conn)
+        reader = build_spotify_user(config, requests)
+        if reader is None:
+            ctx.warn("Spotify client credentials not configured; skipping", code="no_spotify")
+            return {"skipped": "spotify not configured"}
+        isrcs, keys = requests.library_index()
+        return run_library_sync(
+            ctx,
+            SqliteUserRepository(conn).list_users(),
+            reader,
+            SqliteListeningStore(conn),
+            SqliteAffinityStore(conn),
+            SqlitePlaylistSyncStore(conn),
+            LibraryIndex(frozenset(isrcs), frozenset(keys)),
+            now=datetime.now(UTC),
+        )
     finally:
         conn.close()
 

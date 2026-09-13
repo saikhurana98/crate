@@ -458,16 +458,6 @@ export const api = {
   libraryPlaylists: () => get<Playlist[]>("/api/library/playlists"),
   importLibrary: (body: { source: "liked" | "playlist"; playlist_id?: string; name?: string }) =>
     send<BulkResult>("POST", "/api/library/import", body),
-  // Continuous playlist sync (Phase D): subscribe -> future additions auto-queue.
-  syncList: () => get<Synced[]>("/api/library/sync"),
-  syncAdd: (playlist_id: string, name: string) =>
-    send<{ id: string; active: boolean }>("POST", "/api/library/sync", { playlist_id, name }),
-  syncRemove: (playlist_id: string) =>
-    send<{ playlist_id: string; active: boolean }>(
-      "DELETE",
-      `/api/library/sync/${encodeURIComponent(playlist_id)}`,
-      {},
-    ),
   // Login with Spotify (Phase 2). me() resolves the current user, or null when
   // logged out (401) so the app can render the login gate.
   me: async (): Promise<Me | null> => {
@@ -537,17 +527,6 @@ export interface Playlist {
   count: number;
   image: string | null;
   snapshot_id?: string | null;
+  owner_id?: string | null;
 }
 
-// A continuous-sync subscription (Phase D): future additions to this playlist are
-// queued automatically, attributed to the subscribing user.
-export interface Synced {
-  id: string;
-  user_id: string;
-  spotify_ref: string;
-  name: string;
-  snapshot_id: string | null;
-  active: boolean;
-  created_at: string;
-  last_checked_at: string | null;
-}

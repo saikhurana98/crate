@@ -307,11 +307,21 @@ def test_current_user_playlists_shapes_and_paginates() -> None:
 
 def test_current_user_playlists_includes_snapshot() -> None:
     page = {
-        "items": [{"id": "p1", "name": "Focus", "tracks": {"total": 1}, "snapshot_id": "SNAP"}],
+        "items": [
+            {
+                "id": "p1",
+                "name": "Focus",
+                "tracks": {"total": 1},
+                "snapshot_id": "SNAP",
+                "owner": {"id": "spotify"},
+            },
+            {"id": "p2", "name": "Mine", "tracks": {"total": 1}},
+        ],
         "next": None,
     }
     pls = _oauth_client(get=lambda *_: page).current_user_playlists("AC")
-    assert pls[0]["snapshot_id"] == "SNAP"
+    assert pls[0]["snapshot_id"] == "SNAP" and pls[0]["owner_id"] == "spotify"
+    assert pls[1]["snapshot_id"] is None and pls[1]["owner_id"] is None
 
 
 def test_user_playlist_snapshot_fetches_field() -> None:

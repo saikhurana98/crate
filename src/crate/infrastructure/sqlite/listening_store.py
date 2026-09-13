@@ -5,11 +5,14 @@ other stores.
 
 from __future__ import annotations
 
+import itertools
 import sqlite3
 import threading
+from collections import Counter
 from collections.abc import Iterable
 from typing import Any
 
+from crate.application.affinity import TrackPlays
 from crate.domain.listening import Play
 from crate.infrastructure.sqlite.db import now_iso
 
@@ -162,6 +165,32 @@ class SqliteListeningStore:
             "last_polled_at": cur["last_polled_at"] if cur is not None else None,
             "export": export,
         }
+
+    def track_plays(self, user_id: str) -> list[TrackPlays]:
+        """Every song this user has played, with its ordered play times, the
+        latest artist/title spelling, and the most-played Spotify uri (merge keys
+        can span relinked ids). An ordered scan of the per-song index."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT merge_key, played_at, artist, title, track_uri FROM plays "
+                "WHERE user_id=? ORDER BY merge_key, played_at",
+                (user_id,),
+            ).fetchall()
+        out: list[TrackPlays] = []
+        for key, group in itertools.groupby(rows, key=lambda r: r["merge_key"]):
+            plays = list(group)
+            uris = Counter(r["track_uri"] for r in plays if r["track_uri"])
+            last = plays[-1]
+            out.append(
+                TrackPlays(
+                    merge_key=str(key),
+                    played_at=[str(r["played_at"]) for r in plays],
+                    artist=last["artist"],
+                    title=last["title"],
+                    track_uri=uris.most_common(1)[0][0] if uris else None,
+                )
+            )
+        return out
 
     def play_count(self, user_id: str) -> int:
         with self._lock:

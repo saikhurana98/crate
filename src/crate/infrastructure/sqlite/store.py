@@ -12,7 +12,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -20,6 +20,7 @@ from crate.application.auth import SERVICE_USER_ID
 from crate.application.download import DownloadReport
 from crate.domain.candidate import Candidate
 from crate.domain.identity import TrackIdentity
+from crate.domain.listening import merge_key
 from crate.domain.matching import norm_tokens
 from crate.infrastructure.sqlite.db import now_iso
 
@@ -831,97 +832,18 @@ class RequestStore:
             ).fetchone()
             return dict(row) if row else None
 
-    # --- continuous playlist sync (Phase D) ---
-    def add_synced_playlist(self, user_id: str, spotify_ref: str, name: str) -> str:
-        """Subscribe ``user_id`` to a playlist (idempotent per user+playlist).
-
-        A fresh subscription starts ``active`` with a NULL snapshot so the first
-        poll enqueues nothing already-present-only-if-new — the watcher records the
-        current tracks into the ledger without re-downloading a back-catalogue it
-        can't tell from genuine additions. Re-subscribing a removed playlist just
-        re-activates it (and refreshes the display name). Returns its id."""
+    # --- Library Sync: what's already downloaded ---
+    def library_index(self) -> tuple[set[str], set[str]]:
+        """``(isrcs, merge_keys)`` of every completed request, so Library Sync can
+        tell which playlist and tier tracks are already in the library. Legacy rows
+        without structured artist/title match by ISRC only."""
         with self._lock:
-            row = self._conn.execute(
-                "SELECT id FROM synced_playlists WHERE user_id=? AND spotify_ref=?",
-                (user_id, spotify_ref),
-            ).fetchone()
-            if row is not None:
-                self._conn.execute(
-                    "UPDATE synced_playlists SET active=1, name=? WHERE id=?",
-                    (name, row["id"]),
-                )
-                self._invalidate_stats()
-                return str(row["id"])
-            sid = _new_id()
-            self._conn.execute(
-                "INSERT INTO synced_playlists(id, user_id, spotify_ref, name, active, created_at) "
-                "VALUES (?, ?, ?, ?, 1, ?)",
-                (sid, user_id, spotify_ref, name, now_iso()),
-            )
-            self._invalidate_stats()
-            return sid
-
-    def set_synced_active(self, synced_playlist_id: str, active: bool) -> bool:
-        """Pause (``active=0``) or resume a subscription. The watcher skips inactive
-        rows; the ledger is kept so resuming doesn't re-enqueue the back-catalogue."""
-        with self._lock:
-            cur = self._conn.execute(
-                "UPDATE synced_playlists SET active=? WHERE id=?",
-                (1 if active else 0, synced_playlist_id),
-            )
-            self._invalidate_stats()
-        return cur.rowcount == 1
-
-    def list_synced_playlists(
-        self, *, active_only: bool = False, user_id: str | None = None
-    ) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM synced_playlists"
-        clauses: list[str] = []
-        params: list[Any] = []
-        if active_only:
-            clauses.append("active=1")
-        if user_id is not None:
-            clauses.append("user_id=?")
-            params.append(user_id)
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY created_at DESC"
-        with self._lock:
-            rows = [dict(r) for r in self._conn.execute(sql, params)]
-        for row in rows:
-            row["active"] = bool(row["active"])
-        return rows
-
-    def synced_track_keys(self, synced_playlist_id: str) -> set[str]:
-        with self._lock:
-            return {
-                str(r[0])
-                for r in self._conn.execute(
-                    "SELECT track_key FROM synced_tracks WHERE synced_playlist_id=?",
-                    (synced_playlist_id,),
-                )
-            }
-
-    def record_synced_tracks(self, synced_playlist_id: str, keys: Iterable[str]) -> None:
-        """Append enqueued track keys to the ledger (idempotent per key)."""
-        now = now_iso()
-        with self._lock:
-            self._conn.executemany(
-                "INSERT OR IGNORE INTO synced_tracks(synced_playlist_id, track_key, enqueued_at) "
-                "VALUES (?, ?, ?)",
-                [(synced_playlist_id, key, now) for key in keys],
-            )
-            self._invalidate_stats()
-
-    def mark_synced_checked(self, synced_playlist_id: str, snapshot_id: str | None) -> None:
-        """Stamp the poll time + the freshly-seen snapshot so the next tick can
-        short-circuit when the playlist hasn't changed."""
-        with self._lock:
-            self._conn.execute(
-                "UPDATE synced_playlists SET last_checked_at=?, snapshot_id=? WHERE id=?",
-                (now_iso(), snapshot_id, synced_playlist_id),
-            )
-            self._invalidate_stats()
+            rows = self._conn.execute(
+                "SELECT isrc, artist, title FROM requests WHERE status='done'"
+            ).fetchall()
+        isrcs = {str(r["isrc"]).strip().upper() for r in rows if r["isrc"]}
+        keys = {merge_key(r["artist"], r["title"]) for r in rows if r["artist"] or r["title"]}
+        return isrcs, keys
 
     # --- maintenance (retention) ---
     def prune_attempts(self, older_than_days: int = 90) -> int:

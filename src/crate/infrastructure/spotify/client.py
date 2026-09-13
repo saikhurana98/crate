@@ -389,6 +389,8 @@ class SpotifyClient:
                         "count": int(((pl.get("tracks") or {}).get("total")) or 0),
                         "image": _best_art(pl.get("images") or []),
                         "snapshot_id": (str(pl["snapshot_id"]) if pl.get("snapshot_id") else None),
+                        # owner "spotify" = a Spotify-made playlist (Discover Weekly, mixes)
+                        "owner_id": (str((pl.get("owner") or {}).get("id") or "") or None),
                     }
                 )
                 if len(out) >= max_playlists:

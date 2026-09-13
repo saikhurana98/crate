@@ -135,7 +135,7 @@ class LibraryPort(Protocol):
     """Per-user Spotify library reads for import (Phase 2)."""
 
     def my_playlists(self, user_id: str) -> list[dict[str, Any]]:
-        """The user's playlists as ``{id, name, count, image}`` dicts."""
+        """The user's playlists as ``{id, name, count, image, snapshot_id, owner_id}`` dicts."""
         ...
 
     def liked_songs(self, user_id: str, max_tracks: int = 2000) -> list[dict[str, Any]]:
@@ -789,41 +789,6 @@ def create_app(
         """The shared activity feed — everyone sees everything: who requested each
         track and how fast it was served (time-to-first-playable + time-to-FLAC)."""
         return store.list_feed(limit=limit, offset=offset)
-
-    # --- continuous playlist sync (per-user subscriptions) ---
-    @api.get("/library/sync")
-    def sync_list(request: Request) -> list[dict[str, Any]]:
-        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
-        return store.list_synced_playlists(user_id=uid)
-
-    @api.post("/library/sync")
-    def sync_add(request: Request, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        """Subscribe the user to a playlist: future additions get queued
-        automatically. Existing contents aren't downloaded here — that's Import."""
-        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
-        pid = str(body.get("playlist_id", "")).strip()
-        if not pid:
-            raise HTTPException(status_code=400, detail="playlist_id required")
-        name = str(body.get("name", "")).strip() or "Playlist"
-        sid = store.add_synced_playlist(uid, pid, name)
-        return {"id": sid, "playlist_id": pid, "active": True}
-
-    @api.delete("/library/sync/{playlist_id}")
-    def sync_remove(request: Request, playlist_id: str) -> dict[str, Any]:
-        """Stop syncing a playlist (pause the subscription; the ledger is kept so a
-        later re-subscribe doesn't re-queue the back-catalogue)."""
-        uid = getattr(request.state, "user_id", SERVICE_USER_ID)
-        row = next(
-            (
-                r
-                for r in store.list_synced_playlists(user_id=uid)
-                if r["spotify_ref"] == playlist_id
-            ),
-            None,
-        )
-        if row is None or not store.set_synced_active(str(row["id"]), False):
-            raise HTTPException(status_code=404, detail="not synced")
-        return {"playlist_id": playlist_id, "active": False}
 
     @api.get("/events")
     def events() -> StreamingResponse:
