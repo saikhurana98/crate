@@ -1277,6 +1277,8 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         soulseek_browse=build_soulseek_browse(),
         jobs=build_job_store(),
         manual_job_kinds=manual_job_kinds(),
+        listening=_build_listening_store(),
+        uploads_dir=uploads_dir(),
     )
 
 
@@ -1313,7 +1315,47 @@ def _job_handlers() -> dict[Any, Any]:  # pragma: no cover - IO wiring
     handler is never scheduled and can't be triggered by hand."""
     from crate.domain.jobs import JobKind
 
-    return {JobKind.LISTEN_POLL: _listen_poll_job}
+    return {JobKind.LISTEN_POLL: _listen_poll_job, JobKind.HISTORY_IMPORT: _history_import_job}
+
+
+def uploads_dir() -> Path:  # pragma: no cover - env read
+    """Where history uploads land. It sits next to the DB, and both containers
+    mount /data."""
+    return db_path().parent / "uploads"
+
+
+def _build_listening_store() -> Any:  # pragma: no cover - IO wiring
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.listening_store import SqliteListeningStore
+
+    return SqliteListeningStore(connect(db_path()))
+
+
+def _history_import_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
+    """``history_import``: parse the uploaded export into the uploader's ledger
+    (orchestration in ``application.history_import``). The upload is deleted
+    only after a successful import, so a failed run can be retried."""
+    from crate.application.auth import SERVICE_USER_ID
+    from crate.application.history_import import run_history_import
+    from crate.infrastructure.history.export_reader import open_export
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.listening_store import SqliteListeningStore
+
+    name = Path(str(job.params.get("upload") or "")).name  # basename only, defensively
+    path = uploads_dir() / name
+    if not name or not path.is_file():
+        raise RuntimeError("upload file is missing; upload the export again")
+    if not job.user_id or job.user_id == SERVICE_USER_ID:
+        raise RuntimeError("history import needs a logged-in user")
+    conn = connect(db_path())
+    try:
+        summary = run_history_import(
+            ctx, job.user_id, open_export(path), SqliteListeningStore(conn)
+        )
+    finally:
+        conn.close()
+    path.unlink(missing_ok=True)
+    return summary
 
 
 def _listen_poll_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring

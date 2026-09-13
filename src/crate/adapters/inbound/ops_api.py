@@ -28,6 +28,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import HTTPConnection
 
 from crate.adapters.inbound.ops_jobs import JobsPort, jobs_router, mount_jobs_ws
+from crate.adapters.inbound.ops_sync import (
+    DEFAULT_UPLOAD_MAX_BYTES,
+    ListeningPort,
+    history_router,
+)
 from crate.application.auth import SERVICE_USER_ID, SESSION_TTL_S, User
 from crate.application.bulk import ResolvedBatch
 from crate.application.library_import import to_identity
@@ -165,6 +170,9 @@ def create_app(
     manual_job_kinds: frozenset[JobKind] = frozenset(),
     ws_poll_interval: float = 1.0,
     ws_ping_interval: float = 25.0,
+    listening: ListeningPort | None = None,
+    uploads_dir: Path | None = None,
+    history_upload_max_bytes: int = DEFAULT_UPLOAD_MAX_BYTES,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -900,6 +908,10 @@ def create_app(
     if jobs is not None:
         api.include_router(jobs_router(jobs, manual_kinds=manual_job_kinds))
         mount_jobs_ws(app, jobs, _authenticate, poll_s=ws_poll_interval, ping_s=ws_ping_interval)
+        if listening is not None and uploads_dir is not None:
+            api.include_router(
+                history_router(jobs, listening, uploads_dir, max_bytes=history_upload_max_bytes)
+            )
     app.include_router(api)
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")
