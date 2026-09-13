@@ -25,8 +25,9 @@ import httpx
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import HTTPConnection
 
-from crate.adapters.inbound.ops_jobs import JobsPort, jobs_router
+from crate.adapters.inbound.ops_jobs import JobsPort, jobs_router, mount_jobs_ws
 from crate.application.auth import SERVICE_USER_ID, SESSION_TTL_S, User
 from crate.application.bulk import ResolvedBatch
 from crate.application.library_import import to_identity
@@ -162,6 +163,8 @@ def create_app(
     soulseek_browse: SoulseekBrowseFn | None = None,
     jobs: JobsPort | None = None,
     manual_job_kinds: frozenset[JobKind] = frozenset(),
+    ws_poll_interval: float = 1.0,
+    ws_ping_interval: float = 25.0,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -209,27 +212,27 @@ def create_app(
         lifespan=_lifespan,
     )
 
-    def require_auth(request: Request) -> None:
-        """Gate the ``/api`` router on a valid session cookie OR the matching
-        ``X-API-Key`` (automation), stashing the resolved user id on
-        ``request.state.user_id`` for attribution. Falls back to today's
-        key-only behavior when no ``auth`` provider is wired: with no key AND no
-        auth the console is open (single-user, as before)."""
-        header_key = request.headers.get("x-api-key")
-        if api_key is not None and header_key == api_key:
-            request.state.user_id = SERVICE_USER_ID
-            return
+    def _authenticate(conn: HTTPConnection) -> str | None:
+        """The user id for an HTTP request **or** WebSocket upgrade, else ``None``.
+
+        The matching ``X-API-Key`` (automation) -> the service user; otherwise, with
+        an ``auth`` provider wired, a live session cookie -> that user. With no key
+        AND no auth the console is open (single-user mode, as before)."""
+        if api_key is not None and conn.headers.get("x-api-key") == api_key:
+            return SERVICE_USER_ID
         if auth is not None:
-            raw = request.cookies.get(_SESSION_COOKIE) or ""
+            raw = conn.cookies.get(_SESSION_COOKIE) or ""
             user = auth.resolve_session(raw) if raw else None
-            if user is not None:
-                request.state.user_id = user.id
-                return
+            return user.id if user is not None else None
+        return SERVICE_USER_ID if api_key is None else None
+
+    def require_auth(request: Request) -> None:
+        """Gate the ``/api`` router, stashing the user id on ``request.state`` for
+        attribution (see :func:`_authenticate`)."""
+        uid = _authenticate(request)
+        if uid is None:
             raise HTTPException(status_code=401, detail="unauthorized")
-        if api_key is None:
-            request.state.user_id = SERVICE_USER_ID
-            return
-        raise HTTPException(status_code=401, detail="unauthorized")
+        request.state.user_id = uid
 
     def sources_view() -> list[dict[str, Any]]:
         """Source records reflecting the stored layout (membership => enabled) and
@@ -896,6 +899,7 @@ def create_app(
 
     if jobs is not None:
         api.include_router(jobs_router(jobs, manual_kinds=manual_job_kinds))
+        mount_jobs_ws(app, jobs, _authenticate, poll_s=ws_poll_interval, ping_s=ws_ping_interval)
     app.include_router(api)
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")

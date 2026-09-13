@@ -206,3 +206,27 @@ def test_enqueue_with_unknown_user_raises_not_masked(tmp_path: Path) -> None:
         s.enqueue(JobKind.HISTORY_IMPORT, triggered_by="manual", user_id="ghost")
     with pytest.raises(sqlite3.IntegrityError):  # single-flight path must not swallow an FK error
         s.enqueue(JobKind.LIBRARY_SYNC, triggered_by="manual", user_id="ghost")
+
+
+def test_tail_events_is_newest_n_oldest_first_and_scoped(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    jid, _ = s.enqueue(JobKind.LIBRARY_SYNC, triggered_by="schedule")  # event 1: queued
+    for i in range(5):
+        s.add_event(jid, "info", f"line {i}")
+    s.add_event(jid, "info", "private", user_id="u2")
+    tail = s.tail_events(limit=3, viewer="u1")
+    assert [e["message"] for e in tail] == ["line 2", "line 3", "line 4"]
+    assert s.tail_events(limit=1, viewer="u2")[0]["message"] == "private"
+
+
+def test_max_event_id_and_active_jobs(tmp_path: Path) -> None:
+    s = _store(tmp_path)
+    assert s.max_event_id() == 0 and s.active_jobs() == []
+    queued, _ = s.enqueue(JobKind.HISTORY_IMPORT, triggered_by="manual")
+    running, _ = s.enqueue(JobKind.LIBRARY_SYNC, triggered_by="schedule")
+    done, _ = s.enqueue(JobKind.HISTORY_IMPORT, triggered_by="manual")
+    s.claim_next("sync")  # claims the oldest sync-lane job
+    s.finish(done, JobStatus.DONE)
+    active = {j["id"]: j["status"] for j in s.active_jobs()}
+    assert done not in active and set(active) == {queued, running}
+    assert s.max_event_id() >= 3

@@ -255,6 +255,32 @@ class SqliteJobStore:
             ).fetchall()
         return [_event_dict(r) for r in rows]
 
+    def tail_events(self, *, limit: int = 200, viewer: str | None = None) -> list[dict[str, Any]]:
+        """The newest ``limit`` visible events, oldest first (a live log's backlog)."""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_EVENT_COLS} FROM job_events WHERE (user_id IS NULL OR user_id=?) "
+                "ORDER BY id DESC LIMIT ?",
+                (viewer, limit),
+            ).fetchall()
+        return [_event_dict(r) for r in reversed(rows)]
+
+    def max_event_id(self) -> int:
+        """The newest event id (a cursor that replays nothing), 0 when empty."""
+        with self._lock:
+            row = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM job_events").fetchone()
+        return int(row[0]) if row else 0
+
+    def active_jobs(self) -> list[dict[str, Any]]:
+        """Queued and running jobs, oldest first (for "sync running" badges)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, kind, lane, status, triggered_by, progress_done, progress_total, "
+                "created_at, started_at FROM jobs WHERE status IN ('queued', 'running') "
+                "ORDER BY created_at"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def last_created(self, kind: JobKind) -> datetime | None:
         """When the newest job of ``kind`` was created (drives the scheduler)."""
         with self._lock:

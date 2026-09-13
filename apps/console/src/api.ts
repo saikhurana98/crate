@@ -426,6 +426,14 @@ export const api = {
   spotifyStatus: () => get<SpotifyStatus>("/api/spotify/status"),
   spotifyPlayer: (signal?: AbortSignal) => get<PlayerState>("/api/spotify/player", signal),
   eventsUrl: "/api/events",
+  // Background jobs: history, a job's log, "Run now", cancel.
+  jobs: (kind?: string) =>
+    get<JobSummary[]>(`/api/jobs${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
+  jobEvents: (id: string, after = 0) =>
+    get<JobEvent[]>(`/api/jobs/${encodeURIComponent(id)}/events?after=${after}`),
+  runJob: (kind: string) => send<{ id: string; existing: boolean }>("POST", "/api/jobs", { kind }),
+  cancelJob: (id: string) =>
+    send<{ id: string; status: string }>("POST", `/api/jobs/${encodeURIComponent(id)}/cancel`, {}),
   // Per-user library import (Phase 2).
   libraryPlaylists: () => get<Playlist[]>("/api/library/playlists"),
   importLibrary: (body: { source: "liked" | "playlist"; playlist_id?: string; name?: string }) =>
@@ -454,6 +462,33 @@ export const api = {
     window.location.href = "/";
   },
 };
+
+// --- background jobs (Library Sync / Dedup engine) ---
+export interface JobEvent {
+  id: number; // the live-log cursor
+  job_id: string;
+  ts: string;
+  level: "info" | "warn" | "error" | "status" | "progress";
+  code: string | null;
+  message: string;
+  user_id: string | null;
+  data: Record<string, unknown> | null;
+}
+
+export interface JobSummary {
+  id: string;
+  kind: string;
+  lane: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  triggered_by: string;
+  progress_done: number | null;
+  progress_total: number | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  summary?: Record<string, unknown> | null;
+}
 
 export interface Me {
   id: string;
