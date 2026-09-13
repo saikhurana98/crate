@@ -465,6 +465,8 @@ export const api = {
       mode,
       backfill,
     }),
+  // 307 -> a fresh ~30 s Deezer clip for a tier song (usable as an <audio> src).
+  syncPreviewUrl: (spotifyId: string) => `/api/sync/preview/${encodeURIComponent(spotifyId)}`,
   syncMissing: (scope: string) =>
     get<{ scope: string; missing: number }>(`/api/sync/missing?scope=${encodeURIComponent(scope)}`),
   // Per-user library import (Phase 2).

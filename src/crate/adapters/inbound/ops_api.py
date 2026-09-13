@@ -177,6 +177,7 @@ def create_app(
     history_upload_max_bytes: int = DEFAULT_UPLOAD_MAX_BYTES,
     sync: SyncPort | None = None,
     sync_interval_s: float = 7200.0,
+    sync_preview: Callable[[str], str | None] | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -882,7 +883,9 @@ def create_app(
                 history_router(jobs, listening, uploads_dir, max_bytes=history_upload_max_bytes)
             )
         if sync is not None:
-            api.include_router(sync_router(jobs, sync, interval_s=sync_interval_s))
+            api.include_router(
+                sync_router(jobs, sync, interval_s=sync_interval_s, preview=sync_preview)
+            )
     app.include_router(api)
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")

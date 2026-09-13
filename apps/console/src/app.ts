@@ -3362,12 +3362,17 @@ function memberStat(tier: number, m: TierMember): string {
 }
 function memberRowHtml(tier: number, m: TierMember): string {
   const key = m.merge_key;
+  const preview =
+    m.spotify_id && !m.stats?.local
+      ? playBtn(`prev:${key}`, api.syncPreviewUrl(m.spotify_id), 26)
+      : `<span style="width:26px;flex-shrink:0"></span>`;
   const ctrl = m.in_library
     ? `<span style="font:500 9.5px 'JetBrains Mono';color:#5d6456;padding:4px 9px;border-radius:12px;border:1px solid #272c25;flex-shrink:0">in library</span>`
     : state.enqueued[key]
       ? `<span style="font:600 9.5px 'JetBrains Mono';color:#e9ede3;padding:4px 9px;border-radius:12px;background:rgba(233,237,227,.09);flex-shrink:0">✓ queued</span>`
       : `<button class="qbtn" data-act="queueMember" data-tier="${tier}" data-key="${esc(key)}" title="Download this song" style="width:28px;height:28px;border-radius:50%;border:1px solid #272c25;background:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#99a091;flex-shrink:0">${DL_ICON}</button>`;
   return `<div style="display:flex;align-items:center;gap:11px;padding:9px 2px;border-top:1px solid #1a1e19">
+    ${preview}
     <div style="flex:1;min-width:0"><div style="font:500 12.5px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.title ?? "?")}</div><div style="font:400 10.5px 'Instrument Sans';color:#99a091;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.artist ?? "")}</div></div>
     <span style="font:500 10px 'JetBrains Mono';color:#5d6456;flex-shrink:0;text-align:right">${esc(memberStat(tier, m))}</span>
     ${ctrl}
