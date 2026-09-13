@@ -432,6 +432,26 @@ export const api = {
   jobEvents: (id: string, after = 0) =>
     get<JobEvent[]>(`/api/jobs/${encodeURIComponent(id)}/events?after=${after}`),
   runJob: (kind: string) => send<{ id: string; existing: boolean }>("POST", "/api/jobs", { kind }),
+  // Streams a Spotify streaming-history export (zip or json) as the raw request
+  // body, queueing a history_import job for the logged-in user.
+  uploadHistory: async (file: File): Promise<{ id: string; bytes: number }> => {
+    const res = await fetch("/api/history/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    });
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        detail = ((await res.json()) as { detail?: string }).detail ?? detail;
+      } catch {
+        /* keep status line */
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as { id: string; bytes: number };
+  },
+  historyStatus: () => get<HistoryStatus>("/api/history/status"),
   cancelJob: (id: string) =>
     send<{ id: string; status: string }>("POST", `/api/jobs/${encodeURIComponent(id)}/cancel`, {}),
   // Per-user library import (Phase 2).
@@ -488,6 +508,17 @@ export interface JobSummary {
   finished_at?: string | null;
   error?: string | null;
   summary?: Record<string, unknown> | null;
+}
+
+// A user's listening ledger (the Sync page's history panel).
+export interface HistoryStatus {
+  plays: number;
+  export_plays: number;
+  polled_plays: number;
+  first_played_at: string | null;
+  last_played_at: string | null;
+  last_polled_at: string | null;
+  export: { start: string; end: string; imported_at: string } | null;
 }
 
 export interface Me {

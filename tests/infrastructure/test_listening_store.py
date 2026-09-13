@@ -61,3 +61,44 @@ def test_track_cache_keeps_known_isrc_and_preview_id(tmp_path: Path) -> None:
     assert row["isrc"] == "ISRC1" and row["title"] == "Song (new)"
     assert row["duration_s"] == 200 and row["deezer_id"] == "dz9"
     store.upsert_tracks([])  # no-op
+
+
+def test_export_replaces_a_colliding_polled_play_and_reimport_is_a_noop(tmp_path: Path) -> None:
+    store, a, _ = _setup(tmp_path)
+    polled = _play("2021-01-01T00:00:00Z")
+    assert store.add_plays(a, [polled], "recent") == 1
+    exported = Play(
+        polled.played_at, polled.merge_key, "spotify:track:x", "Artist", "Song", "LP", 200_000
+    )
+    assert store.add_plays(a, [exported], "export") == 1  # replaced, not ignored
+    row = store._conn.execute(
+        "SELECT source, ms_played FROM plays WHERE user_id=?", (a,)
+    ).fetchone()
+    assert (row["source"], row["ms_played"]) == ("export", 200_000)
+    assert store.add_plays(a, [exported], "export") == 0  # re-import changes nothing
+    assert store.add_plays(a, [polled], "recent") == 0  # a later poll never downgrades it
+    assert store.play_count(a) == 1
+
+
+def test_delete_recent_in_range_only_touches_polled_rows_in_span(tmp_path: Path) -> None:
+    store, a, b = _setup(tmp_path)
+    store.add_plays(a, [_play("2021-01-01T00:00:00Z", "In Span")], "recent")
+    store.add_plays(a, [_play("2021-01-01T00:00:03Z", "In Span Export")], "export")
+    store.add_plays(a, [_play("2025-01-01T00:00:00Z", "After")], "recent")
+    store.add_plays(b, [_play("2021-01-01T00:00:00Z", "Other User")], "recent")
+    assert store.delete_recent_in_range(a, "2020-01-01T00:00:00Z", "2022-01-01T00:00:00Z") == 1
+    assert store.play_count(a) == 2 and store.play_count(b) == 1
+
+
+def test_export_range_widens_across_uploads_and_status(tmp_path: Path) -> None:
+    store, a, _ = _setup(tmp_path)
+    assert store.history_status(a)["export"] is None
+    store.set_export_range(a, "2020-01-01T00:00:00Z", "2021-01-01T00:00:00Z")
+    store.set_export_range(a, "2019-06-01T00:00:00Z", "2020-06-01T00:00:00Z")
+    store.add_plays(a, [_play("2020-02-02T00:00:00Z")], "export")
+    store.add_plays(a, [_play("2026-09-01T00:00:00Z", "New")], "recent")
+    status = store.history_status(a)
+    assert status["export"]["start"] == "2019-06-01T00:00:00Z"
+    assert status["export"]["end"] == "2021-01-01T00:00:00Z"
+    assert (status["plays"], status["export_plays"], status["polled_plays"]) == (2, 1, 1)
+    assert status["first_played_at"] == "2020-02-02T00:00:00Z"
