@@ -26,6 +26,7 @@ from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from crate.adapters.inbound.ops_jobs import JobsPort, jobs_router
 from crate.application.auth import SERVICE_USER_ID, SESSION_TTL_S, User
 from crate.application.bulk import ResolvedBatch
 from crate.application.library_import import to_identity
@@ -40,6 +41,7 @@ from crate.composition.catalog import (
 )
 from crate.domain.candidate import Candidate
 from crate.domain.identity import IdentityHint, TrackIdentity, from_query
+from crate.domain.jobs import JobKind
 from crate.domain.matching import candidate_match
 from crate.infrastructure.sqlite.config_store import ConfigStore
 from crate.infrastructure.sqlite.store import RequestStore
@@ -158,6 +160,8 @@ def create_app(
     candidate_streamers: CandidateStreamersFn | None = None,
     source_validator: SourceValidatorFn | None = None,
     soulseek_browse: SoulseekBrowseFn | None = None,
+    jobs: JobsPort | None = None,
+    manual_job_kinds: frozenset[JobKind] = frozenset(),
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -890,6 +894,8 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    if jobs is not None:
+        api.include_router(jobs_router(jobs, manual_kinds=manual_job_kinds))
     app.include_router(api)
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")

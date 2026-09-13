@@ -110,11 +110,16 @@ def serve(  # pragma: no cover - network server loop
 
     from crate.adapters.inbound.slskd_shim import ShimState
     from crate.composition.sources import (
+        build_job_runner,
+        build_job_scheduler,
         build_maintenance,
         build_queue_worker,
         build_shim_download,
         build_sync_watcher,
+        job_lanes,
         prune_attempts,
+        prune_jobs,
+        reap_jobs,
         reap_orphans,
     )
     from crate.infrastructure.http_server.serve import run_server
@@ -134,7 +139,18 @@ def serve(  # pragma: no cover - network server loop
         pruned = prune_attempts()
         if pruned:
             typer.echo(f"pruned {pruned} attempt row(s) older than the retention window")
+        # Background jobs (Library Sync / Dedup): recover jobs a dead process left
+        # running, apply retention, then start one runner per lane + the scheduler.
+        failed, requeued = reap_jobs()
+        if failed or requeued:
+            typer.echo(f"jobs after restart: {failed} failed, {requeued} re-queued")
+        prune_jobs()
         threading.Thread(target=build_maintenance(), args=(stop,), daemon=True).start()
+        for lane in job_lanes():
+            threading.Thread(target=build_job_runner(lane), args=(stop,), daemon=True).start()
+        scheduler = build_job_scheduler()
+        if scheduler is not None:
+            threading.Thread(target=scheduler, args=(stop,), daemon=True).start()
     shim = ShimState(
         build_shim_download(), downloads, api_key=os.environ.get("CRATE_SERVE_API_KEY") or None
     )
