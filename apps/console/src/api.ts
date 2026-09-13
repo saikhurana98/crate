@@ -254,6 +254,41 @@ export interface ReviewCandidate {
   match: number;
 }
 
+// The subset of a candidate the download endpoint needs (what the server's
+// _candidate_from_body reads). A full ReviewCandidate satisfies it structurally.
+export type DownloadableCandidate = Pick<
+  ReviewCandidate,
+  | "source"
+  | "tier"
+  | "ref"
+  | "title"
+  | "artist"
+  | "album"
+  | "quality_label"
+  | "lossless"
+  | "duration_s"
+  | "size_bytes"
+>;
+
+// One file from the Soulseek browser (the Nicotine+ columns) plus the candidate
+// the download button echoes back to /review/{id}/download.
+export interface SlskRow {
+  username: string;
+  filename: string; // remote path (often Windows-style)
+  basename: string;
+  ext: string;
+  size_bytes: number;
+  bitrate_kbps: number; // 0 for lossless (slskd reports no bitrate for FLAC)
+  bit_depth: number | null;
+  sample_rate: number | null;
+  length_s: number | null;
+  lossless: boolean;
+  free_slot: boolean; // peer has a free upload slot right now
+  upload_speed: number; // bytes/s as reported by the peer
+  quality_label: string;
+  candidate: DownloadableCandidate;
+}
+
 // The advisory hint POST /review/{id}/identify returns ({} -> all null here).
 export interface ReviewHint {
   canonical_artist?: string | null;
@@ -359,7 +394,7 @@ export const api = {
   review: () => get<ReviewResponse>("/api/review"),
   reviewSearch: (id: string, q: string) =>
     send<ReviewCandidate[]>("POST", `/api/review/${encodeURIComponent(id)}/search`, { q }),
-  reviewDownload: (id: string, candidate: ReviewCandidate, force = false) =>
+  reviewDownload: (id: string, candidate: DownloadableCandidate, force = false) =>
     send<{ id: string; status: string; source: string }>(
       "POST",
       `/api/review/${encodeURIComponent(id)}/download`,
@@ -367,6 +402,10 @@ export const api = {
     ),
   reviewIdentify: (id: string) =>
     send<ReviewHint>("POST", `/api/review/${encodeURIComponent(id)}/identify`, {}),
+  // Nicotine+-style raw Soulseek browse for a review item: custom terms -> every
+  // file the network returned (no auto-selection). Slow (P2P search, up to ~30 s).
+  reviewSoulseekSearch: (id: string, q: string) =>
+    send<SlskRow[]>("POST", `/api/review/${encodeURIComponent(id)}/soulseek/search`, { q }),
   reviewConfirm: (id: string) =>
     send<{ id: string; status: string }>(
       "POST",

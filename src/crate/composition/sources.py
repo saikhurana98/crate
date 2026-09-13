@@ -310,6 +310,35 @@ def _arcod_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
     return search, download
 
 
+def _slskd_client() -> Any:  # pragma: no cover - IO wiring
+    from crate.infrastructure.soulseek.slskd_client import SlskdClient
+
+    return SlskdClient(
+        os.environ["CRATE_SLSKD_URL"],
+        os.environ["CRATE_SLSKD_API_KEY"],
+        os.environ["CRATE_SLSKD_DOWNLOADS"],
+    )
+
+
+def _soulseek_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    """Soulseek as a review candidate source. Its ``search`` is the title-gated
+    contract the other sources share; the console's review fan-out skips it (P2P
+    search is slow) and offers the raw Nicotine+-style browser instead. The
+    ``download`` half is what matters: fetch exactly the browsed file the user
+    picked (ref = peer + remote path + size)."""
+    from crate.adapters.sources import soulseek
+
+    client = _slskd_client()
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return soulseek.search_candidates(query, want, search=client.search)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return soulseek.download_candidate(cand, out_dir, want, download=client.download)
+
+    return search, download
+
+
 def _ytdlp_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
     def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
         return ytdlp.search_candidates(query, want)
@@ -320,14 +349,16 @@ def _ytdlp_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
     return search, download
 
 
-# Candidate-capable factories only (search -> ref -> download-by-id). Soulseek and
-# Telegram are intentionally absent (deferred, v1 non-goal).
+# Candidate-capable factories only (search -> ref -> download-by-id). Telegram is
+# intentionally absent (deferred, v1 non-goal). Soulseek is here for its
+# download-by-ref half (the review browser); the generic fan-out skips its search.
 _CANDIDATE_FACTORIES: dict[str, Callable[[], CandidateSource]] = {
     "qobuz": _qobuz_candidate,
     "monochrome": _monochrome_candidate,
     "deezer": _deezer_candidate,
     "arcod": _arcod_candidate,
     "ytdlp": _ytdlp_candidate,
+    "soulseek": _soulseek_candidate,
 }
 
 
@@ -349,7 +380,7 @@ def build_candidate_sources() -> dict[str, CandidateSource]:  # pragma: no cover
 
     Only enabled, candidate-capable sources are wired (same enable/stored-layout
     rules as ``build_tiers``); a factory that raises for missing creds is skipped.
-    Soulseek/Telegram are excluded by construction (deferred)."""
+    Telegram is excluded by construction (deferred)."""
     out: dict[str, CandidateSource] = {}
     for name in _enabled_source_names():
         factory = _CANDIDATE_FACTORIES.get(name)
@@ -1199,4 +1230,23 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         identify_hint=build_identifier(),
         candidate_streamers=build_candidate_streamers,
         source_validator=build_source_validator(),
+        soulseek_browse=build_soulseek_browse(),
     )
+
+
+def build_soulseek_browse() -> (
+    Callable[[str], list[dict[str, Any]]] | None
+):  # pragma: no cover - IO wiring
+    """The review tab's raw Soulseek browser (Nicotine+-style): term -> every file
+    the network returned, serialised with a ready-to-echo download candidate.
+    ``None`` when Soulseek isn't enabled / slskd isn't configured, so the panel
+    hides instead of erroring."""
+    if "soulseek" not in _enabled_source_names():
+        return None
+    try:
+        client = _slskd_client()
+    except Exception:  # missing slskd creds -> feature off
+        return None
+    from crate.adapters.sources import soulseek
+
+    return lambda term: soulseek.browse_rows(term, search=client.search)

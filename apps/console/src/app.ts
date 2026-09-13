@@ -19,6 +19,7 @@ import {
   type ReviewCandidate,
   type ReviewItem,
   type ReviewStats,
+  type SlskRow,
   type Source,
   type SpotifyTrack,
   type TierCfg,
@@ -175,6 +176,15 @@ interface State {
   reviewHint: Record<string, { artist: string | null; title: string | null; mbid: string | null }>; // item id -> fingerprint hint (key present => identify ran)
   reviewLastCand: Record<string, ReviewCandidate>; // item id -> candidate last chosen (for a force re-send)
   reviewDetail: Record<string, RequestDetail>; // item id -> full provenance (origin + identity + attempt trail), fetched on expand
+  // Soulseek browser (Nicotine+-style raw browse), keyed by review item id
+  slskOpen: Record<string, boolean>;
+  slskQ: Record<string, string>; // custom search terms
+  slskBusy: Record<string, boolean>;
+  slskRows: Record<string, SlskRow[]>; // last results (unfiltered)
+  slskErr: Record<string, string | null>;
+  slskLossless: Record<string, boolean>; // lossless-only filter
+  slskMinKbps: Record<string, number>; // lossy bitrate floor (0 = any)
+  slskQueued: Record<string, boolean>; // `${id}|${ref}` -> download queued
   me: Me | null; // the logged-in user (Login with Spotify), or null in single-user mode
   authRequired: boolean; // true when /api/me 401s => render the login gate instead of the app
 }
@@ -245,6 +255,14 @@ const state: State = {
   reviewHint: {},
   reviewLastCand: {},
   reviewDetail: {},
+  slskOpen: {},
+  slskQ: {},
+  slskBusy: {},
+  slskRows: {},
+  slskErr: {},
+  slskLossless: {},
+  slskMinKbps: {},
+  slskQueued: {},
   me: null,
   authRequired: false,
 };
@@ -453,6 +471,48 @@ async function rescanReview(id: string): Promise<void> {
   }
   state.reviewSearching[id] = false;
   render();
+}
+
+// ---------- Soulseek browser (Nicotine+-style raw browse per review item) ----------
+function toggleSlsk(id: string, seed: string): void {
+  const open = !state.slskOpen[id];
+  state.slskOpen = { ...state.slskOpen, [id]: open };
+  if (open && state.slskQ[id] == null) state.slskQ = { ...state.slskQ, [id]: seed };
+  render();
+  if (open && !state.slskRows[id] && !state.slskBusy[id]) void runSlsk(id);
+}
+async function runSlsk(id: string): Promise<void> {
+  const q = (state.slskQ[id] ?? "").trim();
+  if (q.length < 2 || state.slskBusy[id]) return;
+  state.slskBusy = { ...state.slskBusy, [id]: true };
+  state.slskErr = { ...state.slskErr, [id]: null };
+  render();
+  try {
+    const rows = await api.reviewSoulseekSearch(id, q);
+    state.slskRows = { ...state.slskRows, [id]: rows };
+  } catch (err) {
+    state.slskErr = { ...state.slskErr, [id]: (err as Error).message };
+  } finally {
+    state.slskBusy = { ...state.slskBusy, [id]: false };
+    render();
+  }
+}
+async function downloadSlsk(id: string, ref: string): Promise<void> {
+  const row = (state.slskRows[id] ?? []).find((r) => r.candidate.ref === ref);
+  const key = `${id}|${ref}`;
+  if (!row || state.slskQueued[key]) return;
+  state.slskQueued = { ...state.slskQueued, [key]: true };
+  render();
+  try {
+    await api.reviewDownload(id, row.candidate);
+    toast(`Soulseek download queued: ${row.basename} · ${row.username}`);
+    void loadReview().then(render);
+  } catch (err) {
+    state.slskQueued = { ...state.slskQueued, [key]: false };
+    toast(`Soulseek download failed: ${(err as Error).message}`);
+  } finally {
+    render();
+  }
 }
 
 async function downloadCand(id: string): Promise<void> {
@@ -2244,6 +2304,79 @@ function provenanceBlock(item: ReviewItem): string {
   return `<div style="background:#0c0e0c;border:1px solid #22261f;border-radius:14px;padding:12px 14px;margin-bottom:12px">${idLine}${originLine}${trail}</div>`;
 }
 
+// One browsed Soulseek file, Nicotine+ columns: file + peer/slot/speed, quality,
+// size, length, ext, and a download button that queues exactly this file.
+function slskRowHtml(id: string, r: SlskRow): string {
+  const key = `${id}|${r.candidate.ref}`;
+  const queued = !!state.slskQueued[key];
+  const qcol = r.lossless ? "#e9ede3" : "#7c8371";
+  const slot = r.free_slot
+    ? `<span title="free upload slot" style="color:#1db954">●</span>`
+    : `<span title="no free slot — you'll queue at the peer" style="color:#5d6456">○</span>`;
+  const speed = r.upload_speed ? `${Math.round(r.upload_speed / 1024)} KB/s` : "—";
+  const dl = queued
+    ? `<span style="font:600 10px 'JetBrains Mono';color:#e9ede3;padding:5px 9px;border-radius:12px;background:rgba(233,237,227,.09);white-space:nowrap">✓ queued</span>`
+    : `<button class="qbtn" data-act="downloadSlsk" data-id="${esc(id)}" data-ref="${esc(r.candidate.ref)}" title="Download this file from ${esc(r.username)}" style="width:28px;height:28px;border-radius:50%;border:1px solid #272c25;background:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;color:#99a091;transition:border-color .15s,color .15s">${DL_ICON}</button>`;
+  return `<div title="${esc(r.filename)}" style="display:grid;grid-template-columns:minmax(0,1fr) 112px 84px 56px 42px 34px;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid #1a1e19;font:400 10.5px 'JetBrains Mono'">
+      <div style="min-width:0">
+        <div style="font:500 12px 'Instrument Sans';color:#e9ede3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.basename)}</div>
+        <div style="color:#5d6456;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${slot} ${esc(r.username)} · ${speed}</div>
+      </div>
+      <span style="color:${qcol}">${esc(r.quality_label)}</span>
+      <span style="color:#99a091;text-align:right">${bytes(r.size_bytes)}</span>
+      <span style="color:#5d6456;text-align:right">${r.length_s ? dur(r.length_s) : "—"}</span>
+      <span style="color:#5d6456;text-align:right">${esc(r.ext.toUpperCase())}</span>
+      <span style="display:flex;justify-content:flex-end">${dl}</span>
+    </div>`;
+}
+
+// The collapsible Soulseek browser under a review item's candidate search: your
+// own search terms, lossless / bitrate filters (client-side, instant), and every
+// file peers returned — you pick, it downloads exactly that file.
+function slskPanelHtml(item: ReviewItem): string {
+  const id = item.id;
+  const open = !!state.slskOpen[id];
+  const head = `<button data-act="toggleSlsk" data-id="${esc(id)}" data-seed="${esc(item.query)}" class="ghost" style="margin-top:12px;width:100%;display:flex;align-items:center;gap:8px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:11px 14px;cursor:pointer;color:#e9ede3;font:600 12px 'Instrument Sans';transition:border-color .15s">
+      <span style="width:8px;height:8px;border-radius:50%;background:#f2c14e"></span>Soulseek browser
+      <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456;margin-left:4px">search the network with your own terms</span>
+      <span style="margin-left:auto;color:#5d6456">${open ? "▾" : "▸"}</span></button>`;
+  if (!open) return head;
+  const q = state.slskQ[id] ?? item.query;
+  const busy = !!state.slskBusy[id];
+  const err = state.slskErr[id];
+  const all = state.slskRows[id];
+  const lossless = !!state.slskLossless[id];
+  const minK = state.slskMinKbps[id] ?? 0;
+  const rows = (all ?? []).filter(
+    (r) => (!lossless || r.lossless) && (r.lossless || minK === 0 || r.bitrate_kbps >= minK),
+  );
+  const chip = (on: boolean, act: string, label: string, extra = ""): string =>
+    `<button data-act="${act}" data-id="${esc(id)}"${extra} style="border:1px solid ${on ? "rgba(233,237,227,.5)" : "#272c25"};background:${on ? "rgba(233,237,227,.09)" : "transparent"};border-radius:12px;color:${on ? "#e9ede3" : "#5d6456"};font:600 10px 'JetBrains Mono';padding:5px 10px;cursor:pointer;transition:.15s">${label}</button>`;
+  const controls = `<div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+      <div style="position:relative;flex:1;min-width:220px;display:flex;align-items:center">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:11px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+        <input data-inp="slskq" data-id="${esc(id)}" value="${esc(q)}" placeholder="custom search terms…" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:8px 12px 8px 32px"/>
+      </div>
+      <button data-act="runSlsk" data-id="${esc(id)}" ${busy ? "disabled" : ""} style="background:${busy ? "#181c17" : "#e9ede3"};border:none;border-radius:12px;color:${busy ? "#5d6456" : "#14170f"};font:600 11px 'Instrument Sans';padding:8px 14px;cursor:${busy ? "default" : "pointer"};flex-shrink:0">${busy ? "Searching…" : "Search"}</button>
+      ${chip(lossless, "slskLossless", "lossless only")}
+      ${[0, 192, 256, 320].map((k) => chip(minK === k, "slskMinKbps", k ? `≥${k}k` : "any kbps", ` data-kbps="${k}"`)).join("")}
+    </div>`;
+  let body: string;
+  if (err)
+    body = `<div style="padding:14px;font:400 11.5px 'JetBrains Mono';color:#ff6b58">Soulseek error: ${esc(err)}</div>`;
+  else if (busy && !all)
+    body = `<div style="display:flex;align-items:center;gap:10px;padding:16px 14px;font:400 11.5px 'JetBrains Mono';color:#99a091"><span style="width:12px;height:12px;border:1.5px solid #272c25;border-top-color:#e9ede3;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0"></span>Searching the Soulseek network… (can take ~30 s)</div>`;
+  else if (!all)
+    body = `<div style="padding:16px 14px;text-align:center;font:400 11.5px 'JetBrains Mono';color:#5d6456">Hit Search to browse every file peers are sharing for these terms.</div>`;
+  else if (!rows.length)
+    body = `<div style="padding:16px 14px;text-align:center;font:400 11.5px 'JetBrains Mono';color:#5d6456">${all.length ? "No files match the filters." : "No peers returned anything for those terms — try fewer or different words."}</div>`;
+  else
+    body = `<div style="display:grid;grid-template-columns:minmax(0,1fr) 112px 84px 56px 42px 34px;gap:10px;padding:8px 12px;font:600 9.5px 'JetBrains Mono';letter-spacing:.06em;color:#464d40"><span>FILE · PEER</span><span>QUALITY</span><span style="text-align:right">SIZE</span><span style="text-align:right">LENGTH</span><span style="text-align:right">EXT</span><span></span></div>
+      <div style="max-height:360px;overflow-y:auto">${rows.map((r) => slskRowHtml(id, r)).join("")}</div>
+      <div style="padding:7px 12px;border-top:1px solid #1a1e19;font:400 10px 'JetBrains Mono';color:#464d40">${rows.length} of ${all.length} files · best quality first</div>`;
+  return `${head}${controls}<div style="margin-top:10px;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;overflow:hidden">${body}</div>`;
+}
+
 function reviewItemHtml(item: ReviewItem): string {
   const id = item.id;
   const kind = item.kind;
@@ -2342,6 +2475,7 @@ function reviewItemHtml(item: ReviewItem): string {
             ? cands.map((c) => reviewCandRowHtml(id, item.duration_s, c)).join("")
             : `<div style="background:#0c0e0c;border:1px solid #272c25;border-radius:14px;padding:16px 14px;font:400 11.5px 'JetBrains Mono';color:#5d6456;text-align:center">No candidates yet — hit “search again”.</div>`
       }
+      ${slskPanelHtml(item)}
       <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
         <button data-act="downloadCand" data-id="${esc(id)}" ${dlDisabled ? "disabled" : ""} style="background:${dlBg};border:none;border-radius:14px;color:${dlColor};font:600 12.5px 'Instrument Sans';padding:11px 18px;cursor:${dlCursor};transition:.15s">${dlLabel}</button>
         <button data-act="dismissReview" data-id="${esc(id)}" style="background:none;border:1px solid #272c25;border-radius:14px;color:#5d6456;font:600 11px 'JetBrains Mono';padding:11px 15px;cursor:pointer;transition:border-color .15s,color .15s">${failed ? "dismiss" : "keep current"}</button>
@@ -2700,7 +2834,18 @@ function bindEvents(): void {
       }
     }
     else if (act === "downloadCand") void downloadCand(el.dataset.id!);
-    else if (act === "dismissReview") void dismissReview(el.dataset.id!);
+    else if (act === "toggleSlsk") toggleSlsk(el.dataset.id!, el.dataset.seed ?? "");
+    else if (act === "runSlsk") void runSlsk(el.dataset.id!);
+    else if (act === "downloadSlsk") void downloadSlsk(el.dataset.id!, el.dataset.ref!);
+    else if (act === "slskLossless") {
+      const sid = el.dataset.id!;
+      state.slskLossless = { ...state.slskLossless, [sid]: !state.slskLossless[sid] };
+      render();
+    } else if (act === "slskMinKbps") {
+      const sid = el.dataset.id!;
+      state.slskMinKbps = { ...state.slskMinKbps, [sid]: Number(el.dataset.kbps ?? 0) };
+      render();
+    } else if (act === "dismissReview") void dismissReview(el.dataset.id!);
     else if (act === "identifyReview") void identifyReview(el.dataset.id!);
     else if (act === "replaceAnyway") void replaceAnyway(el.dataset.id!);
     else if (act === "playClip") toggleClip(el.dataset.key!, el.dataset.url!);
@@ -2759,6 +2904,8 @@ function bindEvents(): void {
       state.bulkText = el.value; // capture without re-render so the textarea isn't clobbered
     } else if (el.dataset.inp === "reviewq") {
       state.reviewQ[el.dataset.id!] = el.value; // capture without re-render (keep focus)
+    } else if (el.dataset.inp === "slskq") {
+      state.slskQ[el.dataset.id!] = el.value; // capture without re-render (keep focus)
     } else if (el.dataset.inp === "srcsearch") {
       state.srcQuery = el.value; // capture without re-render (keep focus), debounce fan-out
       window.clearTimeout(srcTimer);
@@ -2773,6 +2920,10 @@ function bindEvents(): void {
       e.preventDefault();
       state.reviewQ[el.dataset.id!] = el.value; // ensure the latest value is used
       void rescanReview(el.dataset.id!);
+    } else if (el.dataset.inp === "slskq" && key === "Enter") {
+      e.preventDefault();
+      state.slskQ[el.dataset.id!] = el.value;
+      void runSlsk(el.dataset.id!);
     } else if (el.dataset.inp === "srcsearch" && key === "Enter") {
       e.preventDefault();
       window.clearTimeout(srcTimer);

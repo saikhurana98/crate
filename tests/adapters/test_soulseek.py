@@ -11,14 +11,22 @@ import pytest
 
 from crate.adapters.sources.soulseek import (
     SlskFile,
+    browse,
+    browse_rows,
+    download_candidate,
+    file_from_ref,
     format_rank,
     is_lossless,
     meets_bitrate_floor,
     parse_responses,
+    quality_label,
     rank_files,
+    search_candidates,
     search_variants,
     select_file,
     soulseek_download,
+    to_candidate,
+    to_ref,
 )
 from crate.domain.identity import TrackIdentity
 
@@ -436,3 +444,130 @@ def test_download_retries_reduced_query_when_full_query_empty(tmp_path: Path) ->
     )
     assert outcome.source == "soulseek"
     assert "weeknd blinding lights" in seen and "blinding lights" in seen  # retried
+
+
+# --- Review-tab Soulseek browser (Nicotine+-style raw browse + pick-by-file) ---
+BROWSE = [
+    {
+        "username": "lossyguy",
+        "uploadSpeed": 800,
+        "hasFreeUploadSlot": False,
+        "files": [
+            {
+                "filename": "@@a\\Music\\Track - Artist.mp3",
+                "size": 9_000_000,
+                "bitRate": 320,
+                "length": 240,
+            }
+        ],
+    },
+    {
+        "username": "flacguy",
+        "uploadSpeed": 3000,
+        "hasFreeUploadSlot": True,
+        "files": [
+            {
+                "filename": "@@b\\Music\\Artist - Track.flac",
+                "size": 30_000_000,
+                "bitRate": 0,
+                "bitDepth": 24,
+                "sampleRate": 96000,
+                "length": 241,
+            },
+            {
+                "filename": "@@b\\Music\\Unrelated Song.flac",
+                "size": 25_000_000,
+                "bitRate": 0,
+                "bitDepth": 16,
+                "sampleRate": 44100,
+                "length": 200,
+            },
+        ],
+    },
+]
+
+
+def test_browse_is_ungated_and_best_quality_first() -> None:
+    """The browser shows EVERYTHING peers returned (the user chose the words) —
+    including a file the title gate would drop — ordered by quality."""
+    files = browse("anything", search=lambda term: BROWSE)
+    names = [f.filename.rsplit("\\", 1)[-1] for f in files]
+    assert "Unrelated Song.flac" in names  # not title-gated
+    assert names[0] == "Artist - Track.flac"  # 24/96 FLAC leads
+    assert names[-1] == "Track - Artist.mp3"  # lossy last
+
+
+def test_browse_passes_term_verbatim() -> None:
+    seen: list[str] = []
+
+    def search(term: str) -> list[dict]:
+        seen.append(term)
+        return []
+
+    browse("the exact  words I typed", search=search)
+    assert seen == ["the exact  words I typed"]  # no variant fallback, no cleanup
+
+
+def test_quality_labels_match_nicotine_columns() -> None:
+    files = {f.filename.rsplit("\\", 1)[-1]: f for f in browse("x", search=lambda t: BROWSE)}
+    assert quality_label(files["Artist - Track.flac"]) == "FLAC 24/96"
+    assert quality_label(files["Unrelated Song.flac"]) == "FLAC 16/44.1"
+    assert quality_label(files["Track - Artist.mp3"]) == "MP3 320 kbps"
+
+
+def test_ref_roundtrip_preserves_windows_path() -> None:
+    f = browse("x", search=lambda t: BROWSE)[0]
+    back = file_from_ref(to_ref(f))
+    assert (back.username, back.filename, back.size) == (f.username, f.filename, f.size)
+    assert "\\" in back.filename  # backslashes survive the JSON ref
+
+
+def test_to_candidate_and_browse_rows_shape() -> None:
+    f = browse("x", search=lambda t: BROWSE)[0]
+    c = to_candidate(f)
+    assert c.source == "soulseek" and c.tier == 2 and c.lossless is True
+    assert c.title == "Artist - Track" and c.artist == "Artist"
+    assert c.size_bytes == 30_000_000 and c.duration_s == 241
+
+    rows = browse_rows("x", search=lambda t: BROWSE)
+    top = rows[0]
+    assert top["username"] == "flacguy" and top["basename"] == "Artist - Track.flac"
+    assert top["ext"] == "flac" and top["free_slot"] is True and top["upload_speed"] == 3000
+    assert top["quality_label"] == "FLAC 24/96" and top["bitrate_kbps"] == 0
+    # the echoed candidate carries exactly what /review/{id}/download rebuilds
+    assert set(top["candidate"]) == {
+        "source",
+        "tier",
+        "ref",
+        "title",
+        "artist",
+        "album",
+        "quality_label",
+        "lossless",
+        "duration_s",
+        "size_bytes",
+    }
+    assert file_from_ref(top["candidate"]["ref"]).username == "flacguy"
+
+
+def test_search_candidates_is_title_gated_unlike_browse() -> None:
+    cands = search_candidates("Artist Track", search=lambda t: BROWSE)
+    titles = {c.title for c in cands}
+    assert "Unrelated Song" not in titles  # generic contract still gates on title
+    assert titles  # but the real matches are there
+
+
+def test_download_candidate_fetches_exactly_the_picked_file(tmp_path: Path) -> None:
+    f = browse("x", search=lambda t: BROWSE)[0]
+    cand = to_candidate(f)
+    got: list[SlskFile] = []
+
+    def download(file: SlskFile, out_dir: Path) -> Path:
+        got.append(file)
+        return out_dir / "Artist - Track.flac"
+
+    times = iter([10.0, 12.5])
+    outcome = download_candidate(cand, tmp_path, download=download, clock=lambda: next(times))
+    assert got[0].username == "flacguy" and got[0].filename == f.filename
+    assert outcome.source == "soulseek" and outcome.tier == 2
+    assert outcome.elapsed_s == 2.5 and outcome.path.name == "Artist - Track.flac"
