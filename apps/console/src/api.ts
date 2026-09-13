@@ -454,6 +454,19 @@ export const api = {
   historyStatus: () => get<HistoryStatus>("/api/history/status"),
   cancelJob: (id: string) =>
     send<{ id: string; status: string }>("POST", `/api/jobs/${encodeURIComponent(id)}/cancel`, {}),
+  // Library Sync page: tiers, playlists, schedule; toggles; missing counts.
+  syncOverview: () => get<SyncOverview>("/api/sync/overview"),
+  syncMembers: (tier: number, limit = 200, offset = 0) =>
+    get<TierMember[]>(`/api/sync/tiers/${tier}/members?limit=${limit}&offset=${offset}`),
+  syncSetTier: (tier: number, auto_sync: boolean, backfill = false) =>
+    send<SyncToggleResult>("PUT", `/api/sync/tiers/${tier}`, { auto_sync, backfill }),
+  syncSetPlaylist: (id: string, mode: SyncMode, backfill = false) =>
+    send<SyncToggleResult>("PUT", `/api/sync/playlists/${encodeURIComponent(id)}`, {
+      mode,
+      backfill,
+    }),
+  syncMissing: (scope: string) =>
+    get<{ scope: string; missing: number }>(`/api/sync/missing?scope=${encodeURIComponent(scope)}`),
   // Per-user library import (Phase 2).
   libraryPlaylists: () => get<Playlist[]>("/api/library/playlists"),
   importLibrary: (body: { source: "liked" | "playlist"; playlist_id?: string; name?: string }) =>
@@ -530,3 +543,78 @@ export interface Playlist {
   owner_id?: string | null;
 }
 
+
+// --- Library Sync (the Sync page) ---
+export type SyncMode = "inherit" | "on" | "off";
+
+export interface SyncTierCard {
+  tier: number; // 1 playlists & liked | 2 long-term constants | 3 short-term flings
+  label: string;
+  count: number;
+  in_library: number;
+  approximate: boolean; // from top-tracks lists until the history export is in
+  auto_sync: boolean;
+  enabled_at: string | null;
+}
+
+export interface SyncPlaylist {
+  spotify_id: string; // "liked" = Liked Songs
+  name: string;
+  owner_id: string | null;
+  owned: boolean;
+  generated: boolean; // Spotify-made (Discover Weekly, mixes)
+  image: string | null;
+  track_count: number;
+  in_library_count: number;
+  sync_mode: SyncMode;
+  auto_sync: boolean; // effective (inherit resolved)
+  last_checked_at: string | null;
+  last_changed_at: string | null;
+}
+
+export interface SyncJobBrief {
+  id: string;
+  status: JobSummary["status"];
+  triggered_by: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  summary: Record<string, unknown> | null;
+  error: string | null;
+  progress_done: number | null;
+  progress_total: number | null;
+}
+
+export interface SyncOverview {
+  tiers: SyncTierCard[];
+  playlists: SyncPlaylist[];
+  last_sync: SyncJobBrief | null;
+  running: SyncJobBrief | null;
+  next_run_at: string | null;
+  interval_s: number;
+}
+
+export interface TierMember {
+  merge_key: string;
+  spotify_id: string | null;
+  artist: string | null;
+  title: string | null;
+  score: number;
+  approximate: boolean;
+  first_seen_at: string;
+  in_library: boolean;
+  stats: {
+    plays?: number;
+    span?: string;
+    burst_plays?: number;
+    burst_end?: string;
+    rank?: number;
+    local?: boolean;
+  };
+}
+
+export interface SyncToggleResult {
+  auto_sync: boolean;
+  missing: number;
+  baselined: number;
+}
