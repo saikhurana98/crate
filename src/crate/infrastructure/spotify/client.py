@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
@@ -126,6 +126,14 @@ def _min_track(track: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _split_next(url: str) -> tuple[str, dict[str, str]]:
+    """A ``next`` link as ``(base, params)``. Transports like httpx *replace* a
+    URL's query string with an explicit ``params`` dict, even an empty one, so
+    following ``next`` with ``params={}`` silently refetched page 1."""
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(query="")), dict(parse_qsl(parts.query))
+
+
 def _track(item: dict[str, Any]) -> dict[str, Any]:
     artists = ", ".join(a["name"] for a in item.get("artists", []) if a.get("name"))
     album = item.get("album") or {}
@@ -182,6 +190,11 @@ class SpotifyClient:
                 self._sleep(wait)
         raise AssertionError("unreachable")  # pragma: no cover
 
+    def _next_page(self, nxt: Any, headers: dict[str, str]) -> Any:
+        """Fetch a ``next`` pagination link, keeping its offset/limit."""
+        base, params = _split_next(str(nxt))
+        return self._get(base, params, headers)
+
     def _bearer(self) -> str:
         if self._token is not None and self._now() < self._expires_at:
             return self._token
@@ -236,7 +249,7 @@ class SpotifyClient:
         collect(tracks_obj.get("items") or [])
         nxt = tracks_obj.get("next")
         while nxt and len(tracks) < max_tracks:
-            page = self._get(str(nxt), {}, headers)
+            page = self._next_page(nxt, headers)
             collect((page or {}).get("items") or [])
             nxt = (page or {}).get("next")
         return {"name": name, "owner": owner, "tracks": tracks[:max_tracks]}
@@ -344,7 +357,7 @@ class SpotifyClient:
                 if len(out) >= max_tracks:
                     return out
             nxt = (data or {}).get("next")
-            data = self._get(str(nxt), {}, headers) if nxt else None
+            data = self._next_page(nxt, headers) if nxt else None
         return out
 
     def saved_tracks(self, access_token: str, max_tracks: int = 2000) -> list[dict[str, Any]]:
@@ -396,7 +409,7 @@ class SpotifyClient:
                 if len(out) >= max_playlists:
                     return out
             nxt = (data or {}).get("next")
-            data = self._get(str(nxt), {}, headers) if nxt else None
+            data = self._next_page(nxt, headers) if nxt else None
         return out
 
     # --- Library Sync reads (top tracks / play ledger / metadata / albums) ---
@@ -486,7 +499,7 @@ class SpotifyClient:
                 if track is not None:
                     tracks.append(track)
             nxt = page.get("next")
-            page = self._get(str(nxt), {}, headers) if nxt else None
+            page = self._next_page(nxt, headers) if nxt else None
         return {
             "name": str(data.get("name") or "Album"),
             "artist": artist,
