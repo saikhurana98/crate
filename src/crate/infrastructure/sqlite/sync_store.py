@@ -1,16 +1,18 @@
-"""SQLite storage for Library Sync's playlist sync-state (``sync_playlists`` +
-their last-fetched items)."""
+"""SQLite storage for Library Sync: playlist sync-state (``sync_playlists`` +
+their last-fetched items) and the auto-sync ledger + queue."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from crate.application.library_import import to_identity
 from crate.application.library_sync import SYNC_MODES, track_key
 from crate.infrastructure.sqlite.db import now_iso
+from crate.infrastructure.sqlite.store import RequestStore
 
 _ITEM_FIELDS = ("id", "artist", "title", "album", "isrc", "duration_s", "query", "art")
 
@@ -126,3 +128,76 @@ class SqlitePlaylistSyncStore:
                 (mode, user_id, spotify_id),
             )
         return cur.rowcount == 1
+
+
+class SqliteSyncQueue:
+    """Auto-sync's ledger and enqueue. A ``(user, scope, key)`` is queued or
+    baselined at most once. Queued requests go into one ``origin='sync'`` batch
+    per scope per run, attributed to the user, at priority 1."""
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        requests: RequestStore,
+        *,
+        lock: threading.Lock | None = None,
+    ) -> None:
+        self._conn = conn
+        self._requests = requests
+        self._lock = lock or threading.Lock()
+
+    def ledger_keys(self, user_id: str, scope: str) -> set[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT track_key FROM sync_ledger WHERE user_id=? AND scope=?", (user_id, scope)
+            ).fetchall()
+        return {str(r[0]) for r in rows}
+
+    def queued_keys(self, user_id: str) -> set[str]:
+        """Keys auto-sync already queued for this user, under any scope."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT track_key FROM sync_ledger "
+                "WHERE user_id=? AND request_id IS NOT NULL",
+                (user_id,),
+            ).fetchall()
+        return {str(r[0]) for r in rows}
+
+    def baseline(self, user_id: str, scope: str, keys: Iterable[str]) -> int:
+        """Record ``keys`` as seen without queueing them. Returns how many were new."""
+        now = now_iso()
+        rows = [(user_id, scope, key, now) for key in sorted(set(keys))]
+        with self._lock:
+            cur = self._conn.executemany(
+                "INSERT OR IGNORE INTO sync_ledger(user_id, scope, track_key, request_id, "
+                "enqueued_at) VALUES (?, ?, ?, NULL, ?)",
+                rows,
+            )
+        return max(cur.rowcount, 0)
+
+    def enqueue_tracks(
+        self,
+        user_id: str,
+        scope: str,
+        name: str,
+        items: Sequence[tuple[str, Mapping[str, Any]]],
+    ) -> int:
+        if not items:
+            return 0
+        bid = self._requests.create_batch(name, "sync", name, len(items), user_id=user_id)
+        for key, track in items:
+            fallback = f"{track.get('artist') or ''} {track.get('title') or ''}".strip()
+            rid = self._requests.enqueue(
+                str(track.get("query") or fallback),
+                bid,
+                to_identity(dict(track)),
+                user_id=user_id,
+                priority=1,
+            )
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO sync_ledger(user_id, scope, track_key, request_id, "
+                    "enqueued_at) VALUES (?, ?, ?, ?, ?)",
+                    (user_id, scope, key, rid, now_iso()),
+                )
+        return len(items)

@@ -31,7 +31,9 @@ from crate.adapters.inbound.ops_jobs import JobsPort, jobs_router, mount_jobs_ws
 from crate.adapters.inbound.ops_sync import (
     DEFAULT_UPLOAD_MAX_BYTES,
     ListeningPort,
+    SyncPort,
     history_router,
+    sync_router,
 )
 from crate.application.auth import SERVICE_USER_ID, SESSION_TTL_S, User
 from crate.application.bulk import ResolvedBatch
@@ -173,6 +175,8 @@ def create_app(
     listening: ListeningPort | None = None,
     uploads_dir: Path | None = None,
     history_upload_max_bytes: int = DEFAULT_UPLOAD_MAX_BYTES,
+    sync: SyncPort | None = None,
+    sync_interval_s: float = 7200.0,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -877,6 +881,8 @@ def create_app(
             api.include_router(
                 history_router(jobs, listening, uploads_dir, max_bytes=history_upload_max_bytes)
             )
+        if sync is not None:
+            api.include_router(sync_router(jobs, sync, interval_s=sync_interval_s))
     app.include_router(api)
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")

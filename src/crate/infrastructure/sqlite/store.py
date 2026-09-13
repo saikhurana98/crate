@@ -119,20 +119,22 @@ class RequestStore:
         identity: TrackIdentity | None = None,
         *,
         user_id: str | None = None,
+        priority: int = 0,
     ) -> str:
         """Record a console-requested download as ``queued``; the shim's queue
         worker claims and runs it. ``batch_id`` groups it into a bulk batch;
         ``identity`` persists the structured artist/title/ISRC/duration columns;
         ``user_id`` attributes it to the requesting user (defaults to the
-        synthetic service user for automation/CLI). Returns the new request id."""
+        synthetic service user for automation/CLI). ``priority`` 1 marks auto-sync
+        work, which yields to the same user's own requests. Returns the new request id."""
         rid = _new_id()
         artist, title, isrc, duration_s = _identity_cols(identity)
         with self._lock:
             self._conn.execute(
                 "INSERT INTO requests"
                 "(id, query, requested_via, status, created_at, batch_id, "
-                "artist, title, isrc, duration_s, user_id) "
-                "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)",
+                "artist, title, isrc, duration_s, user_id, priority) "
+                "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     rid,
                     query,
@@ -144,6 +146,7 @@ class RequestStore:
                     isrc,
                     duration_s,
                     user_id or SERVICE_USER_ID,
+                    priority,
                 ),
             )
             self._invalidate_stats()
@@ -163,7 +166,8 @@ class RequestStore:
         **Fair scheduling:** serve the user whose last claim is oldest
         (round-robin across users, NULLS-FIRST for never-served users), then FIFO
         within that user — so one user's 500-track import can't starve everyone
-        else. Records the claim in ``owner_claims`` inside the same locked txn.
+        else. Within a user, their own requests (priority 0) go before auto-sync
+        (priority 1). Records the claim in ``owner_claims`` inside the same locked txn.
         Returns ``{"id", "query", "identity"}`` or ``None`` when nothing is
         claimable; ``identity`` is the row's :class:`TrackIdentity`."""
         with self._lock:
@@ -171,7 +175,8 @@ class RequestStore:
                 "SELECT r.id, r.query, r.artist, r.title, r.isrc, r.duration_s, r.user_id "
                 "FROM requests r LEFT JOIN owner_claims oc ON oc.user_id = r.user_id "
                 f"WHERE {self._CLAIMABLE} "
-                "ORDER BY COALESCE(oc.last_claim_at, '') ASC, r.created_at ASC LIMIT 1"
+                "ORDER BY COALESCE(oc.last_claim_at, '') ASC, r.priority ASC, r.created_at ASC "
+                "LIMIT 1"
             ).fetchone()
             if row is None:
                 return None
