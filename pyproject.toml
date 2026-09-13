@@ -66,6 +66,7 @@ max-args = 9
 # FastAPI idioms: Depends/Body/Query in arg defaults (B008); route registration
 # in one factory is inherently long (PLR0915).
 "src/crate/adapters/inbound/ops_api.py" = ["TID251", "B008", "PLR0915", "PLR0913"]
+"src/crate/adapters/inbound/ops_jobs.py" = ["TID251", "B008"]
 "src/crate/infrastructure/**" = ["TID251"]
 "src/crate/composition/**" = ["TID251", "PLC0415"]
 "src/crate/cli/**" = ["TID251", "PLC0415"]

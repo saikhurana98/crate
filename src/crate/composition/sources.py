@@ -764,6 +764,7 @@ def build_maintenance() -> Callable[[threading.Event], None]:  # pragma: no cove
     startup prune is done separately in ``serve`` (like ``reap_orphans``); this
     thread handles the recurring pass so a long-lived server keeps retention."""
     store = build_recorder("serve")
+    jobs = build_job_store()
     retention_days = _retention_days()
     interval = float(os.environ.get("CRATE_MAINTENANCE_INTERVAL", "86400"))
 
@@ -771,6 +772,7 @@ def build_maintenance() -> Callable[[threading.Event], None]:  # pragma: no cove
         while not stop.wait(interval):  # first sleeps, then prunes (startup prune runs in serve)
             try:
                 store.prune_attempts(retention_days)
+                _prune_jobs(jobs)
             except Exception:  # never let a maintenance hiccup kill the thread
                 continue
 
@@ -1262,6 +1264,8 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         candidate_streamers=build_candidate_streamers,
         source_validator=build_source_validator(),
         soulseek_browse=build_soulseek_browse(),
+        jobs=build_job_store(),
+        manual_job_kinds=manual_job_kinds(),
     )
 
 
@@ -1281,3 +1285,124 @@ def build_soulseek_browse() -> (
     from crate.adapters.sources import soulseek
 
     return lambda term: soulseek.browse_rows(term, search=client.search)
+
+
+# --- background jobs engine (Library Sync + Dedup) ---
+def build_job_store() -> Any:  # pragma: no cover - IO wiring
+    """A :class:`SqliteJobStore` on its own connection to the shared WAL DB."""
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.job_store import SqliteJobStore
+
+    return SqliteJobStore(connect(db_path()))
+
+
+def _job_handlers() -> dict[Any, Any]:  # pragma: no cover - IO wiring
+    """``JobKind -> handler`` for every kind implemented so far. Features register
+    here as they land (listen_poll, library_sync, dedup_scan, …). A kind with no
+    handler is never scheduled and can't be triggered by hand."""
+    return {}
+
+
+# Kinds a user may start with "Run now" (history import has its own upload flow;
+# destructive dedup kinds go through their admin-gated endpoints).
+_MANUAL_JOB_KINDS = ("library_sync", "dedup_scan")
+
+
+def manual_job_kinds() -> frozenset[Any]:  # pragma: no cover - IO wiring
+    from crate.domain.jobs import JobKind
+
+    handlers = _job_handlers()
+    return frozenset(JobKind(k) for k in _MANUAL_JOB_KINDS if JobKind(k) in handlers)
+
+
+def _job_schedules(handlers: dict[Any, Any]) -> list[Any]:  # pragma: no cover - env read
+    from crate.application.jobs import Schedule
+    from crate.domain.jobs import JobKind
+
+    intervals = {
+        JobKind.LIBRARY_SYNC: float(os.environ.get("CRATE_LIBRARY_SYNC_INTERVAL", "7200")),
+        JobKind.LISTEN_POLL: float(os.environ.get("CRATE_LISTEN_POLL_INTERVAL", "1800")),
+        JobKind.DEDUP_SCAN: float(os.environ.get("CRATE_DEDUP_SCAN_INTERVAL", "86400")),
+    }
+    return [Schedule(k, v) for k, v in intervals.items() if k in handlers and v > 0]
+
+
+def job_lanes() -> list[Any]:  # pragma: no cover - IO wiring
+    """Lanes that have at least one registered handler (no idle runner threads)."""
+    from crate.domain.jobs import LANE_OF
+
+    lanes = {LANE_OF[k] for k in _job_handlers()}
+    return sorted(lanes, key=lambda lane: lane.value)
+
+
+def build_job_runner(lane: Any) -> Callable[[threading.Event], None]:  # pragma: no cover
+    """One lane's runner loop: claim the oldest queued job in the lane and run it
+    to completion. Never dies on a job or store error — it waits and retries."""
+    from crate.application.jobs import run_claimed
+
+    store = build_job_store()
+    handlers = _job_handlers()
+    poll = float(os.environ.get("CRATE_JOB_POLL", "2.0"))
+
+    def loop(stop: threading.Event) -> None:
+        while not stop.is_set():
+            try:
+                job = store.claim_next(lane.value)
+            except Exception:  # DB busy / transient — back off and retry
+                stop.wait(poll)
+                continue
+            if job is None:
+                stop.wait(poll)
+                continue
+            try:
+                run_claimed(job, handlers, store)
+            except Exception:  # a store error while finishing — keep the lane alive
+                continue
+
+    return loop
+
+
+def build_job_scheduler() -> Callable[[threading.Event], None] | None:  # pragma: no cover
+    """Every ``CRATE_SCHEDULER_TICK`` s (default 60), enqueue each scheduled kind
+    that's due. Last-run times come from the DB, so restarts don't lose the
+    schedule or burst. ``None`` when nothing is schedulable yet."""
+    from datetime import UTC, datetime
+
+    from crate.application.jobs import due_kinds
+
+    handlers = _job_handlers()
+    schedules = _job_schedules(handlers)
+    if not schedules:
+        return None
+    store = build_job_store()
+    tick = float(os.environ.get("CRATE_SCHEDULER_TICK", "60"))
+
+    def loop(stop: threading.Event) -> None:
+        while True:
+            try:
+                for kind in due_kinds(schedules, store.last_created, datetime.now(UTC)):
+                    store.enqueue(kind, triggered_by="schedule")
+            except Exception:  # never let one bad tick kill the scheduler
+                pass
+            if stop.wait(tick):
+                return
+
+    return loop
+
+
+def reap_jobs() -> tuple[int, int]:  # pragma: no cover - IO wiring
+    """Startup recovery for jobs a dead ``serve`` left running (see reap_running)."""
+    failed, requeued = build_job_store().reap_running()
+    return int(failed), int(requeued)
+
+
+def _prune_jobs(store: Any) -> int:  # pragma: no cover - IO wiring
+    """Retention: finished jobs + their logs after 30 days (listen_poll: 7)."""
+    from crate.domain.jobs import JobKind
+
+    days = int(os.environ.get("CRATE_JOB_RETENTION_DAYS", "30"))
+    return int(store.prune(days, overrides={JobKind.LISTEN_POLL: min(days, 7)}))
+
+
+def prune_jobs() -> int:  # pragma: no cover - IO wiring
+    return _prune_jobs(build_job_store())
