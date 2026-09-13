@@ -82,3 +82,11 @@ def test_set_admin_grants_revokes_and_survives_relogin(tmp_path: Path) -> None:
     revoked = repo.set_admin(user.id, False)
     assert revoked is not None and revoked.is_admin is False
     assert repo.set_admin("nope", True) is None
+
+
+def test_list_users_excludes_the_service_user_by_default(tmp_path: Path) -> None:
+    repo = SqliteUserRepository(connect(tmp_path / "u.db"))
+    repo.upsert_spotify_user(_profile("s1", "Sai"))
+    repo.upsert_spotify_user(_profile("s2", "Friend"))
+    assert [u.display_name for u in repo.list_users()] == ["Sai", "Friend"]
+    assert "service" in {u.id for u in repo.list_users(include_service=True)}

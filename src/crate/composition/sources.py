@@ -985,6 +985,17 @@ class SpotifyUser:
         unchanged-playlist short-circuit)."""
         return self._client.user_playlist_snapshot(self._bearer(user_id), playlist_id)
 
+    # --- Library Sync: listening ledger + tier reads ---
+    def recent_plays_after(
+        self, user_id: str, after_ms: int | None
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """This user's plays after ``after_ms`` + the next cursor (the ledger poll)."""
+        return self._client.recently_played_after(self._bearer(user_id), after_ms)
+
+    def top_tracks(self, user_id: str, time_range: str, limit: int = 100) -> list[dict[str, Any]]:
+        """This user's top tracks for a time range (needs ``user-top-read``)."""
+        return self._client.top_tracks(self._bearer(user_id), time_range, limit)
+
 
 def build_spotify_user(
     config: _ConfigStore, store: _RequestStore
@@ -1300,7 +1311,36 @@ def _job_handlers() -> dict[Any, Any]:  # pragma: no cover - IO wiring
     """``JobKind -> handler`` for every kind implemented so far. Features register
     here as they land (listen_poll, library_sync, dedup_scan, …). A kind with no
     handler is never scheduled and can't be triggered by hand."""
-    return {}
+    from crate.domain.jobs import JobKind
+
+    return {JobKind.LISTEN_POLL: _listen_poll_job}
+
+
+def _listen_poll_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
+    """``listen_poll``: append every linked user's recently-played plays to the
+    ledger (orchestration in ``application.listening.run_listen_poll``). Builds
+    its collaborators per run on one connection it closes afterwards."""
+    from crate.application.listening import run_listen_poll
+    from crate.infrastructure.crypto import SecretBox
+    from crate.infrastructure.sqlite.config_store import ConfigStore
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.listening_store import SqliteListeningStore
+    from crate.infrastructure.sqlite.store import RequestStore
+    from crate.infrastructure.sqlite.user_store import SqliteUserRepository
+
+    if not os.environ.get("CRATE_DB"):
+        return {"skipped": "no CRATE_DB"}
+    conn = connect(db_path())
+    try:
+        config = ConfigStore(conn, SecretBox.from_keyfile(_keyfile()))
+        reader = build_spotify_user(config, RequestStore(conn))
+        if reader is None:
+            ctx.warn("Spotify client credentials not configured; skipping", code="no_spotify")
+            return {"skipped": "spotify not configured"}
+        users = SqliteUserRepository(conn).list_users()
+        return run_listen_poll(ctx, users, reader, SqliteListeningStore(conn))
+    finally:
+        conn.close()
 
 
 # Kinds a user may start with "Run now" (history import has its own upload flow;
