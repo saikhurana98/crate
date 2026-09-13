@@ -248,11 +248,11 @@ def _track_obj(name: str) -> dict[str, Any]:
 
 def test_saved_tracks_paginates() -> None:
     pages = {
-        "https://api.spotify.com/v1/me/tracks": {
+        None: {
             "items": [{"track": _track_obj("One")}],
             "next": "https://api.spotify.com/v1/me/tracks?offset=50",
         },
-        "https://api.spotify.com/v1/me/tracks?offset=50": {
+        "50": {
             "items": [{"track": _track_obj("Two")}, {"track": {"name": ""}}],  # blank skipped
             "next": None,
         },
@@ -260,7 +260,8 @@ def test_saved_tracks_paginates() -> None:
 
     def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
         assert headers["Authorization"] == "Bearer AC"
-        return pages[url]
+        assert url == "https://api.spotify.com/v1/me/tracks"  # the query travels in params
+        return pages[params.get("offset")]
 
     tracks = _oauth_client(get=get).saved_tracks("AC")
     assert [t["title"] for t in tracks] == ["One", "Two"]
@@ -286,19 +287,21 @@ def test_user_playlist_tracks_uses_playlist_endpoint() -> None:
 
 def test_current_user_playlists_shapes_and_paginates() -> None:
     pages = {
-        "https://api.spotify.com/v1/me/playlists": {
+        None: {
             "items": [
                 {"id": "p1", "name": "Focus", "tracks": {"total": 12}, "images": []},
                 {"id": None, "name": "skip"},  # no id -> skipped
             ],
             "next": "https://api.spotify.com/v1/me/playlists?offset=50",
         },
-        "https://api.spotify.com/v1/me/playlists?offset=50": {
+        "50": {
             "items": [{"id": "p2", "name": "Chill", "tracks": {"total": 5}, "images": []}],
             "next": None,
         },
     }
-    pls = _oauth_client(get=lambda url, *_: pages[url]).current_user_playlists("AC")
+    pls = _oauth_client(
+        get=lambda _u, params, _h: pages[params.get("offset")]
+    ).current_user_playlists("AC")
     assert [(p["id"], p["name"], p["count"]) for p in pls] == [
         ("p1", "Focus", 12),
         ("p2", "Chill", 5),
@@ -655,3 +658,36 @@ def test_album_tracks_follows_pagination() -> None:
     album = client.album_tracks("AL1")
     assert album["name"] == "LP" and album["artist"] == "Band"
     assert [t["title"] for t in album["tracks"]] == ["Song 1", "Song 2"]  # nameless dropped
+
+
+def _httpx_style_get(pages: dict[str, list[dict[str, Any]]], per_page: int = 2) -> Any:
+    """A fake ``get_json`` that builds the URL the way the real httpx transport
+    does (an explicit ``params`` REPLACES the URL's query), then serves the page
+    at that URL's ``offset``, with a ``next`` link like Spotify's."""
+    import httpx
+
+    def get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        real = httpx.Request("GET", url, params=params).url
+        base = str(real).split("?", 1)[0]
+        offset = int(real.params.get("offset", "0"))
+        items, end = pages[base], offset + per_page
+        nxt = f"{base}?offset={end}&limit={per_page}" if end < len(pages[base]) else None
+        return {"items": items[offset:end], "next": nxt}
+
+    return get
+
+
+def test_next_links_keep_their_offset_through_an_httpx_style_transport() -> None:
+    # Regression: next links were fetched with params={}, which httpx treats as
+    # "replace the query", so every page after the first was page 1 again.
+    liked = [{"track": _track_obj(f"L{i}")} for i in range(5)]
+    playlists = [{"id": f"p{i}", "name": f"P{i}", "tracks": {"total": 1}} for i in range(5)]
+    get = _httpx_style_get(
+        {
+            "https://api.spotify.com/v1/me/tracks": liked,
+            "https://api.spotify.com/v1/me/playlists": playlists,
+        }
+    )
+    client = _oauth_client(get=get)
+    assert [t["title"] for t in client.saved_tracks("AC")] == [f"L{i}" for i in range(5)]
+    assert [p["id"] for p in client.current_user_playlists("AC")] == [f"p{i}" for i in range(5)]
