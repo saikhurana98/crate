@@ -61,6 +61,9 @@ StreamResolver = Callable[[str], str]
 CandidateStreamersFn = Callable[[], dict[str, StreamResolver]]
 # Credential test: source name -> {ok, detail, quality_label, elapsed_s}.
 SourceValidatorFn = Callable[[str, "str | None"], dict[str, Any]]
+# Raw Soulseek browser (Nicotine+-style): search term -> every file the network
+# returned, each row carrying a ready-to-echo download candidate. None = feature off.
+SoulseekBrowseFn = Callable[[str], list[dict[str, Any]]]
 
 _SEARCH_TTL_S = 20.0
 _SEARCH_CACHE_MAX = 128
@@ -75,6 +78,10 @@ _SOURCE_SEARCH_TTL_S = 120.0
 _SOURCE_SEARCH_MAX = 64  # cap distinct cached queries (evict soonest-to-expire)
 _SOURCE_INFLIGHT_MAX = 8  # cap concurrent background pre-warm fan-outs
 _SOURCE_SWEEP_INTERVAL_S = 60.0  # background orphan-sweep cadence
+# Sources the generic review/cross-source fan-out skips: Soulseek search is slow
+# and noisy P2P, so it gets its own dedicated browser instead of gating every scan.
+_FANOUT_EXCLUDE = frozenset({"soulseek"})
+_SLSK_BROWSE_TIMEOUT_S = 45.0  # slskd searches poll up to ~30 s; bound the endpoint
 _SESSION_COOKIE = "crate_session"
 
 
@@ -146,6 +153,7 @@ def create_app(
     identify_hint: IdentifyFn | None = None,
     candidate_streamers: CandidateStreamersFn | None = None,
     source_validator: SourceValidatorFn | None = None,
+    soulseek_browse: SoulseekBrowseFn | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -352,7 +360,11 @@ def create_app(
         bounded by ``_REVIEW_SOURCE_TIMEOUT_S``), score each hit against ``want``,
         and return ``_candidate_row`` dicts sorted best-match first. Shared by the
         Review re-download search and the direct cross-source search."""
-        sources = candidate_sources() if candidate_sources is not None else {}
+        sources = {
+            name: src
+            for name, src in (candidate_sources() if candidate_sources is not None else {}).items()
+            if name not in _FANOUT_EXCLUDE
+        }
 
         async def run_one(fn: CandidateSearchFn) -> list[Candidate]:
             try:
@@ -417,6 +429,32 @@ def create_app(
             raise HTTPException(status_code=404, detail="request not found")
         query = str(body.get("q") or "").strip() or str(record["query"])
         return await _fanout_search(query, _identity_from_record(record))
+
+    @api.post("/review/{request_id}/soulseek/search")
+    async def review_soulseek_search(
+        request_id: str, body: dict[str, Any] = Body(default={})
+    ) -> list[dict[str, Any]]:
+        """The Nicotine+-style Soulseek browser for a review item: the user types
+        their own term (defaults to the item's query) and gets EVERY file the
+        network returned — no title gate, no auto-selection — to browse and pick
+        from. Each row carries a ``candidate`` the console echoes to
+        ``/review/{id}/download``, so the worker fetches exactly that file."""
+        if store.get_request(request_id) is None:
+            raise HTTPException(status_code=404, detail="request not found")
+        if soulseek_browse is None:
+            raise HTTPException(status_code=503, detail="soulseek not configured")
+        record = store.get_request(request_id) or {}
+        term = str(body.get("q") or "").strip() or str(record.get("query") or "")
+        if len(term) < _MIN_SOURCE_QUERY_LEN:
+            raise HTTPException(status_code=400, detail="search term too short")
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(soulseek_browse, term), timeout=_SLSK_BROWSE_TIMEOUT_S
+            )
+        except TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="soulseek search timed out") from exc
+        except Exception as exc:  # slskd down / network
+            raise HTTPException(status_code=502, detail=f"soulseek search failed: {exc}") from exc
 
     @api.post("/search/sources")
     async def search_sources(body: dict[str, Any] = Body(...)) -> list[dict[str, Any]]:

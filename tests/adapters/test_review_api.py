@@ -534,3 +534,112 @@ def test_source_search_row_includes_album_art(tmp_path: Path) -> None:
     client = TestClient(create_app(_store(tmp_path), candidate_sources=_cand_source(cands)))
     rows = client.post("/api/search/sources", json={"q": "hello"}).json()
     assert rows[0]["art"] == "http://img/x.jpg"
+
+
+# --- Soulseek browser (Nicotine+-style raw browse per review item) ---
+_SLSK_ROW = {
+    "username": "flacguy",
+    "filename": "@@b\\Music\\Jamie xx - Gosh.flac",
+    "basename": "Jamie xx - Gosh.flac",
+    "ext": "flac",
+    "size_bytes": 30_000_000,
+    "bitrate_kbps": 0,
+    "bit_depth": 24,
+    "sample_rate": 96000,
+    "length_s": 311,
+    "lossless": True,
+    "free_slot": True,
+    "upload_speed": 3000,
+    "quality_label": "FLAC 24/96",
+    "candidate": {
+        "source": "soulseek",
+        "tier": 2,
+        "ref": '{"u": "flacguy", "f": "@@b\\\\Music\\\\Jamie xx - Gosh.flac", "s": 30000000}',
+        "title": "Jamie xx - Gosh",
+        "artist": "Jamie xx",
+        "album": None,
+        "quality_label": "FLAC 24/96",
+        "lossless": True,
+        "duration_s": 311,
+        "size_bytes": 30_000_000,
+    },
+}
+
+
+def test_review_soulseek_search_defaults_to_item_query_and_accepts_custom_terms(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+    seen: list[str] = []
+
+    def browse(term: str) -> list[dict[str, Any]]:
+        seen.append(term)
+        return [_SLSK_ROW]
+
+    client = TestClient(create_app(store, soulseek_browse=browse))
+    rows = client.post(f"/api/review/{rid}/soulseek/search", json={}).json()
+    assert seen == ["Gosh"]  # no term -> the item's own query
+    assert rows[0]["username"] == "flacguy" and rows[0]["candidate"]["source"] == "soulseek"
+
+    client.post(f"/api/review/{rid}/soulseek/search", json={"q": "jamie xx gosh flac 24"})
+    assert seen[-1] == "jamie xx gosh flac 24"  # custom terms passed through verbatim
+
+
+def test_review_soulseek_search_gates(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+    wired = TestClient(create_app(store, soulseek_browse=lambda term: []))
+    assert wired.post("/api/review/nope/soulseek/search", json={}).status_code == 404
+    assert wired.post(f"/api/review/{rid}/soulseek/search", json={"q": "x"}).status_code == 400
+    # slskd not configured -> the panel hides; the endpoint says so instead of 500ing
+    bare = TestClient(create_app(store))
+    assert bare.post(f"/api/review/{rid}/soulseek/search", json={}).status_code == 503
+
+
+def test_review_soulseek_search_surfaces_backend_failure(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+
+    def boom(term: str) -> list[dict[str, Any]]:
+        raise RuntimeError("slskd down")
+
+    client = TestClient(create_app(store, soulseek_browse=boom))
+    r = client.post(f"/api/review/{rid}/soulseek/search", json={})
+    assert r.status_code == 502 and "slskd down" in r.json()["detail"]
+
+
+def test_soulseek_picked_file_downloads_via_the_normal_review_path(tmp_path: Path) -> None:
+    """The browser's candidate round-trips through /review/{id}/download: the
+    JSON ref (peer + backslash path + size) survives and the source is armed."""
+    store = _store(tmp_path)
+    rid = _lossy(store, "Gosh")
+    client = TestClient(create_app(store))
+    r = client.post(f"/api/review/{rid}/download", json={"candidate": _SLSK_ROW["candidate"]})
+    assert r.status_code == 200 and r.json()["source"] == "soulseek"
+    armed = store.get_review_candidate(rid)
+    assert armed is not None and armed["source"] == "soulseek"
+    assert armed["ref"] == _SLSK_ROW["candidate"]["ref"]  # opaque ref preserved byte-for-byte
+    assert armed["is_upgrade"] == 1  # lossy item -> replace in place
+
+
+def test_generic_fanout_skips_soulseek(tmp_path: Path) -> None:
+    """Soulseek is a candidate source (for download-by-ref) but the generic
+    review / cross-source fan-out never calls its slow P2P search."""
+    called: list[str] = []
+    cands = [Candidate("deezer", 2, "1", "Gosh", "Jamie xx", None, "FLAC", True, 311, None)]
+
+    def sources() -> dict[str, tuple[Any, Any]]:
+        def slsk_search(q: str, want: Any) -> list[Candidate]:
+            called.append("soulseek")
+            return []
+
+        return {
+            "soulseek": (slsk_search, lambda c, o, w: None),
+            "deezer": (lambda q, w: cands, lambda c, o, w: None),
+        }
+
+    client = TestClient(create_app(_store(tmp_path), candidate_sources=sources))
+    rows = client.post("/api/search/sources", json={"q": "jamie xx gosh"}).json()
+    assert [r["source"] for r in rows] == ["deezer"]
+    assert called == []  # soulseek's search was never invoked

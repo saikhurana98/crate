@@ -15,12 +15,14 @@ The client is injected as ``search`` (query -> slskd search responses) and
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
 from crate.domain.matching import (
@@ -270,3 +272,155 @@ def soulseek_download(
             path=path, tier=2, source="soulseek", elapsed_s=clock() - start, query=query
         )
     raise RuntimeError(f"all Soulseek peers failed: {last_error}")
+
+
+# --- Review-tab Soulseek browser (Nicotine+-style raw browse + pick-by-file) ---
+# The cascade path above auto-selects one file. The browser instead shows the
+# user EVERY file the network returned for a term they typed themselves — no
+# title gate, no variant fallback — and lets them download exactly one of them.
+# A chosen file is carried as a ``Candidate`` whose ``ref`` encodes the peer +
+# remote path + size (everything slskd needs to fetch precisely that file).
+
+_EXT_LABEL = {".flac": "FLAC", ".alac": "ALAC", ".ape": "APE", ".wav": "WAV", ".aiff": "AIFF"}
+
+
+def quality_label(file: SlskFile) -> str:
+    """Human label a Nicotine+ column would show: ``FLAC 24/96``, ``WAV``,
+    ``MP3 320 kbps``. Lossless leads with bit depth / sample rate when the peer
+    reported them; lossy leads with the container and bitrate."""
+    ext = Path(_basename(file.filename)).suffix.lower()
+    if is_lossless(file):
+        label = _EXT_LABEL.get(ext, ext.lstrip(".").upper() or "LOSSLESS")
+        if file.bit_depth and file.sample_rate:
+            khz = file.sample_rate / 1000
+            khz_s = f"{khz:g}" if khz != int(khz) else f"{int(khz)}"
+            return f"{label} {file.bit_depth}/{khz_s}"
+        return label
+    fmt = ext.lstrip(".").upper() or "LOSSY"
+    kbps = file.bitrate_bps // 1000
+    return f"{fmt} {kbps} kbps" if kbps else fmt
+
+
+def browse(term: str, *, search: Search) -> list[SlskFile]:
+    """Every file the network returned for ``term`` (verbatim — the user chose
+    the words), ungated, best-quality first: tagged lossless > raw PCM > lossy,
+    then bit depth, sample rate, bitrate, size, a free upload slot, peer speed."""
+    return sorted(
+        parse_responses(search(term)),
+        key=lambda f: (
+            format_rank(f),
+            f.bit_depth or 0,
+            f.sample_rate or 0,
+            f.bitrate_bps,
+            f.size,
+            f.free_slot,
+            f.upload_speed,
+        ),
+        reverse=True,
+    )
+
+
+def to_ref(file: SlskFile) -> str:
+    """Opaque candidate ref: the peer + remote path + size slskd needs to fetch
+    exactly this file. JSON so backslash-laden Windows paths survive intact."""
+    return json.dumps({"u": file.username, "f": file.filename, "s": file.size})
+
+
+def file_from_ref(ref: str) -> SlskFile:
+    """Inverse of :func:`to_ref`. Peer attributes aren't needed to download, so
+    they're zeroed; the transfer itself is what matters."""
+    data = json.loads(ref)
+    return SlskFile(
+        username=str(data["u"]),
+        filename=str(data["f"]),
+        size=int(data.get("s", 0)),
+        bitrate_bps=0,
+        bit_depth=None,
+        length_s=None,
+        sample_rate=None,
+        free_slot=False,
+        upload_speed=0,
+    )
+
+
+def to_candidate(file: SlskFile) -> Candidate:
+    """A browsed file as a review :class:`Candidate` (what the console echoes back
+    to ``/review/{id}/download``)."""
+    stem = Path(_basename(file.filename)).stem
+    return Candidate(
+        source="soulseek",
+        tier=2,
+        ref=to_ref(file),
+        title=stem,
+        artist=_candidate_artist(file.filename),
+        album=None,
+        quality_label=quality_label(file),
+        lossless=is_lossless(file),
+        duration_s=file.length_s,
+        size_bytes=file.size,
+    )
+
+
+def browse_rows(term: str, *, search: Search) -> list[dict[str, Any]]:
+    """:func:`browse` serialised for the console's Soulseek browser: the Nicotine+
+    columns (file, peer, format/quality, size, length, slot, speed) plus the
+    ready-to-echo ``candidate`` for the download button."""
+    rows: list[dict[str, Any]] = []
+    for f in browse(term, search=search):
+        cand = to_candidate(f)
+        rows.append(
+            {
+                "username": f.username,
+                "filename": f.filename,
+                "basename": _basename(f.filename),
+                "ext": Path(_basename(f.filename)).suffix.lower().lstrip("."),
+                "size_bytes": f.size,
+                "bitrate_kbps": f.bitrate_bps // 1000,
+                "bit_depth": f.bit_depth,
+                "sample_rate": f.sample_rate,
+                "length_s": f.length_s,
+                "lossless": is_lossless(f),
+                "free_slot": f.free_slot,
+                "upload_speed": f.upload_speed,
+                "quality_label": cand.quality_label,
+                "candidate": {
+                    "source": cand.source,
+                    "tier": cand.tier,
+                    "ref": cand.ref,
+                    "title": cand.title,
+                    "artist": cand.artist,
+                    "album": cand.album,
+                    "quality_label": cand.quality_label,
+                    "lossless": cand.lossless,
+                    "duration_s": cand.duration_s,
+                    "size_bytes": cand.size_bytes,
+                },
+            }
+        )
+    return rows
+
+
+def search_candidates(
+    query: str, want: TrackIdentity | None = None, *, search: Search
+) -> list[Candidate]:
+    """Generic candidate-source contract: title-gated, ranked files as candidates.
+    (The console's review fan-out deliberately skips Soulseek — P2P search is slow
+    and noisy — and offers the raw browser instead; this exists so the source
+    satisfies the same shape as the others.)"""
+    return [to_candidate(f) for f in rank_files(parse_responses(search(query)), query, 0, want)]
+
+
+def download_candidate(
+    cand: Candidate,
+    out_dir: Path,
+    want: TrackIdentity | None = None,
+    *,
+    download: Download,
+    clock: Clock = time.monotonic,
+) -> DownloadOutcome:
+    """Fetch exactly the browsed file the user picked (no search, no selection)."""
+    start = clock()
+    path = download(file_from_ref(cand.ref), out_dir)
+    return DownloadOutcome(
+        path=path, tier=2, source="soulseek", elapsed_s=clock() - start, query=cand.title
+    )
