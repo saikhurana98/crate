@@ -1,5 +1,5 @@
-"""library_sync: track keys, playlist sync-state, affinity tiers, and the
-dry-run auto-sync plan. Real SQLite stores, a fake Spotify reader."""
+"""library_sync: track keys, playlist sync-state, affinity tiers, auto-sync
+enqueue (and its dry run). Real SQLite stores, a fake Spotify reader."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from crate.application.jobs import JobCancelled, JobContext
 from crate.application.library_sync import (
     LIKED_ID,
     LibraryIndex,
+    SyncDeps,
     content_snapshot,
     diff_playlist,
     effective_mode,
@@ -28,7 +29,8 @@ from crate.infrastructure.sqlite.affinity_store import SqliteAffinityStore
 from crate.infrastructure.sqlite.db import connect
 from crate.infrastructure.sqlite.job_store import SqliteJobStore
 from crate.infrastructure.sqlite.listening_store import SqliteListeningStore
-from crate.infrastructure.sqlite.sync_store import SqlitePlaylistSyncStore
+from crate.infrastructure.sqlite.store import RequestStore
+from crate.infrastructure.sqlite.sync_store import SqlitePlaylistSyncStore, SqliteSyncQueue
 from crate.infrastructure.sqlite.user_store import SqliteUserRepository
 
 
@@ -165,22 +167,36 @@ class World:
         self.affinity = SqliteAffinityStore(self.conn)
         self.playlists = SqlitePlaylistSyncStore(self.conn)
         self.jobs = SqliteJobStore(self.conn)
+        self.requests = RequestStore(self.conn)
+        self.queue = SqliteSyncQueue(self.conn, self.requests)
         self.index = LibraryIndex(frozenset({"ISRC1"}), frozenset())
         self.jobs.enqueue(JobKind.LIBRARY_SYNC, triggered_by="manual")
         job = self.jobs.claim_next("sync")
         assert job is not None
         self.job = job  # one claimed job; every run in a test logs to it
 
-    def run(self, users: list[User] | None = None, history: Any = None) -> dict[str, Any]:
-        return run_library_sync(
-            JobContext(self.job, self.jobs),
-            users or [self.user],
+    def run(
+        self,
+        users: list[User] | None = None,
+        history: Any = None,
+        *,
+        live: bool = False,
+        cap: int = 300,
+    ) -> dict[str, Any]:
+        deps = SyncDeps(
             self.reader,
             history or self.listening,
             self.affinity,
             self.playlists,
             self.index,
+            self.queue if live else None,
+        )
+        return run_library_sync(
+            JobContext(self.job, self.jobs),
+            users or [self.user],
+            deps,
             now=NOW,
+            max_enqueue=cap,
         )
 
     def rows(self, include_removed: bool = False) -> dict[str, dict[str, Any]]:
@@ -365,3 +381,78 @@ def test_library_index_from_completed_requests(tmp_path: Path) -> None:
     isrcs, keys = store.library_index()
     assert isrcs == {"X1"} and keys == {merge_key("A", "One")}
     assert track_key({"isrc": "x1"}) == "isrc:X1" and diff_playlist(set(), []) == []
+
+
+def _sync_rows(w: World) -> list[dict[str, Any]]:
+    return [
+        dict(r)
+        for r in w.conn.execute(
+            "SELECT r.query, r.priority, r.user_id, b.origin, b.name FROM requests r "
+            "JOIN batches b ON b.id = r.batch_id ORDER BY b.name"
+        )
+    ]
+
+
+def test_live_run_queues_missing_tracks_once_at_sync_priority(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    w.affinity.set_auto_sync(w.user.id, AffinityTier.CORE, True)
+    s = w.run(live=True)
+    assert s["dry_run"] is False and (s["enqueued"], s["deferred"]) == (2, 0)
+    rows = _sync_rows(w)
+    assert {r["priority"] for r in rows} == {1} and {r["origin"] for r in rows} == {"sync"}
+    assert {r["user_id"] for r in rows} == {w.user.id}
+    assert [r["name"] for r in rows] == ["Auto-sync: Liked Songs", "Auto-sync: Mine"]
+    assert w.events("enqueued")[0]["user_id"] == w.user.id
+    assert w.run(live=True)["enqueued"] == 0  # the ledger remembers
+
+
+def test_cap_defers_the_rest_to_the_next_run(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    w.affinity.set_auto_sync(w.user.id, AffinityTier.CORE, True)
+    s = w.run(live=True, cap=1)
+    assert (s["enqueued"], s["deferred"]) == (1, 1)
+    assert [r["name"] for r in _sync_rows(w)] == ["Auto-sync: Liked Songs"]  # tier 1 first
+    assert w.events("deferred")
+    assert w.run(live=True, cap=1)["enqueued"] == 1
+    assert w.run(live=True, cap=1)["enqueued"] == 0
+
+
+def test_cap_zero_is_a_dry_run_even_with_a_queue(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    w.affinity.set_auto_sync(w.user.id, AffinityTier.CORE, True)
+    s = w.run(live=True, cap=0)
+    assert s["dry_run"] is True and s["would_enqueue"] == 2 and _sync_rows(w) == []
+
+
+def test_a_song_is_queued_once_across_scopes_and_baselines_hold(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    w.reader.tracks["dw"].append(trk("B", "Two"))
+    w.run()  # learn the playlists
+    w.playlists.set_sync_mode(w.user.id, "p1", "on")
+    assert w.run(live=True)["enqueued"] == 1  # Two, via Mine
+    w.playlists.set_sync_mode(w.user.id, "dw", "on")
+    assert w.run(live=True)["enqueued"] == 1  # only Three; Two is already queued
+    assert w.queue.baseline(w.user.id, "playlist:liked", [merge_key("D", "Four")]) == 1
+    assert w.queue.baseline(w.user.id, "playlist:liked", [merge_key("D", "Four")]) == 0
+    w.playlists.set_sync_mode(w.user.id, LIKED_ID, "on")
+    assert w.run(live=True)["enqueued"] == 0  # Four was baselined
+
+
+def test_tier_auto_sync_queues_members_with_a_spotify_id(tmp_path: Path) -> None:
+    w = World(tmp_path)
+    w.reader.top = {
+        "long_term": [trk("A", "Evergreen")],
+        "medium_term": [trk("A", "Evergreen")],
+    }
+    w.affinity.set_auto_sync(w.user.id, AffinityTier.CONSTANT, True)
+    assert w.run(live=True)["enqueued"] == 1
+    assert [r["name"] for r in _sync_rows(w)] == ["Auto-sync: Long-term constants"]
+
+
+def test_claim_prefers_the_users_own_requests_over_sync(tmp_path: Path) -> None:
+    store = RequestStore(connect(tmp_path / "crate.db"))
+    sync_id = store.enqueue("sync one", priority=1)
+    manual_id = store.enqueue("manual one")
+    first, second = store.claim_next(), store.claim_next()
+    assert first is not None and second is not None
+    assert (first["id"], second["id"]) == (manual_id, sync_id)

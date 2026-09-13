@@ -1236,6 +1236,8 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         manual_job_kinds=manual_job_kinds(),
         listening=_build_listening_store(),
         uploads_dir=uploads_dir(),
+        sync=_build_sync_service(),
+        sync_interval_s=float(os.environ.get("CRATE_LIBRARY_SYNC_INTERVAL", "7200")),
     )
 
 
@@ -1290,6 +1292,41 @@ def _build_listening_store() -> Any:  # pragma: no cover - IO wiring
     from crate.infrastructure.sqlite.listening_store import SqliteListeningStore
 
     return SqliteListeningStore(connect(db_path()))
+
+
+_SYNC_INDEX_TTL_S = 30.0  # the Sync page's library-index cache
+
+
+def _build_sync_service() -> Any:  # pragma: no cover - IO wiring
+    """The Sync page's reads + toggles (console). Its stores share one connection
+    and lock; the library index (a scan of completed requests) is cached for 30 s."""
+    from crate.application.library_sync import LibraryIndex, LibrarySyncService
+    from crate.infrastructure.sqlite.affinity_store import SqliteAffinityStore
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.store import RequestStore
+    from crate.infrastructure.sqlite.sync_store import (
+        SqlitePlaylistSyncStore,
+        SqliteSyncQueue,
+    )
+
+    conn = connect(db_path())
+    lock = threading.Lock()
+    requests = RequestStore(connect(db_path()), requested_via="console")
+    cache: list[tuple[float, LibraryIndex]] = []
+
+    def index() -> LibraryIndex:
+        now = time.monotonic()
+        if not cache or now - cache[0][0] > _SYNC_INDEX_TTL_S:
+            isrcs, keys = requests.library_index()
+            cache[:] = [(now, LibraryIndex(frozenset(isrcs), frozenset(keys)))]
+        return cache[0][1]
+
+    return LibrarySyncService(
+        SqlitePlaylistSyncStore(conn, lock=lock),
+        SqliteAffinityStore(conn, lock=lock),
+        SqliteSyncQueue(conn, requests, lock=lock),
+        index,
+    )
 
 
 def _history_import_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
@@ -1348,18 +1385,22 @@ def _listen_poll_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover 
 
 def _library_sync_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
     """``library_sync`` (every 2 h + Run now): playlist sync-state + affinity tiers
-    for every linked user (orchestration in ``application.library_sync``). A dry
-    run for now: it logs what auto-sync *would* queue."""
+    for every linked user (orchestration in ``application.library_sync``). It
+    queues what auto-sync wants, at most ``CRATE_SYNC_MAX_ENQUEUE`` (default 300)
+    per run; 0 makes it a dry run."""
     from datetime import UTC, datetime
 
-    from crate.application.library_sync import LibraryIndex, run_library_sync
+    from crate.application.library_sync import LibraryIndex, SyncDeps, run_library_sync
     from crate.infrastructure.crypto import SecretBox
     from crate.infrastructure.sqlite.affinity_store import SqliteAffinityStore
     from crate.infrastructure.sqlite.config_store import ConfigStore
     from crate.infrastructure.sqlite.db import connect
     from crate.infrastructure.sqlite.listening_store import SqliteListeningStore
     from crate.infrastructure.sqlite.store import RequestStore
-    from crate.infrastructure.sqlite.sync_store import SqlitePlaylistSyncStore
+    from crate.infrastructure.sqlite.sync_store import (
+        SqlitePlaylistSyncStore,
+        SqliteSyncQueue,
+    )
     from crate.infrastructure.sqlite.user_store import SqliteUserRepository
 
     if not os.environ.get("CRATE_DB"):
@@ -1367,21 +1408,26 @@ def _library_sync_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover
     conn = connect(db_path())
     try:
         config = ConfigStore(conn, SecretBox.from_keyfile(_keyfile()))
-        requests = RequestStore(conn)
+        requests = RequestStore(conn, requested_via="sync")
         reader = build_spotify_user(config, requests)
         if reader is None:
             ctx.warn("Spotify client credentials not configured; skipping", code="no_spotify")
             return {"skipped": "spotify not configured"}
         isrcs, keys = requests.library_index()
+        deps = SyncDeps(
+            reader=reader,
+            history=SqliteListeningStore(conn),
+            tiers=SqliteAffinityStore(conn),
+            playlists=SqlitePlaylistSyncStore(conn),
+            index=LibraryIndex(frozenset(isrcs), frozenset(keys)),
+            queue=SqliteSyncQueue(conn, requests),
+        )
         return run_library_sync(
             ctx,
             SqliteUserRepository(conn).list_users(),
-            reader,
-            SqliteListeningStore(conn),
-            SqliteAffinityStore(conn),
-            SqlitePlaylistSyncStore(conn),
-            LibraryIndex(frozenset(isrcs), frozenset(keys)),
+            deps,
             now=datetime.now(UTC),
+            max_enqueue=int(os.environ.get("CRATE_SYNC_MAX_ENQUEUE", "300")),
         )
     finally:
         conn.close()
