@@ -1282,6 +1282,9 @@ def _job_handlers() -> dict[Any, Any]:  # pragma: no cover - IO wiring
         JobKind.HISTORY_IMPORT: _history_import_job,
         JobKind.LIBRARY_SYNC: _library_sync_job,
         JobKind.DEDUP_SCAN: _dedup_scan_job,
+        JobKind.DEDUP_PURGE: _dedup_purge_job,
+        JobKind.TRASH_RESTORE: _trash_restore_job,
+        JobKind.TRASH_EMPTY: _trash_empty_job,
     }
 
 
@@ -1581,6 +1584,111 @@ def _dedup_scan_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover -
         conn.close()
 
 
+def _navidrome_rescan() -> Callable[[], None] | None:  # pragma: no cover - IO wiring
+    """Ask Navidrome to rescan after a purge or restore; ``None`` unless
+    CRATE_NAVIDROME_URL / _USER / _PASS are all set."""
+    url = os.environ.get("CRATE_NAVIDROME_URL")
+    user = os.environ.get("CRATE_NAVIDROME_USER")
+    password = os.environ.get("CRATE_NAVIDROME_PASS")
+    if not (url and user and password):
+        return None
+    import httpx
+
+    from crate.infrastructure.navidrome.client import start_scan
+
+    def get(target: str, params: dict[str, str]) -> Any:
+        resp = httpx.get(target, params=params, timeout=15.0)
+        resp.raise_for_status()
+        return resp.json()
+
+    def rescan() -> None:
+        if not start_scan(url, user, password, get=get):
+            raise RuntimeError("Navidrome refused the scan request")
+
+    return rescan
+
+
+def _trash_parts(conn: Any, ctx: Any) -> tuple[Any, Any] | None:  # pragma: no cover - IO
+    from crate.infrastructure.fs.library_fs import LibraryFs
+    from crate.infrastructure.sqlite.trash_store import SqliteTrashStore
+
+    root = os.environ.get("CRATE_LIBRARY_ROOT")
+    if not root:
+        ctx.warn("CRATE_LIBRARY_ROOT is not set; nothing to do", code="no_root")
+        return None
+    return SqliteTrashStore(conn, Path(root)), LibraryFs(Path(root))
+
+
+def _dedup_purge_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
+    """``dedup_purge``: move the chosen duplicate copies into the library trash."""
+    from datetime import UTC, datetime
+
+    from crate.application.purge import run_purge
+    from crate.domain.purge import PurgeItem
+    from crate.infrastructure.sqlite.db import connect
+
+    conn = connect(db_path())
+    try:
+        parts = _trash_parts(conn, ctx)
+        if parts is None:
+            return {"skipped": "no library root"}
+        store, fs = parts
+        items = [PurgeItem.from_dict(i) for i in job.params.get("items") or []]
+        return run_purge(
+            ctx,
+            items,
+            store=store,
+            fs=fs,
+            day=datetime.now(UTC).date().isoformat(),
+            user_id=job.user_id,
+            rescan=_navidrome_rescan(),
+        )
+    finally:
+        conn.close()
+
+
+def _trash_restore_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
+    from crate.application.purge import run_restore
+    from crate.infrastructure.sqlite.db import connect
+
+    conn = connect(db_path())
+    try:
+        parts = _trash_parts(conn, ctx)
+        if parts is None:
+            return {"skipped": "no library root"}
+        store, fs = parts
+        ids = [str(i) for i in job.params.get("ids") or []]
+        return run_restore(ctx, ids, store=store, fs=fs, rescan=_navidrome_rescan())
+    finally:
+        conn.close()
+
+
+def _trash_empty_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
+    """``trash_empty``: daily, delete trash older than CRATE_TRASH_RETENTION_DAYS
+    (default 30); on request (admin, typed confirm), everything."""
+    from datetime import UTC, datetime
+
+    from crate.application.purge import run_empty
+    from crate.infrastructure.sqlite.db import connect
+
+    conn = connect(db_path())
+    try:
+        parts = _trash_parts(conn, ctx)
+        if parts is None:
+            return {"skipped": "no library root"}
+        store, fs = parts
+        return run_empty(
+            ctx,
+            store=store,
+            fs=fs,
+            everything=bool(job.params.get("all")),
+            retention_days=int(os.environ.get("CRATE_TRASH_RETENTION_DAYS", "30")),
+            now=datetime.now(UTC),
+        )
+    finally:
+        conn.close()
+
+
 def run_job_now(kind: Any, *, triggered_by: str = "cli") -> dict[str, Any]:  # pragma: no cover
     """Queue ``kind`` and run it in this process (the CLI's "run it now"). If one is
     already queued or running, report it instead of starting a second."""
@@ -1618,6 +1726,7 @@ def _job_schedules(handlers: dict[Any, Any]) -> list[Any]:  # pragma: no cover -
         JobKind.LIBRARY_SYNC: float(os.environ.get("CRATE_LIBRARY_SYNC_INTERVAL", "7200")),
         JobKind.LISTEN_POLL: float(os.environ.get("CRATE_LISTEN_POLL_INTERVAL", "1800")),
         JobKind.DEDUP_SCAN: float(os.environ.get("CRATE_DEDUP_SCAN_INTERVAL", "86400")),
+        JobKind.TRASH_EMPTY: float(os.environ.get("CRATE_TRASH_EMPTY_INTERVAL", "86400")),
     }
     return [Schedule(k, v) for k, v in intervals.items() if k in handlers and v > 0]
 

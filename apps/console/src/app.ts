@@ -34,6 +34,7 @@ import {
   type DedupOverview,
   type DupGroup,
   type DupMember,
+  type DedupTrash,
 } from "./api";
 import { bytes, dur, ago as relTime, pct, esc } from "./format";
 import { createRenderer, effect } from "./reactive";
@@ -120,6 +121,16 @@ const PANELDEF: Record<string, PanelDef> = {
 
 type SaveState = "idle" | "saving" | "saved";
 
+// Deduplicate: what a confirmation dialog is about to do.
+interface DedupConfirm {
+  kind: "group" | "exact" | "empty";
+  groupId?: string;
+  keep?: string;
+  trash?: DupMember[];
+  files: number;
+  bytes: number;
+}
+
 // Switching auto-sync on: how many songs are missing, then backfill or future-only.
 interface SyncConfirm {
   apply: "tier" | "playlist";
@@ -181,7 +192,9 @@ interface State {
   // Deduplicate page
   dedup: DedupOverview | null;
   dedupErr: string | null;
-  dedupTab: "dupes" | "variants";
+  dedupTab: "dupes" | "variants" | "trash";
+  dedupTrash: DedupTrash | null;
+  dedupConfirm: DedupConfirm | null; // trash / clean-up / empty confirmation
   dedupGroups: DupGroup[];
   dedupMore: boolean; // another page of groups to load
   dedupLoading: boolean;
@@ -298,6 +311,8 @@ const state: State = {
   dedup: null,
   dedupErr: null,
   dedupTab: "dupes",
+  dedupTrash: null,
+  dedupConfirm: null,
   dedupGroups: [],
   dedupMore: false,
   dedupLoading: false,
@@ -3652,13 +3667,33 @@ function bindDedupEvents(): void {
       if (tab === state.dedupTab) return;
       state.dedupTab = tab;
       state.dedupGroups = [];
-      void loadDedupGroups();
+      if (tab === "trash") void loadTrash();
+      else void loadDedupGroups();
     } else if (act === "dedupToggle") {
       const id = el.dataset.id!;
       state.dedupOpen = { ...state.dedupOpen, [id]: !state.dedupOpen[id] };
       render();
     } else if (act === "dedupIgnore") void ignoreGroup(el.dataset.id!);
     else if (act === "dedupMore") void loadDedupGroups(true);
+    else if (act === "dedupKeep") askPurge(el.dataset.group!, el.dataset.id!);
+    else if (act === "dedupTrashExtras") {
+      const g = state.dedupGroups.find((x) => x.id === el.dataset.id);
+      if (g) askPurge(g.id, g.keeper_file_id);
+    } else if (act === "dedupExact") askExact();
+    else if (act === "dedupEmpty") askEmpty();
+    else if (act === "dedupRestore") void restoreTrash(el.dataset.id!);
+    else if (act === "dedupConfirmGo") void confirmDedup();
+    else if (act === "dedupConfirmCancel") {
+      state.dedupConfirm = null;
+      render();
+    }
+  });
+  // The typed "EMPTY" gate: flip the button directly (no re-render mid-typing).
+  root.addEventListener("input", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.dataset?.inp !== "dedupEmptyTyped") return;
+    const go = root.querySelector<HTMLButtonElement>('[data-act="dedupConfirmGo"]');
+    if (go) go.disabled = el.value.trim() !== "EMPTY";
   });
   // Poll the overview: every 4 s while a scan runs on the page, else slowly (badge).
   let ticks = 0;
@@ -3666,10 +3701,13 @@ function bindDedupEvents(): void {
     if (state.authRequired || !state.me) return;
     ticks++;
     const onPage = state.page === "dedup";
-    const wasRunning = scanRunning();
+    const wasRunning = scanRunning() || !!state.dedup?.mutating;
     if ((onPage && (wasRunning || ticks % 15 === 0)) || ticks % 30 === 0) {
       void loadDedup().then(() => {
-        if (onPage && wasRunning && !scanRunning()) void loadDedupGroups(); // fresh groups
+        if (onPage && wasRunning && !scanRunning() && !state.dedup?.mutating) {
+          if (state.dedupTab === "trash") void loadTrash();
+          else void loadDedupGroups(); // fresh groups
+        }
         render();
       });
     }
@@ -3698,6 +3736,13 @@ function dedupStatusHtml(o: DedupOverview): string {
       : "";
   const cell = (label: string, value: string) =>
     `<div style="display:flex;flex-direction:column;gap:3px;min-width:0"><span style="font:600 9px 'JetBrains Mono';letter-spacing:.14em;color:#464d40">${label}</span><span style="font:600 13px 'Instrument Sans';color:#e9ede3;white-space:nowrap">${value}</span></div>`;
+  const exactBtn =
+    state.me?.is_admin && (o.exact_files ?? 0) > 0 && !o.mutating
+      ? `<button data-act="dedupExact" title="Every extra copy that is byte-for-byte identical to the copy kept" class="ghost" style="margin-left:auto;background:none;border:1px solid #39402f;border-radius:16px;color:#e9ede3;font:600 11.5px 'Instrument Sans';padding:8px 14px;cursor:pointer">Trash ${o.exact_files} identical ${o.exact_files === 1 ? "copy" : "copies"} · ${esc(bytes(o.exact_bytes ?? 0))}</button>`
+      : "";
+  const moving = o.mutating
+    ? `<span style="display:inline-flex;align-items:center;gap:7px;font:500 11px 'JetBrains Mono';color:#f2c14e"><span style="width:7px;height:7px;border-radius:50%;background:#f2c14e;animation:pulse 1.2s ease-in-out infinite"></span>moving files…</span>`
+      : "";
   const bar = running
     ? `<div style="flex-basis:100%;display:flex;align-items:center;gap:10px"><div style="flex:1;height:5px;background:#272c25;border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#e9ede3;border-radius:3px;transition:width .4s"></div></div><span style="font:500 10.5px 'JetBrains Mono';color:#99a091;white-space:nowrap">${total ? `${done.toLocaleString()} / ${total.toLocaleString()}` : "starting…"}</span></div>`
     : "";
@@ -3705,7 +3750,8 @@ function dedupStatusHtml(o: DedupOverview): string {
     ${cell("LAST SCAN", esc(last) + failed)}
     ${cell("GROUPED", esc(o.last_grouped_at ? relTime(o.last_grouped_at) : "not yet"))}
     ${cell("IDENTIFIED", `${o.identified.toLocaleString()} / ${o.files.toLocaleString()}`)}
-    <button data-act="dedupScan" ${busy ? "disabled" : ""} style="margin-left:auto;background:${busy ? "#181c17" : "#e9ede3"};color:${busy ? "#5d6456" : "#0c0e0c"};border:none;border-radius:16px;padding:9px 16px;font:700 12px 'Instrument Sans';cursor:${busy ? "default" : "pointer"}">${running ? "Scanning…" : state.dedupScanBusy ? "Starting…" : "Scan now"}</button>
+    ${moving}${exactBtn}
+    <button data-act="dedupScan" ${busy ? "disabled" : ""} style="${exactBtn ? "" : "margin-left:auto;"}background:${busy ? "#181c17" : "#e9ede3"};color:${busy ? "#5d6456" : "#0c0e0c"};border:none;border-radius:16px;padding:9px 16px;font:700 12px 'Instrument Sans';cursor:${busy ? "default" : "pointer"}">${running ? "Scanning…" : state.dedupScanBusy ? "Starting…" : "Scan now"}</button>
     ${bar}
   </section>`;
 }
@@ -3719,8 +3765,13 @@ function dedupCardsHtml(o: DedupOverview): string {
     ${card("RECLAIMABLE", esc(bytes(o.reclaimable_bytes)), "if the extra copies go")}
   </div>`;
 }
-function memberCardHtml(m: DupMember, variant: boolean): string {
+function memberCardHtml(m: DupMember, g: DupGroup): string {
+  const variant = g.variant;
   const keep = m.is_keeper;
+  const keepBtn =
+    state.me?.is_admin && (variant || !keep)
+      ? `<button data-act="dedupKeep" data-group="${esc(g.id)}" data-id="${esc(m.id)}" class="ghost" title="Keep this copy and move the others to the trash" style="background:none;border:1px solid #272c25;border-radius:10px;color:#99a091;font:600 10px 'Instrument Sans';padding:3px 8px;cursor:pointer">keep this</button>`
+      : "";
   const badge = keep
     ? `<span style="font:700 9.5px 'JetBrains Mono';letter-spacing:.1em;color:#0c0e0c;background:#1db954;border-radius:8px;padding:3px 8px">KEEP</span>`
     : `<span style="font:700 9.5px 'JetBrains Mono';letter-spacing:.1em;color:#99a091;border:1px solid #39402f;border-radius:8px;padding:2px 7px">${variant ? "VARIANT" : "EXTRA COPY"}</span>`;
@@ -3738,7 +3789,7 @@ function memberCardHtml(m: DupMember, variant: boolean): string {
       ? `<div style="margin-top:9px;font:500 11px 'Instrument Sans';color:#f2c14e;line-height:1.4">Keeper wins: ${esc(m.reasons.join(", "))}</div>`
       : "";
   return `<div style="background:${keep ? "rgba(29,185,84,.05)" : "#0e100d"};border:1px solid ${keep ? "rgba(29,185,84,.35)" : "#22261f"};border-radius:14px;padding:12px 13px;min-width:0">
-    <div style="display:flex;align-items:center;gap:9px;margin-bottom:8px">${playBtn(`dup:${m.id}`, api.dedupAudioUrl(m.id), 28)}${badge}<span style="margin-left:auto;font:600 10.5px 'JetBrains Mono';color:#e9ede3;text-align:right">${esc(qualityLabel(m))}</span></div>
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:8px">${playBtn(`dup:${m.id}`, api.dedupAudioUrl(m.id), 28)}${badge}${keepBtn}<span style="margin-left:auto;font:600 10.5px 'JetBrains Mono';color:#e9ede3;text-align:right">${esc(qualityLabel(m))}</span></div>
     <div style="font:400 10.5px 'JetBrains Mono';color:#99a091;overflow-wrap:anywhere;margin-bottom:6px">${esc(m.path)}</div>
     ${row("LENGTH", m.duration_s ? dur(m.duration_s) : "?")}
     ${row("SIZE", esc(bytes(m.size)))}
@@ -3769,11 +3820,19 @@ function dupGroupHtml(g: DupGroup): string {
   const note = g.variant
     ? "Different lengths — likely an edit, live or extended cut. Nothing here is suggested for removal."
     : "Play the copies side by side to be sure.";
-  const cards = g.members.map((m) => memberCardHtml(m, g.variant)).join("");
+  const cards = g.members.map((m) => memberCardHtml(m, g)).join("");
+  const admin = !!state.me?.is_admin;
+  const extras = g.members.filter((m) => !m.is_keeper);
+  const trashBtn =
+    admin && !g.variant
+      ? `<button data-act="dedupTrashExtras" data-id="${esc(g.id)}" ${busy ? "disabled" : ""} style="background:#e9ede3;color:#0c0e0c;border:none;border-radius:12px;font:700 11px 'Instrument Sans';padding:8px 13px;cursor:pointer">Trash ${extras.length} extra ${extras.length === 1 ? "copy" : "copies"} · ${esc(bytes(extras.reduce((n, x) => n + x.size, 0)))}</button>`
+      : "";
+  const who = admin ? "" : " Only an admin can move files to the trash.";
   return `<section style="${cardBox};overflow:hidden">${head}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;padding:0 16px 12px">${cards}</div>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:0 16px 14px">
-      <span style="flex:1;min-width:200px;font:400 11px 'Instrument Sans';color:#5d6456">${note}</span>
+      <span style="flex:1;min-width:200px;font:400 11px 'Instrument Sans';color:#5d6456">${note}${who}</span>
+      ${trashBtn}
       <button data-act="dedupIgnore" data-id="${esc(g.id)}" ${busy ? "disabled" : ""} class="ghost" style="background:none;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 11px 'Instrument Sans';padding:7px 12px;cursor:pointer">They're different — ignore</button>
     </div>
   </section>`;
@@ -3791,9 +3850,10 @@ function dedupPageHtml(): string {
   }
   const tab = (t: State["dedupTab"], label: string, n: number) =>
     `<button data-act="dedupTab" data-tab="${t}" style="border:none;border-radius:14px;cursor:pointer;font:600 11px 'JetBrains Mono';padding:6px 13px;${state.dedupTab === t ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#99a091"}">${label} ${n}</button>`;
-  const tabs = `<div style="display:flex;gap:3px;background:#131612;border:1px solid #22261f;border-radius:18px;padding:3px;width:fit-content;margin:18px 0 12px">${tab("dupes", "duplicates", dedupCount())}${tab("variants", "variants", o.variant_groups)}</div>`;
+  const tabs = `<div style="display:flex;gap:3px;background:#131612;border:1px solid #22261f;border-radius:18px;padding:3px;width:fit-content;margin:18px 0 12px">${tab("dupes", "duplicates", dedupCount())}${tab("variants", "variants", o.variant_groups)}${tab("trash", "trash", o.trash_count ?? 0)}</div>`;
   let list: string;
-  if (state.dedupGroups.length) list = state.dedupGroups.map(dupGroupHtml).join("");
+  if (state.dedupTab === "trash") list = trashListHtml();
+  else if (state.dedupGroups.length) list = state.dedupGroups.map(dupGroupHtml).join("");
   else {
     const empty = state.dedupLoading
       ? "Loading groups…"
@@ -3804,10 +3864,148 @@ function dedupPageHtml(): string {
           : "No duplicate copies found.";
     list = `<div style="background:#111411;border:1px dashed #272c25;border-radius:18px;padding:40px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">${esc(empty)}</div>`;
   }
-  const more = state.dedupMore
+  const more =
+    state.dedupMore && state.dedupTab !== "trash"
     ? `<button data-act="dedupMore" ${state.dedupLoading ? "disabled" : ""} class="ghost" style="margin:14px auto 0;display:block;background:none;border:1px solid #272c25;border-radius:14px;color:#99a091;font:600 11px 'JetBrains Mono';padding:8px 16px;cursor:pointer">${state.dedupLoading ? "loading…" : "load more"}</button>`
     : "";
-  return `<main style="max-width:1300px;margin:0 auto;padding:${pad};animation:fadein .25s ease">${head}${dedupStatusHtml(o)}${dedupCardsHtml(o)}${tabs}<div style="display:flex;flex-direction:column;gap:10px">${list}</div>${more}</main>`;
+  return `<main style="max-width:1300px;margin:0 auto;padding:${pad};animation:fadein .25s ease">${head}${dedupStatusHtml(o)}${dedupCardsHtml(o)}${tabs}<div style="display:flex;flex-direction:column;gap:10px">${list}</div>${more}</main>${dedupConfirmHtml()}`;
+}
+
+// --- Deduplicate: trash / restore / empty (admin) ---
+async function loadTrash(): Promise<void> {
+  state.dedupLoading = true;
+  render();
+  try {
+    state.dedupTrash = await api.dedupTrash();
+  } catch (err) {
+    toast(`Couldn't load the trash: ${(err as Error).message}`);
+  } finally {
+    state.dedupLoading = false;
+    render();
+  }
+}
+function askPurge(groupId: string, keep: string): void {
+  const g = state.dedupGroups.find((x) => x.id === groupId);
+  if (!g) return;
+  const trash = g.members.filter((m) => m.id !== keep);
+  const size = trash.reduce((n, m) => n + m.size, 0);
+  state.dedupConfirm = { kind: "group", groupId, keep, trash, files: trash.length, bytes: size };
+  render();
+}
+function askExact(): void {
+  const o = state.dedup;
+  if (!o) return;
+  state.dedupConfirm = { kind: "exact", files: o.exact_files ?? 0, bytes: o.exact_bytes ?? 0 };
+  render();
+}
+function askEmpty(): void {
+  const t = state.dedupTrash;
+  state.dedupConfirm = {
+    kind: "empty",
+    files: t?.count ?? state.dedup?.trash_count ?? 0,
+    bytes: t?.bytes ?? state.dedup?.trash_bytes ?? 0,
+  };
+  render();
+}
+async function confirmDedup(): Promise<void> {
+  const c = state.dedupConfirm;
+  if (!c) return;
+  state.dedupConfirm = null;
+  render();
+  try {
+    if (c.kind === "group" && c.groupId && c.keep && c.trash) {
+      await api.dedupPurge(c.groupId, c.keep, c.trash.map((m) => m.id));
+      state.dedupGroups = state.dedupGroups.filter((g) => g.id !== c.groupId);
+      toast(`Moving ${c.files} ${c.files === 1 ? "copy" : "copies"} to the trash…`);
+    } else if (c.kind === "exact") {
+      const r = await api.dedupResolveExact();
+      toast(`Moving ${r.files} identical ${r.files === 1 ? "copy" : "copies"} to the trash…`);
+    } else if (c.kind === "empty") {
+      const r = await api.dedupEmpty();
+      toast(r.existing ? "A trash clean-up is already running — try again in a minute" : "Emptying the trash…");
+    }
+    await loadDedup();
+  } catch (err) {
+    toast(`Couldn't do that: ${(err as Error).message}`);
+  }
+  render();
+}
+async function restoreTrash(id: string): Promise<void> {
+  try {
+    await api.dedupRestore([id]);
+    if (state.dedupTrash) {
+      state.dedupTrash = { ...state.dedupTrash, items: state.dedupTrash.items.filter((i) => i.id !== id) };
+    }
+    toast("Restoring…");
+    await loadDedup();
+  } catch (err) {
+    toast(`Couldn't restore: ${(err as Error).message}`);
+  }
+  render();
+}
+function trashListHtml(): string {
+  const t = state.dedupTrash;
+  if (!t) {
+    return `<div style="${cardBox};padding:28px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">Loading the trash…</div>`;
+  }
+  if (!t.items.length) {
+    return `<div style="background:#111411;border:1px dashed #272c25;border-radius:18px;padding:40px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">The trash is empty.</div>`;
+  }
+  const admin = !!state.me?.is_admin;
+  const empty = admin
+    ? `<button data-act="dedupEmpty" class="ghost" style="margin-left:auto;background:none;border:1px solid rgba(255,76,56,.45);border-radius:12px;color:#ff6b58;font:600 11px 'Instrument Sans';padding:7px 12px;cursor:pointer">Empty trash</button>`
+    : "";
+  const rows = t.items
+    .map((i) => {
+      const restore = admin
+        ? `<button data-act="dedupRestore" data-id="${esc(i.id)}" class="ghost" style="background:none;border:1px solid #272c25;border-radius:10px;color:#99a091;font:600 10.5px 'Instrument Sans';padding:5px 10px;cursor:pointer;flex-shrink:0">restore</button>`
+        : "";
+      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid #1a1e19">
+        <div style="flex:1;min-width:0"><div style="font:400 11.5px 'JetBrains Mono';color:#c9cfbf;overflow-wrap:anywhere">${esc(i.original_path)}</div><div style="font:400 10px 'JetBrains Mono';color:#5d6456;margin-top:3px">${esc(bytes(i.size))} · trashed ${esc(relTime(i.trashed_at))}</div></div>
+        ${restore}
+      </div>`;
+    })
+    .join("");
+  return `<section style="${cardBox};overflow:hidden">
+    <div style="display:flex;align-items:center;gap:10px;padding:13px 16px;flex-wrap:wrap"><span style="font:600 13px 'Instrument Sans'">Trash</span><span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">${t.count} ${t.count === 1 ? "file" : "files"} · ${esc(bytes(t.bytes))} · deleted for good after 30 days</span>${empty}</div>
+    ${rows}
+  </section>`;
+}
+function dedupConfirmHtml(): string {
+  const c = state.dedupConfirm;
+  if (!c) return "";
+  const size = esc(bytes(c.bytes));
+  let title: string;
+  let body: string;
+  let go: string;
+  if (c.kind === "group") {
+    title = "Move to the trash";
+    const list = (c.trash ?? [])
+      .map((m) => `<li style="font:400 11px 'JetBrains Mono';color:#c9cfbf;overflow-wrap:anywhere;margin-top:4px">${esc(m.path)} <span style="color:#5d6456">${esc(bytes(m.size))}</span></li>`)
+      .join("");
+    body = `<ul style="margin:10px 0 0;padding-left:16px">${list}</ul><div style="margin-top:12px">These move to the library trash and can be restored for 30 days. Download records that pointed at them will point at the copy you keep.</div>`;
+    go = `Move ${c.files} to the trash`;
+  } else if (c.kind === "exact") {
+    title = "Trash identical copies";
+    body = `<b style="color:#e9ede3">${c.files}</b> ${c.files === 1 ? "file" : "files"} (${size}) byte-for-byte identical to a copy that stays. They can be restored from the trash for 30 days.`;
+    go = `Move ${c.files} to the trash`;
+  } else {
+    title = "Empty the trash";
+    body = `This deletes <b style="color:#e9ede3">${c.files}</b> ${c.files === 1 ? "file" : "files"} (${size}) for good. It can't be undone. Type <b style="color:#e9ede3">EMPTY</b> to confirm.
+      <input data-inp="dedupEmptyTyped" placeholder="EMPTY" autocomplete="off" style="display:block;width:100%;margin-top:12px;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:600 13px 'JetBrains Mono';padding:9px 12px"/>`;
+    go = "Delete forever";
+  }
+  const danger = c.kind === "empty";
+  return `<div data-act="dedupConfirmCancel" style="position:fixed;inset:0;background:rgba(5,7,5,.66);z-index:70;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadein .15s ease">
+    <div data-act="noop" style="background:#111411;border:1px solid #272c25;border-radius:20px;padding:22px;max-width:460px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.6);cursor:default">
+      <div style="font:600 15px 'Instrument Sans'">${title}</div>
+      <div style="font:400 12.5px 'Instrument Sans';color:#99a091;margin-top:8px;line-height:1.55">${body}</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:18px">
+        <button data-act="dedupConfirmGo" ${danger ? "disabled" : ""} style="background:${danger ? "#ff4c38" : "#e9ede3"};color:#0c0e0c;border:none;border-radius:14px;padding:11px;font:700 12.5px 'Instrument Sans';cursor:pointer">${go}</button>
+        <button data-act="dedupConfirmCancel" style="background:none;color:#5d6456;border:none;padding:6px;font:500 12px 'Instrument Sans';cursor:pointer">Cancel</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 // ---------- boot ----------

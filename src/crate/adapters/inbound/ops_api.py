@@ -242,6 +242,17 @@ def create_app(
             return user.id if user is not None else None
         return SERVICE_USER_ID if api_key is None else None
 
+    def _is_admin(request: Request) -> bool:
+        """Admin = the automation key, the single-user console, or a logged-in user
+        flagged admin (CRATE_ADMIN_SPOTIFY_IDS, applied at login)."""
+        if api_key is not None and request.headers.get("x-api-key") == api_key:
+            return True
+        if auth is None:
+            return api_key is None  # single-user console: no accounts to tell apart
+        raw = request.cookies.get(_SESSION_COOKIE) or ""
+        user = auth.resolve_session(raw) if raw else None
+        return user is not None and user.is_admin
+
     def require_auth(request: Request) -> None:
         """Gate the ``/api`` router, stashing the user id on ``request.state`` for
         attribution (see :func:`_authenticate`)."""
@@ -890,7 +901,7 @@ def create_app(
                 sync_router(jobs, sync, interval_s=sync_interval_s, preview=sync_preview)
             )
     if dedup is not None:
-        api.include_router(dedup_router(dedup, jobs, library_root=library_root))
+        api.include_router(dedup_router(dedup, jobs, library_root=library_root, is_admin=_is_admin))
     app.include_router(api)
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")
