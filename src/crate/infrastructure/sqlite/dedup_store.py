@@ -22,7 +22,7 @@ _FACT_COLS = (
 _MEMBER_COLS = (
     "f.id, f.path, f.size, f.codec, f.lossless, f.bitrate, f.bit_depth, f.sample_rate, "
     "f.duration_s, f.artist, f.album, f.title, f.has_cover, f.acoustid_id, f.acoustid_score, "
-    "f.aid_artist, f.aid_title, f.mbid"
+    "f.aid_artist, f.aid_title, f.mbid, f.mtime_ns"
 )
 
 
@@ -189,6 +189,15 @@ class SqliteDedupStore:
                 "SELECT COUNT(*) FROM dup_members m JOIN dup_groups g ON g.id = m.group_id "
                 "WHERE m.rank > 0 AND g.variant = 0"
             ).fetchone()
+            trash = self._conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM trash_items WHERE state='trashed'"
+            ).fetchone()
+            exact = self._conn.execute(
+                "SELECT COUNT(DISTINCT g.id), COUNT(m.file_id), COALESCE(SUM(f.size), 0) "
+                "FROM dup_groups g JOIN dup_members m ON m.group_id = g.id AND m.rank > 0 "
+                "JOIN library_files f ON f.id = m.file_id "
+                "WHERE g.reason = 'exact' AND g.variant = 0"
+            ).fetchone()
             last = self._conn.execute(
                 "SELECT value FROM dedup_state WHERE key='last_grouped_at'"
             ).fetchone()
@@ -199,15 +208,59 @@ class SqliteDedupStore:
             "duplicate_files": int(extra[0]),
             "reclaimable_bytes": int(grp["reclaimable"]),
             "last_grouped_at": last[0] if last else None,
+            "trash_count": int(trash[0]),
+            "trash_bytes": int(trash[1]),
+            "exact_groups": int(exact[0]),
+            "exact_files": int(exact[1]),
+            "exact_bytes": int(exact[2]),
         }
 
+    def group(self, group_id: str) -> dict[str, Any] | None:
+        found = self.groups(limit=1, ids=[group_id])
+        return found[0] if found else None
+
+    def exact_groups(self) -> list[dict[str, Any]]:
+        """Every byte-identical group (the one-click clean-up)."""
+        return self.groups(limit=100_000, variants=False, reason="exact")
+
+    def trash(self, limit: int = 200) -> dict[str, Any]:
+        with self._lock:
+            rows = [
+                dict(r)
+                for r in self._conn.execute(
+                    "SELECT id, file_id, original_path, trash_path, size, trashed_at, user_id, "
+                    "group_id FROM trash_items WHERE state='trashed' "
+                    "ORDER BY trashed_at DESC LIMIT ?",
+                    (limit,),
+                )
+            ]
+            total = self._conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM trash_items WHERE state='trashed'"
+            ).fetchone()
+        return {"items": rows, "count": int(total[0]), "bytes": int(total[1])}
+
     def groups(
-        self, *, limit: int = 50, offset: int = 0, variants: bool | None = None
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        variants: bool | None = None,
+        ids: list[str] | None = None,
+        reason: str | None = None,
     ) -> list[dict[str, Any]]:
         """Groups, biggest win first (variants last), each with ranked members."""
-        where, params = "", []
+        clauses: list[str] = []
+        params: list[Any] = []
         if variants is not None:
-            where, params = "WHERE variant = ?", [1 if variants else 0]
+            clauses.append("variant = ?")
+            params.append(1 if variants else 0)
+        if ids is not None:
+            clauses.append(f"id IN ({','.join('?' * len(ids))})" if ids else "0")
+            params += ids
+        if reason is not None:
+            clauses.append("reason = ?")
+            params.append(reason)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._lock:
             groups = [
                 dict(r)

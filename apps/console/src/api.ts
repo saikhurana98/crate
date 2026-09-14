@@ -480,6 +480,20 @@ export const api = {
       {},
     ),
   dedupAudioUrl: (fileId: string) => `/api/dedup/files/${encodeURIComponent(fileId)}/audio`,
+  // Admin only: trash copies, clean up byte-identical copies, restore, empty.
+  dedupPurge: (groupId: string, keep: string, trash: string[]) =>
+    send<{ job: string; files: number; bytes: number }>(
+      "POST",
+      `/api/dedup/groups/${encodeURIComponent(groupId)}/purge`,
+      { keep, trash },
+    ),
+  dedupResolveExact: () =>
+    send<{ job: string; files: number; bytes: number }>("POST", "/api/dedup/resolve-exact", {}),
+  dedupTrash: () => get<DedupTrash>("/api/dedup/trash"),
+  dedupRestore: (ids: string[]) =>
+    send<{ job: string; files: number }>("POST", "/api/dedup/trash/restore", { ids }),
+  dedupEmpty: () =>
+    send<{ job: string; existing: boolean }>("POST", "/api/dedup/trash/empty", { confirm: "EMPTY" }),
   // Per-user library import (Phase 2).
   libraryPlaylists: () => get<Playlist[]>("/api/library/playlists"),
   importLibrary: (body: { source: "liked" | "playlist"; playlist_id?: string; name?: string }) =>
@@ -644,6 +658,12 @@ export interface DedupOverview {
   duplicate_files: number; // extra copies beyond each group's keeper (variants excluded)
   reclaimable_bytes: number;
   last_grouped_at: string | null;
+  trash_count?: number;
+  trash_bytes?: number;
+  exact_groups?: number;
+  exact_files?: number; // byte-identical extra copies (the one-click clean-up)
+  exact_bytes?: number;
+  mutating?: boolean; // a purge / restore / empty job is queued or running
   last_scan: {
     id: string;
     status: JobSummary["status"];
@@ -678,6 +698,7 @@ export interface DupMember {
   rank: number; // 0 = keeper
   is_keeper: boolean;
   score_vs_keeper: number | null;
+  mtime_ns?: number;
   reasons: string[]; // why the keeper beats this copy
   tag_score?: number;
   canonical?: boolean;
@@ -693,4 +714,21 @@ export interface DupGroup {
   reclaimable_bytes: number;
   created_at: string;
   members: DupMember[];
+}
+
+export interface TrashItem {
+  id: string;
+  file_id: string;
+  original_path: string;
+  trash_path: string;
+  size: number;
+  trashed_at: string;
+  user_id: string | null;
+  group_id: string | null;
+}
+
+export interface DedupTrash {
+  items: TrashItem[];
+  count: number;
+  bytes: number;
 }
