@@ -1,16 +1,17 @@
 """Deduplicate HTTP routes (mounted under the authenticated ``/api`` router).
 
-Read-only for now: the index and duplicate-group overview, and the ranked groups.
-The one write, "ignore", only records that a group's copies are intentionally
-different, so any logged-in user may do it. Destructive actions (purge, trash)
-arrive with their own admin gate.
+Reads: the index and duplicate-group overview, the ranked groups, and a single
+library file for the A/B ear test. "Ignore" only records that a group's copies are
+intentionally different, so any logged-in user may do it.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from crate.adapters.inbound.ops_jobs import JobsPort
 from crate.application.auth import SERVICE_USER_ID
@@ -23,6 +24,7 @@ class DedupPort(Protocol):
         self, *, limit: int = 50, offset: int = 0, variants: bool | None = None
     ) -> list[dict[str, Any]]: ...
     def ignore_group(self, group_id: str, user_id: str | None) -> int | None: ...
+    def file_path(self, file_id: str) -> str | None: ...
 
 
 def _last_scan(jobs: JobsPort | None) -> dict[str, Any] | None:
@@ -36,7 +38,9 @@ def _last_scan(jobs: JobsPort | None) -> dict[str, Any] | None:
     return {k: j.get(k) for k in keys} | {"summary": j.get("summary"), "error": j.get("error")}
 
 
-def dedup_router(dedup: DedupPort, jobs: JobsPort | None = None) -> APIRouter:
+def dedup_router(
+    dedup: DedupPort, jobs: JobsPort | None = None, *, library_root: Path | None = None
+) -> APIRouter:
     router = APIRouter()
 
     @router.get("/dedup/overview")
@@ -58,5 +62,19 @@ def dedup_router(dedup: DedupPort, jobs: JobsPort | None = None) -> APIRouter:
         if pairs is None:
             raise HTTPException(status_code=404, detail="no such group")
         return {"id": group_id, "ignored_pairs": pairs}
+
+    @router.get("/dedup/files/{file_id}/audio")
+    def file_audio(file_id: str) -> FileResponse:
+        """Stream one library file (HTTP Range, so <audio> can seek) for the A/B test.
+        The path comes from the index, never the client, and must resolve inside the
+        library root, so neither ``..`` nor a symlink can reach anything else."""
+        rel = dedup.file_path(file_id)
+        if library_root is None or rel is None:
+            raise HTTPException(status_code=404, detail="no such file")
+        root = library_root.resolve()
+        path = (root / rel).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise HTTPException(status_code=404, detail="no such file")
+        return FileResponse(str(path))
 
     return router

@@ -31,6 +31,9 @@ import {
   type SyncPlaylist,
   type SyncTierCard,
   type TierMember,
+  type DedupOverview,
+  type DupGroup,
+  type DupMember,
 } from "./api";
 import { bytes, dur, ago as relTime, pct, esc } from "./format";
 import { createRenderer, effect } from "./reactive";
@@ -174,7 +177,17 @@ interface State {
   feed: FeedRow[]; // shared activity feed (Phase C) — who requested what + latencies
   isMobile: boolean; // viewport <= 640px -> tabbed app layout
   activeTab: "cascade" | "activity" | "tracks"; // mobile bottom-nav selection
-  page: "console" | "bulk" | "review" | "feed" | "sync"; // top-level page (#/page)
+  page: "console" | "bulk" | "review" | "feed" | "sync" | "dedup"; // top-level page (#/page)
+  // Deduplicate page
+  dedup: DedupOverview | null;
+  dedupErr: string | null;
+  dedupTab: "dupes" | "variants";
+  dedupGroups: DupGroup[];
+  dedupMore: boolean; // another page of groups to load
+  dedupLoading: boolean;
+  dedupOpen: Record<string, boolean>; // group id -> expanded
+  dedupBusy: Record<string, boolean>; // group id -> action in flight
+  dedupScanBusy: boolean;
   moreOpen: boolean; // mobile MORE sheet (Feed / Downloads / Review)
   // Library Sync page
   sync: SyncOverview | null;
@@ -282,6 +295,15 @@ const state: State = {
   syncJobs: [],
   historyStatus: null,
   historyUploading: false,
+  dedup: null,
+  dedupErr: null,
+  dedupTab: "dupes",
+  dedupGroups: [],
+  dedupMore: false,
+  dedupLoading: false,
+  dedupOpen: {},
+  dedupBusy: {},
+  dedupScanBusy: false,
   bulkPanel: false,
   bulkText: "",
   bulkBusy: false,
@@ -1628,6 +1650,7 @@ function navTabsHtml(): string {
   return `<nav style="display:flex;align-items:center;gap:3px;background:#131612;border:1px solid #22261f;border-radius:20px;padding:3px;margin-left:4px;flex-shrink:0">
       <button data-act="gotoConsole" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "console")};transition:.15s">console</button>
       <button data-act="gotoSync" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "sync")};transition:.15s">sync${syncBadgeHtml()}</button>
+      <button data-act="gotoDedup" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "dedup")};transition:.15s">dedup${dedupCount() > 0 ? `<span style="font:700 10px 'Doto';min-width:17px;height:17px;padding:0 4px;border-radius:10px;background:#39402f;color:#e9ede3;display:inline-flex;align-items:center;justify-content:center">${dedupCount()}</span>` : ""}</button>
       <button data-act="gotoFeed" style="border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "feed")};transition:.15s">feed</button>
       <button data-act="gotoBulk" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "bulk")};transition:.15s">downloads${dlBadge}</button>
       <button data-act="gotoReview" style="display:inline-flex;align-items:center;gap:7px;border:none;border-radius:16px;cursor:pointer;font:600 11px 'JetBrains Mono';letter-spacing:.04em;padding:6px 14px;${seg(state.page === "review")};transition:.15s">review${rvBadge}</button>
@@ -1910,7 +1933,8 @@ function mBottomNav(): string {
   const act = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>`;
   const lib = `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle><path d="M11 18V5l10-2v13"></path></svg>`;
   const moreIcon = `<svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>`;
-  const moreOn = state.moreOpen || state.page === "feed" || state.page === "bulk" || state.page === "review";
+  const moreOn =
+    state.moreOpen || state.page === "feed" || state.page === "bulk" || state.page === "review" || state.page === "dedup";
   const moreBadge = activeReview() + activeDownloads() > 0;
   const more = `<button data-act="openMore" style="flex:1;background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0;color:${ink(moreOn)};transition:color .15s;position:relative">${moreIcon}<span style="font:600 9.5px 'JetBrains Mono';letter-spacing:.08em">MORE</span>${moreBadge ? dot : ""}</button>`;
   return `<nav style="position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:640px;z-index:45;background:rgba(12,14,12,.92);backdrop-filter:blur(14px);border-top:1px solid #1d211c;display:flex;padding:6px 8px calc(14px + env(safe-area-inset-bottom))">
@@ -1932,6 +1956,7 @@ function moreSheetHtml(): string {
     ${item("gotoFeed", "Feed", "Everyone's requests and how fast they landed", 0)}
     ${item("gotoBulk", "Downloads", "Bulk batches and their progress", activeDownloads())}
     ${item("gotoReview", "Review", "Failed and lossy grabs to fix", activeReview())}
+    ${item("gotoDedup", "Dedup", "Duplicate copies in your library", 0)}
     <div style="height:calc(14px + env(safe-area-inset-bottom))"></div>`;
   return sheetChrome(inner, state.moreOpen, "closeMore", 50, "380px");
 }
@@ -2654,6 +2679,7 @@ function _viewBody(): string {
   if (state.page === "review") return pageShell(reviewPageHtml());
   if (state.page === "feed") return pageShell(feedPageHtml());
   if (state.page === "sync" && !state.isMobile) return pageShell(syncPageHtml());
+  if (state.page === "dedup") return pageShell(dedupPageHtml());
   return `${state.isMobile ? viewMobile() : viewDesktop()}${bulkPanelHtml()}`;
 }
 
@@ -3015,7 +3041,7 @@ function bindEvents(): void {
 }
 
 // ---------- pages + hash routing ----------
-const PAGES: readonly State["page"][] = ["console", "feed", "bulk", "review", "sync"];
+const PAGES: readonly State["page"][] = ["console", "feed", "bulk", "review", "sync", "dedup"];
 function pageFromHash(): State["page"] {
   const h = location.hash.replace(/^#\/?/, "");
   return (PAGES as readonly string[]).includes(h) ? (h as State["page"]) : "console";
@@ -3038,6 +3064,7 @@ function applyPage(p: State["page"]): void {
     });
   else if (p === "review") void loadReview().then(render);
   else if (p === "sync") openSync();
+  else if (p === "dedup") openDedup();
 }
 // Navigate: push #/page (console = no hash) so reload and back/forward work.
 function goto(p: State["page"]): void {
@@ -3541,6 +3568,248 @@ function syncPageHtml(): string {
   </main>${syncConfirmHtml()}`;
 }
 
+// ---------- Deduplicate page ----------
+const DEDUP_PAGE = 40;
+const REASON_LABEL: Record<DupGroup["reason"], string> = {
+  exact: "identical files",
+  acoustid: "same recording",
+  fp: "same audio",
+};
+function dedupCount(): number {
+  return state.dedup ? state.dedup.groups - state.dedup.variant_groups : 0;
+}
+function scanRunning(): boolean {
+  const st = state.dedup?.last_scan?.status;
+  return st === "queued" || st === "running";
+}
+async function loadDedup(): Promise<void> {
+  try {
+    state.dedup = await api.dedupOverview();
+    state.dedupErr = null;
+  } catch (err) {
+    state.dedupErr = (err as Error).message;
+  }
+}
+async function loadDedupGroups(append = false): Promise<void> {
+  state.dedupLoading = true;
+  render();
+  try {
+    const offset = append ? state.dedupGroups.length : 0;
+    const rows = await api.dedupGroups(state.dedupTab === "variants", offset, DEDUP_PAGE);
+    state.dedupGroups = append ? [...state.dedupGroups, ...rows] : rows;
+    state.dedupMore = rows.length === DEDUP_PAGE;
+  } catch (err) {
+    state.dedupErr = (err as Error).message;
+  } finally {
+    state.dedupLoading = false;
+    render();
+  }
+}
+function openDedup(): void {
+  void loadDedup().then(render);
+  void loadDedupGroups();
+}
+async function runDedupScan(): Promise<void> {
+  if (state.dedupScanBusy || scanRunning()) return;
+  state.dedupScanBusy = true;
+  render();
+  try {
+    const r = await api.runJob("dedup_scan");
+    toast(r.existing ? "A scan is already running" : "Scan started — only new or changed files are fingerprinted");
+    await loadDedup();
+  } catch (err) {
+    toast(`Couldn't start a scan: ${(err as Error).message}`);
+  } finally {
+    state.dedupScanBusy = false;
+    render();
+  }
+}
+async function ignoreGroup(id: string): Promise<void> {
+  if (state.dedupBusy[id]) return;
+  state.dedupBusy = { ...state.dedupBusy, [id]: true };
+  render();
+  try {
+    await api.dedupIgnore(id);
+    state.dedupGroups = state.dedupGroups.filter((g) => g.id !== id);
+    toast("Ignored — these copies won't be flagged again");
+    void loadDedup().then(render);
+  } catch (err) {
+    toast(`Couldn't ignore: ${(err as Error).message}`);
+  } finally {
+    state.dedupBusy = { ...state.dedupBusy, [id]: false };
+    render();
+  }
+}
+function bindDedupEvents(): void {
+  root.addEventListener("click", (e) => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>("[data-act]");
+    if (!el) return;
+    const act = el.dataset.act!;
+    if (act === "gotoDedup") goto("dedup");
+    else if (act === "dedupScan") void runDedupScan();
+    else if (act === "dedupTab") {
+      const tab = el.dataset.tab as State["dedupTab"];
+      if (tab === state.dedupTab) return;
+      state.dedupTab = tab;
+      state.dedupGroups = [];
+      void loadDedupGroups();
+    } else if (act === "dedupToggle") {
+      const id = el.dataset.id!;
+      state.dedupOpen = { ...state.dedupOpen, [id]: !state.dedupOpen[id] };
+      render();
+    } else if (act === "dedupIgnore") void ignoreGroup(el.dataset.id!);
+    else if (act === "dedupMore") void loadDedupGroups(true);
+  });
+  // Poll the overview: every 4 s while a scan runs on the page, else slowly (badge).
+  let ticks = 0;
+  window.setInterval(() => {
+    if (state.authRequired || !state.me) return;
+    ticks++;
+    const onPage = state.page === "dedup";
+    const wasRunning = scanRunning();
+    if ((onPage && (wasRunning || ticks % 15 === 0)) || ticks % 30 === 0) {
+      void loadDedup().then(() => {
+        if (onPage && wasRunning && !scanRunning()) void loadDedupGroups(); // fresh groups
+        render();
+      });
+    }
+  }, 4000);
+}
+
+function khzLabel(hz: number | null): string {
+  return `${((hz ?? 0) / 1000).toFixed(1).replace(/\.0$/, "")} kHz`;
+}
+function qualityLabel(m: DupMember): string {
+  const codec = (m.codec ?? "?").toUpperCase();
+  if (m.lossless) return `${codec} · ${m.bit_depth ?? 16}-bit / ${khzLabel(m.sample_rate)}`;
+  return `${codec} · ${m.bitrate ? Math.round(m.bitrate / 1000) : "?"} kbps`;
+}
+function dedupStatusHtml(o: DedupOverview): string {
+  const scan = o.last_scan;
+  const running = scanRunning();
+  const busy = running || state.dedupScanBusy;
+  const done = scan?.progress_done ?? 0;
+  const total = scan?.progress_total ?? 0;
+  const pct = running && total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const last = !scan ? "never" : running ? "running now" : scan.finished_at ? relTime(scan.finished_at) : scan.status;
+  const failed =
+    scan?.status === "failed"
+      ? ` <span title="${esc(scan.error ?? "")}" style="color:#ff4c38;font:600 11px 'JetBrains Mono'">failed</span>`
+      : "";
+  const cell = (label: string, value: string) =>
+    `<div style="display:flex;flex-direction:column;gap:3px;min-width:0"><span style="font:600 9px 'JetBrains Mono';letter-spacing:.14em;color:#464d40">${label}</span><span style="font:600 13px 'Instrument Sans';color:#e9ede3;white-space:nowrap">${value}</span></div>`;
+  const bar = running
+    ? `<div style="flex-basis:100%;display:flex;align-items:center;gap:10px"><div style="flex:1;height:5px;background:#272c25;border-radius:3px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#e9ede3;border-radius:3px;transition:width .4s"></div></div><span style="font:500 10.5px 'JetBrains Mono';color:#99a091;white-space:nowrap">${total ? `${done.toLocaleString()} / ${total.toLocaleString()}` : "starting…"}</span></div>`
+    : "";
+  return `<section style="${cardBox};padding:15px 18px;display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+    ${cell("LAST SCAN", esc(last) + failed)}
+    ${cell("GROUPED", esc(o.last_grouped_at ? relTime(o.last_grouped_at) : "not yet"))}
+    ${cell("IDENTIFIED", `${o.identified.toLocaleString()} / ${o.files.toLocaleString()}`)}
+    <button data-act="dedupScan" ${busy ? "disabled" : ""} style="margin-left:auto;background:${busy ? "#181c17" : "#e9ede3"};color:${busy ? "#5d6456" : "#0c0e0c"};border:none;border-radius:16px;padding:9px 16px;font:700 12px 'Instrument Sans';cursor:${busy ? "default" : "pointer"}">${running ? "Scanning…" : state.dedupScanBusy ? "Starting…" : "Scan now"}</button>
+    ${bar}
+  </section>`;
+}
+function dedupCardsHtml(o: DedupOverview): string {
+  const card = (label: string, value: string, sub: string) =>
+    `<div style="${cardBox};padding:14px 16px"><div style="font:600 9px 'JetBrains Mono';letter-spacing:.14em;color:#464d40">${label}</div><div style="font:800 24px 'Doto';margin-top:6px">${value}</div><div style="font:400 10.5px 'Instrument Sans';color:#5d6456;margin-top:3px">${sub}</div></div>`;
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:14px">
+    ${card("FILES", o.files.toLocaleString(), esc(bytes(o.bytes)))}
+    ${card("DUPLICATE GROUPS", dedupCount().toLocaleString(), `${o.variant_groups} more are variants`)}
+    ${card("EXTRA COPIES", o.duplicate_files.toLocaleString(), "beyond the one to keep")}
+    ${card("RECLAIMABLE", esc(bytes(o.reclaimable_bytes)), "if the extra copies go")}
+  </div>`;
+}
+function memberCardHtml(m: DupMember, variant: boolean): string {
+  const keep = m.is_keeper;
+  const badge = keep
+    ? `<span style="font:700 9.5px 'JetBrains Mono';letter-spacing:.1em;color:#0c0e0c;background:#1db954;border-radius:8px;padding:3px 8px">KEEP</span>`
+    : `<span style="font:700 9.5px 'JetBrains Mono';letter-spacing:.1em;color:#99a091;border:1px solid #39402f;border-radius:8px;padding:2px 7px">${variant ? "VARIANT" : "EXTRA COPY"}</span>`;
+  const yes = (b: boolean | undefined, word = "") =>
+    b ? `<span style="color:#1db954">✓</span>${word ? ` ${word}` : ""}` : `<span style="color:#464d40">—</span>`;
+  const row = (k: string, v: string) =>
+    `<div style="display:flex;gap:10px;padding:5px 0;border-top:1px solid #1a1e19"><span style="flex:0 0 92px;font:500 9.5px 'JetBrains Mono';color:#5d6456;letter-spacing:.06em;padding-top:2px">${k}</span><span style="flex:1;min-width:0;font:400 11.5px 'Instrument Sans';color:#c9cfbf;overflow-wrap:anywhere">${v}</span></div>`;
+  const tags = [m.artist, m.title].filter(Boolean).join(" – ") + (m.album ? ` · ${m.album}` : "");
+  const aid = m.acoustid_id
+    ? `${esc([m.aid_artist, m.aid_title].filter(Boolean).join(" – ") || "matched")} <span style="color:#5d6456">${Math.round((m.acoustid_score ?? 0) * 100)}%</span>`
+    : `<span style="color:#464d40">not identified</span>`;
+  const sim = keep ? "—" : m.score_vs_keeper != null ? `${(m.score_vs_keeper * 100).toFixed(1)}%` : "n/a";
+  const why =
+    !keep && m.reasons.length
+      ? `<div style="margin-top:9px;font:500 11px 'Instrument Sans';color:#f2c14e;line-height:1.4">Keeper wins: ${esc(m.reasons.join(", "))}</div>`
+      : "";
+  return `<div style="background:${keep ? "rgba(29,185,84,.05)" : "#0e100d"};border:1px solid ${keep ? "rgba(29,185,84,.35)" : "#22261f"};border-radius:14px;padding:12px 13px;min-width:0">
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:8px">${playBtn(`dup:${m.id}`, api.dedupAudioUrl(m.id), 28)}${badge}<span style="margin-left:auto;font:600 10.5px 'JetBrains Mono';color:#e9ede3;text-align:right">${esc(qualityLabel(m))}</span></div>
+    <div style="font:400 10.5px 'JetBrains Mono';color:#99a091;overflow-wrap:anywhere;margin-bottom:6px">${esc(m.path)}</div>
+    ${row("LENGTH", m.duration_s ? dur(m.duration_s) : "?")}
+    ${row("SIZE", esc(bytes(m.size)))}
+    ${row("TAGS", tags ? esc(tags) : `<span style="color:#464d40">none</span>`)}
+    ${row("COVER", yes(m.has_cover, "embedded"))}
+    ${row("FOLDER", yes(m.canonical, "canonical path"))}
+    ${row("DOWNLOAD", yes(m.referenced, "has a record"))}
+    ${row("ACOUSTID", aid)}
+    ${row("SIMILARITY", sim)}
+    ${why}
+  </div>`;
+}
+function dupGroupHtml(g: DupGroup): string {
+  const keeper = g.members.find((m) => m.is_keeper) ?? g.members[0];
+  const open = !!state.dedupOpen[g.id];
+  const name = keeper
+    ? [keeper.artist, keeper.title].filter(Boolean).join(" – ") || keeper.path.split("/").pop() || keeper.path
+    : g.id;
+  const ink = g.reason === "exact" ? "#1db954" : g.reason === "acoustid" ? "#e9ede3" : "#f2c14e";
+  const chip = `<span style="font:600 9.5px 'JetBrains Mono';letter-spacing:.06em;color:${ink};border:1px solid #39402f;border-radius:10px;padding:2px 8px">${REASON_LABEL[g.reason]} · ${Math.round(g.confidence * 100)}%</span>`;
+  const right = g.variant ? "lengths differ" : `${bytes(g.reclaimable_bytes)} reclaimable`;
+  const head = `<button data-act="dedupToggle" data-id="${esc(g.id)}" style="width:100%;display:flex;align-items:center;gap:12px;background:none;border:none;padding:13px 16px;cursor:pointer;text-align:left;color:#e9ede3">
+      <div style="flex:1;min-width:0"><div style="font:600 13px 'Instrument Sans';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(name)}</div><div style="display:flex;align-items:center;gap:8px;margin-top:5px;flex-wrap:wrap">${chip}<span style="font:400 10.5px 'JetBrains Mono';color:#5d6456">${g.members.length} copies</span></div></div>
+      <span style="font:600 11px 'JetBrains Mono';color:${g.variant ? "#5d6456" : "#99a091"};white-space:nowrap">${esc(right)}</span><span style="color:#5d6456">${open ? "▾" : "▸"}</span>
+    </button>`;
+  if (!open) return `<section style="${cardBox};overflow:hidden">${head}</section>`;
+  const busy = !!state.dedupBusy[g.id];
+  const note = g.variant
+    ? "Different lengths — likely an edit, live or extended cut. Nothing here is suggested for removal."
+    : "Play the copies side by side to be sure.";
+  const cards = g.members.map((m) => memberCardHtml(m, g.variant)).join("");
+  return `<section style="${cardBox};overflow:hidden">${head}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;padding:0 16px 12px">${cards}</div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:0 16px 14px">
+      <span style="flex:1;min-width:200px;font:400 11px 'Instrument Sans';color:#5d6456">${note}</span>
+      <button data-act="dedupIgnore" data-id="${esc(g.id)}" ${busy ? "disabled" : ""} class="ghost" style="background:none;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 11px 'Instrument Sans';padding:7px 12px;cursor:pointer">They're different — ignore</button>
+    </div>
+  </section>`;
+}
+function dedupPageHtml(): string {
+  const pad = state.isMobile ? "16px 16px 104px" : "22px 28px 72px";
+  const head = `<div style="display:flex;align-items:baseline;gap:14px;margin-bottom:16px;flex-wrap:wrap">
+      <h1 style="margin:0;font:600 18px 'Instrument Sans';letter-spacing:-.01em">Deduplicate</h1>
+      <p style="margin:0;font:400 12.5px 'Instrument Sans';color:#99a091">Copies of the same recording in your library, found by AcoustID and acoustic fingerprints. Each group shows the copy to keep and why.</p>
+    </div>`;
+  const o = state.dedup;
+  if (!o) {
+    const msg = state.dedupErr ? `Couldn't load Deduplicate: ${state.dedupErr}` : "Loading…";
+    return `<main style="max-width:1300px;margin:0 auto;padding:${pad}">${head}<div style="${cardBox};padding:28px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">${esc(msg)}</div></main>`;
+  }
+  const tab = (t: State["dedupTab"], label: string, n: number) =>
+    `<button data-act="dedupTab" data-tab="${t}" style="border:none;border-radius:14px;cursor:pointer;font:600 11px 'JetBrains Mono';padding:6px 13px;${state.dedupTab === t ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#99a091"}">${label} ${n}</button>`;
+  const tabs = `<div style="display:flex;gap:3px;background:#131612;border:1px solid #22261f;border-radius:18px;padding:3px;width:fit-content;margin:18px 0 12px">${tab("dupes", "duplicates", dedupCount())}${tab("variants", "variants", o.variant_groups)}</div>`;
+  let list: string;
+  if (state.dedupGroups.length) list = state.dedupGroups.map(dupGroupHtml).join("");
+  else {
+    const empty = state.dedupLoading
+      ? "Loading groups…"
+      : !o.last_grouped_at
+        ? "No groups yet. Groups are built at the end of a library scan — run one now, or wait for tonight's."
+        : state.dedupTab === "variants"
+          ? "No variants."
+          : "No duplicate copies found.";
+    list = `<div style="background:#111411;border:1px dashed #272c25;border-radius:18px;padding:40px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">${esc(empty)}</div>`;
+  }
+  const more = state.dedupMore
+    ? `<button data-act="dedupMore" ${state.dedupLoading ? "disabled" : ""} class="ghost" style="margin:14px auto 0;display:block;background:none;border:1px solid #272c25;border-radius:14px;color:#99a091;font:600 11px 'JetBrains Mono';padding:8px 16px;cursor:pointer">${state.dedupLoading ? "loading…" : "load more"}</button>`
+    : "";
+  return `<main style="max-width:1300px;margin:0 auto;padding:${pad};animation:fadein .25s ease">${head}${dedupStatusHtml(o)}${dedupCardsHtml(o)}${tabs}<div style="display:flex;flex-direction:column;gap:10px">${list}</div>${more}</main>`;
+}
+
 // ---------- boot ----------
 function flashOAuthResult(): void {
   const params = new URLSearchParams(location.search);
@@ -3570,6 +3839,7 @@ function watchViewport(): void {
 async function boot(): Promise<void> {
   bindEvents(); // once
   bindSyncEvents(); // once
+  bindDedupEvents(); // once
   watchViewport(); // desktop <-> mobile layout switch
   flashOAuthResult();
   render(); // header/skeleton
@@ -3596,6 +3866,7 @@ async function boot(): Promise<void> {
   void loadBatches().then(render);
   applyPage(pageFromHash()); // #/sync etc. survives a reload
   void loadSync().then(render); // nav badge: last synced
+  void loadDedup().then(render); // nav badge: duplicate groups
 
   // side effects — run once
   effect(connectLive);

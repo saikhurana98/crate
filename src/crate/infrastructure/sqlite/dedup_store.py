@@ -240,6 +240,14 @@ class SqliteDedupStore:
             g["members"] = by_group.get(g["id"], [])
         return groups
 
+    def file_path(self, file_id: str) -> str | None:
+        """A live file's path relative to the library root (for playback)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT path FROM library_files WHERE id=? AND missing_since IS NULL", (file_id,)
+            ).fetchone()
+        return str(row[0]) if row else None
+
     def ignore_group(self, group_id: str, user_id: str | None) -> int | None:
         """Mark every pair in the group "intentionally different" and drop the group.
         Returns how many pairs were recorded, or None for an unknown group."""

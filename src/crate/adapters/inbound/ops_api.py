@@ -180,6 +180,7 @@ def create_app(
     sync_interval_s: float = 7200.0,
     sync_preview: Callable[[str], str | None] | None = None,
     dedup: DedupPort | None = None,
+    library_root: Path | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -889,7 +890,7 @@ def create_app(
                 sync_router(jobs, sync, interval_s=sync_interval_s, preview=sync_preview)
             )
     if dedup is not None:
-        api.include_router(dedup_router(dedup, jobs))
+        api.include_router(dedup_router(dedup, jobs, library_root=library_root))
     app.include_router(api)
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")
