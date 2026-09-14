@@ -21,6 +21,7 @@ class JobKind(StrEnum):
     DEDUP_PURGE = "dedup_purge"
     TRASH_RESTORE = "trash_restore"
     TRASH_EMPTY = "trash_empty"
+    NAVIDROME_PUSH = "navidrome_push"
 
 
 class Lane(StrEnum):
@@ -47,6 +48,7 @@ LANE_OF: dict[JobKind, Lane] = {
     JobKind.DEDUP_PURGE: Lane.MUTATE,
     JobKind.TRASH_RESTORE: Lane.MUTATE,
     JobKind.TRASH_EMPTY: Lane.MUTATE,
+    JobKind.NAVIDROME_PUSH: Lane.SYNC,
 }
 
 # At most one queued-or-running job of these kinds at a time (enforced by the

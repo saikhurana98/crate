@@ -29,6 +29,12 @@ from starlette.requests import HTTPConnection
 
 from crate.adapters.inbound.ops_dedup import DedupPort, dedup_router
 from crate.adapters.inbound.ops_jobs import JobsPort, jobs_router, mount_jobs_ws
+from crate.adapters.inbound.ops_navidrome import (
+    NavidromePort,
+    VerifyFn,
+    mirror_import,
+    navidrome_router,
+)
 from crate.adapters.inbound.ops_sync import (
     DEFAULT_UPLOAD_MAX_BYTES,
     ListeningPort,
@@ -181,6 +187,9 @@ def create_app(
     sync_preview: Callable[[str], str | None] | None = None,
     dedup: DedupPort | None = None,
     library_root: Path | None = None,
+    navidrome: NavidromePort | None = None,
+    navidrome_verify: VerifyFn | None = None,
+    navidrome_public_url: str | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -780,7 +789,7 @@ def create_app(
         source = str(body.get("source", "")).strip()
         try:
             if source == "liked":
-                name, tracks = "Liked Songs", library.liked_songs(uid)
+                pid, name, tracks = "liked", "Liked Songs", library.liked_songs(uid)
             elif source == "playlist":
                 pid = str(body.get("playlist_id", "")).strip()
                 if not pid:
@@ -798,7 +807,20 @@ def create_app(
         bid = store.create_batch(name, "spotify", name, len(tracks), user_id=uid)
         for track in tracks:
             store.enqueue(track["query"], batch_id=bid, identity=to_identity(track), user_id=uid)
-        return {"id": bid, "name": name, "origin": "spotify", "total": len(tracks)}
+        # Also create it in the user's own Navidrome account, if they've linked one.
+        mirrored = (
+            navidrome is not None
+            and navidrome_verify is not None
+            and uid != SERVICE_USER_ID
+            and mirror_import(navidrome, jobs, uid, pid, name)
+        )
+        return {
+            "id": bid,
+            "name": name,
+            "origin": "spotify",
+            "total": len(tracks),
+            "navidrome": mirrored,
+        }
 
     @api.get("/feed")
     def feed(
@@ -900,6 +922,12 @@ def create_app(
             api.include_router(
                 sync_router(jobs, sync, interval_s=sync_interval_s, preview=sync_preview)
             )
+    if navidrome is not None:
+        api.include_router(
+            navidrome_router(
+                navidrome, jobs, verify=navidrome_verify, public_url=navidrome_public_url
+            )
+        )
     if dedup is not None:
         api.include_router(dedup_router(dedup, jobs, library_root=library_root, is_admin=_is_admin))
     app.include_router(api)
