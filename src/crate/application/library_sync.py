@@ -697,19 +697,35 @@ class LibrarySyncService:
         }
 
     def tier_members(
-        self, user_id: str, tier: int, *, limit: int, offset: int
+        self,
+        user_id: str,
+        tier: int,
+        *,
+        limit: int,
+        offset: int,
+        include_in_library: bool = False,
     ) -> list[dict[str, Any]]:
+        """A tier's songs, best-ranked first. By default only the ones **not** in the
+        library yet (what the tier would still download); pagination applies after
+        that filter."""
         index = self._index()
-        rows = self._tiers.members(user_id, AffinityTier(tier), limit=limit, offset=offset)
-        return [r | {"in_library": index.has_key(str(r["merge_key"]))} for r in rows]
+        rows = [
+            r | {"in_library": index.has_key(str(r["merge_key"]))}
+            for r in self._tiers.members(user_id, AffinityTier(tier), limit=_ALL)
+        ]
+        if not include_in_library:
+            rows = [r for r in rows if not r["in_library"]]
+        return rows[offset : offset + limit]
 
     def _tier_card(self, user_id: str, tier: AffinityTier, index: LibraryIndex) -> dict[str, Any]:
         members = self._tiers.members(user_id, tier, limit=_ALL)
+        have = sum(1 for m in members if index.has_key(str(m["merge_key"])))
         return {
             "tier": int(tier),
             "label": TIER_LABELS[int(tier)],
             "count": len(members),
-            "in_library": sum(1 for m in members if index.has_key(str(m["merge_key"]))),
+            "in_library": have,
+            "missing": len(members) - have,
             "approximate": any(m["approximate"] for m in members),
         }
 
@@ -729,6 +745,7 @@ class LibrarySyncService:
             "label": TIER_LABELS[1],
             "count": len(core),
             "in_library": sum(core.values()),
+            "missing": len(core) - sum(core.values()),
             "approximate": False,
         }
         cards = [tier1] + [
