@@ -1,11 +1,21 @@
 name: deploy
 
-# Deploys to the self-hosted runner on music-stack. Runs after a green release
-# (image published to GHCR) or on demand. Pulls the released image, recreates
-# the LIVE console + serve containers, health-checks the console, and rolls back
-# to the previous image if it does not come up.
+# Deploys to the self-hosted runners on the music-stack hosts. Runs after a
+# green release (image published to GHCR) or on demand. Pulls the released
+# image, recreates the LIVE console + serve containers, health-checks the
+# console, and rolls back to the previous image if it does not come up.
+#
+# Hosts (one runner label each, same stack layout on both):
+#   music-stack      — personal host
+#   lab-music-stack  — Ashoka lab CT (navidrome + music-assistant + crate)
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: which host to deploy to
+        type: choice
+        default: all
+        options: [all, music-stack, lab-music-stack]
   workflow_run:
     workflows: ["release"]
     types: [completed]
@@ -26,13 +36,34 @@ env:
   HEALTH_URL: http://127.0.0.1:8788/api/health
 
 jobs:
-  deploy:
+  plan:
     # only after a green release on main, or a manual dispatch
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main')
-    runs-on: [self-hosted, music-stack]
+    runs-on: ubuntu-latest
+    outputs:
+      runners: ${{ steps.pick.outputs.runners }}
+    steps:
+      - id: pick
+        run: |
+          target="${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}"
+          if [ "$target" = "all" ]; then
+            echo 'runners=["music-stack","lab-music-stack"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "runners=[\"$target\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.plan.outputs.runners) }}
+    runs-on:
+      - self-hosted
+      - ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - name: Log in to GHCR
@@ -52,7 +83,7 @@ jobs:
       - name: Recreate services
         # --force-recreate: the :latest tag is stable, so compose must be told to
         # replace the running containers even though the tag string is unchanged.
-        # --no-deps: leave navidrome / explo alone.
+        # --no-deps: leave navidrome / music-assistant / explo alone.
         run: docker compose -f "$STACK" up -d --force-recreate --no-deps $SERVICES
 
       - name: Health check
