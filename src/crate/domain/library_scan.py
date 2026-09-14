@@ -27,6 +27,8 @@ AUDIO_EXTENSIONS = frozenset(
         ".wma",
         ".ape",
         ".wv",
+        ".webm",  # yt-dlp rips land as opus-in-webm
+        ".mka",
     }
 )
 

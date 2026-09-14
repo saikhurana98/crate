@@ -27,6 +27,7 @@ from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import HTTPConnection
 
+from crate.adapters.inbound.ops_dedup import DedupPort, dedup_router
 from crate.adapters.inbound.ops_jobs import JobsPort, jobs_router, mount_jobs_ws
 from crate.adapters.inbound.ops_sync import (
     DEFAULT_UPLOAD_MAX_BYTES,
@@ -178,6 +179,7 @@ def create_app(
     sync: SyncPort | None = None,
     sync_interval_s: float = 7200.0,
     sync_preview: Callable[[str], str | None] | None = None,
+    dedup: DedupPort | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -886,6 +888,8 @@ def create_app(
             api.include_router(
                 sync_router(jobs, sync, interval_s=sync_interval_s, preview=sync_preview)
             )
+    if dedup is not None:
+        api.include_router(dedup_router(dedup, jobs))
     app.include_router(api)
     if static_dir is not None:
         app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="ui")

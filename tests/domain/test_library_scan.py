@@ -31,6 +31,7 @@ def known(
         ("cover.jpg", False),
         ("flac", False),
         (".flac", False),
+        ("Bakki.webm", True),
     ],
 )
 def test_is_audio(name: str, ok: bool) -> None:
