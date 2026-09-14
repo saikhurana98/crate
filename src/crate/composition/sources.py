@@ -1240,6 +1240,7 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         sync_preview=_build_preview_resolver(),
         dedup=_build_dedup_store(),
         library_root=Path(os.environ.get("CRATE_LIBRARY_ROOT") or "/library"),
+        **_build_navidrome(),
         sync_interval_s=float(os.environ.get("CRATE_LIBRARY_SYNC_INTERVAL", "7200")),
     )
 
@@ -1285,6 +1286,7 @@ def _job_handlers() -> dict[Any, Any]:  # pragma: no cover - IO wiring
         JobKind.DEDUP_PURGE: _dedup_purge_job,
         JobKind.TRASH_RESTORE: _trash_restore_job,
         JobKind.TRASH_EMPTY: _trash_empty_job,
+        JobKind.NAVIDROME_PUSH: _navidrome_push_job,
     }
 
 
@@ -1584,6 +1586,89 @@ def _dedup_scan_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover -
         conn.close()
 
 
+def _navidrome_post(url: str, params: Any) -> Any:  # pragma: no cover - IO wiring
+    """POST a Subsonic call as a form (Navidrome accepts POST; long songId lists
+    would overflow a GET URL)."""
+    import httpx
+
+    resp = httpx.post(url, data=params, timeout=20.0)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _build_navidrome() -> dict[str, Any]:  # pragma: no cover - IO wiring
+    """Console side of per-user Navidrome: the account store and a credential check.
+    Empty (the feature is off) unless CRATE_NAVIDROME_URL is set. The browser
+    link uses CRATE_NAVIDROME_PUBLIC_URL, since the API URL is usually internal."""
+    url = os.environ.get("CRATE_NAVIDROME_URL")
+    if not url:
+        return {}
+    from crate.infrastructure.crypto import SecretBox
+    from crate.infrastructure.navidrome.client import SubsonicClient
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.navidrome_store import SqliteNavidromeStore
+
+    def verify(user: str, password: str) -> None:
+        SubsonicClient(url, user, password, post=_navidrome_post).ping()
+
+    return {
+        "navidrome": SqliteNavidromeStore(connect(db_path()), SecretBox.from_keyfile(_keyfile())),
+        "navidrome_verify": verify,
+        "navidrome_public_url": os.environ.get("CRATE_NAVIDROME_PUBLIC_URL") or None,
+    }
+
+
+def _navidrome_push_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
+    """``navidrome_push`` (on import, on link, and every 30 min): bring every
+    mirrored playlist up to date in its owner's Navidrome account (orchestration
+    in ``application.navidrome_mirror``). A job from a user pushes only theirs."""
+    from datetime import UTC, datetime
+
+    from crate.application.auth import SERVICE_USER_ID
+    from crate.application.library_sync import LIKED_ID, LibraryIndex
+    from crate.application.navidrome_mirror import run_navidrome_push
+    from crate.infrastructure.crypto import SecretBox
+    from crate.infrastructure.navidrome.client import SubsonicClient
+    from crate.infrastructure.sqlite.config_store import ConfigStore
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.navidrome_store import SqliteNavidromeStore
+    from crate.infrastructure.sqlite.store import RequestStore
+    from crate.infrastructure.sqlite.sync_store import SqlitePlaylistSyncStore
+
+    url = os.environ.get("CRATE_NAVIDROME_URL")
+    if not os.environ.get("CRATE_DB") or not url:
+        return {"skipped": "CRATE_NAVIDROME_URL not set"}
+    conn = connect(db_path())
+    try:
+        box = SecretBox.from_keyfile(_keyfile())
+        requests = RequestStore(conn)
+        reader = build_spotify_user(ConfigStore(conn, box), requests)
+        items = SqlitePlaylistSyncStore(conn)
+
+        def tracks_for(user_id: str, spotify_id: str) -> list[dict[str, Any]]:
+            stored = items.items(user_id, spotify_id)  # kept fresh by library_sync
+            if stored or reader is None:
+                return stored
+            if spotify_id == LIKED_ID:
+                return reader.liked_songs(user_id)
+            return reader.playlist_tracks(user_id, spotify_id)
+
+        isrcs, keys = requests.library_index()
+        uid = job.user_id if job.user_id and job.user_id != SERVICE_USER_ID else None
+        return run_navidrome_push(
+            ctx,
+            SqliteNavidromeStore(conn, box),
+            client_for=lambda u, p: SubsonicClient(url, u, p, post=_navidrome_post),
+            tracks_for=tracks_for,
+            index=LibraryIndex(frozenset(isrcs), frozenset(keys)),
+            now=datetime.now(UTC),
+            user_id=uid,
+            playlist_id=job.params.get("playlist_id") or None,
+        )
+    finally:
+        conn.close()
+
+
 def _navidrome_rescan() -> Callable[[], None] | None:  # pragma: no cover - IO wiring
     """Ask Navidrome to rescan after a purge or restore; ``None`` unless
     CRATE_NAVIDROME_URL / _USER / _PASS are all set."""
@@ -1728,6 +1813,10 @@ def _job_schedules(handlers: dict[Any, Any]) -> list[Any]:  # pragma: no cover -
         JobKind.DEDUP_SCAN: float(os.environ.get("CRATE_DEDUP_SCAN_INTERVAL", "86400")),
         JobKind.TRASH_EMPTY: float(os.environ.get("CRATE_TRASH_EMPTY_INTERVAL", "86400")),
     }
+    if os.environ.get("CRATE_NAVIDROME_URL"):  # nothing to push to otherwise
+        intervals[JobKind.NAVIDROME_PUSH] = float(
+            os.environ.get("CRATE_NAVIDROME_PUSH_INTERVAL", "1800")
+        )
     return [Schedule(k, v) for k, v in intervals.items() if k in handlers and v > 0]
 
 

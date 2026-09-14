@@ -210,6 +210,7 @@ export interface BulkResult {
   name: string;
   origin: string;
   total: number;
+  navidrome?: boolean; // also being created in the user's own Navidrome account
 }
 
 // --- review tab (user-assisted retry / re-download) ---
@@ -470,6 +471,18 @@ export const api = {
   syncPreviewUrl: (spotifyId: string) => `/api/sync/preview/${encodeURIComponent(spotifyId)}`,
   syncMissing: (scope: string) =>
     get<{ scope: string; missing: number }>(`/api/sync/missing?scope=${encodeURIComponent(scope)}`),
+  // Per-user Navidrome: link your own account; imported playlists are mirrored into it.
+  navidrome: () => get<NavidromeState>("/api/navidrome"),
+  navidromeLink: (username: string, password: string) =>
+    send<{ account: NavidromeAccount }>("PUT", "/api/navidrome/account", { username, password }),
+  navidromeUnlink: () => send<{ removed: boolean }>("DELETE", "/api/navidrome/account", {}),
+  navidromeMirror: (spotifyId: string, mirror: boolean, name?: string) =>
+    send<NavidromeLink & { job: string | null }>(
+      "PUT",
+      `/api/navidrome/playlists/${encodeURIComponent(spotifyId)}`,
+      { mirror, name },
+    ),
+  navidromePush: () => send<{ job: string | null }>("POST", "/api/navidrome/push", {}),
   // Deduplicate page: overview, ranked groups, ignore, and a file for the A/B test.
   dedupOverview: () => get<DedupOverview>("/api/dedup/overview"),
   dedupGroups: (variants: boolean, offset = 0, limit = 40) =>
@@ -776,4 +789,29 @@ export interface FolderDup {
   files: number;
   other_files: number;
   ratio: number;
+}
+
+// --- Navidrome (per-user account + mirrored playlists) ---
+export interface NavidromeAccount {
+  username: string;
+  verified_at: string;
+}
+
+export interface NavidromeLink {
+  spotify_id: string; // "liked" = Liked Songs
+  name: string;
+  navidrome_id: string | null; // null until the first push creates it
+  enabled: boolean;
+  matched: number; // songs in the Navidrome playlist
+  in_library: number; // tracks crate has (the ceiling for matched)
+  total: number; // tracks in the Spotify playlist
+  last_pushed_at: string | null;
+  error: string | null;
+}
+
+export interface NavidromeState {
+  configured: boolean;
+  public_url: string | null;
+  account: NavidromeAccount | null;
+  playlists: NavidromeLink[];
 }

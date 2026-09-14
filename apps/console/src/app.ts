@@ -38,6 +38,7 @@ import {
   type TagAudit,
   type OrphanAudit,
   type FolderDup,
+  type NavidromeState,
 } from "./api";
 import { bytes, dur, ago as relTime, pct, esc } from "./format";
 import { createRenderer, effect } from "./reactive";
@@ -212,6 +213,8 @@ interface State {
   syncRunBusy: boolean;
   syncOpenTier: Record<number, boolean>; // tier -> song list expanded
   syncMembers: Record<number, TierMember[]>; // tier -> loaded songs
+  navidrome: NavidromeState | null; // the user's Navidrome link + mirrored playlists
+  ndBusy: Record<string, boolean>; // "link" | "push" | "pl:<spotify id>"
   syncBusy: Record<string, boolean>; // "tier:<n>" | "pl:<id>" -> toggle in flight
   syncConfirm: SyncConfirm | null; // the backfill-or-future-only choice
   syncLog: JobEvent[]; // live tail (or a replayed job's log)
@@ -304,6 +307,8 @@ const state: State = {
   syncRunBusy: false,
   syncOpenTier: {},
   syncMembers: {},
+  navidrome: null,
+  ndBusy: {},
   syncBusy: {},
   syncConfirm: null,
   syncLog: [],
@@ -455,8 +460,10 @@ async function runImport(source: "liked" | "playlist", key: string, pid?: string
   render();
   try {
     const res = await api.importLibrary({ source, playlist_id: pid, name });
-    toast(`Importing “${res.name}” — ${res.total} track${res.total === 1 ? "" : "s"} queued`);
+    const nd = res.navidrome ? " · adding it to your Navidrome" : "";
+    toast(`Importing “${res.name}” — ${res.total} track${res.total === 1 ? "" : "s"} queued${nd}`);
     void loadBatches().then(render);
+    if (res.navidrome) void loadNavidrome().then(render);
   } catch (err) {
     toast(`Import failed: ${(err as Error).message}`);
   } finally {
@@ -3104,9 +3111,84 @@ async function loadSync(): Promise<void> {
   }
 }
 async function loadSyncExtras(): Promise<void> {
-  const [jobs, hist] = await Promise.allSettled([api.jobs("library_sync"), api.historyStatus()]);
+  const [jobs, hist] = await Promise.allSettled([
+    api.jobs("library_sync"),
+    api.historyStatus(),
+    loadNavidrome(),
+  ]);
   if (jobs.status === "fulfilled") state.syncJobs = jobs.value.slice(0, 12);
   if (hist.status === "fulfilled") state.historyStatus = hist.value;
+}
+
+// --- Navidrome: link your own account; imported playlists are mirrored into it ---
+let ndUser = "";
+let ndPass = ""; // only until the link succeeds; never stored
+async function loadNavidrome(): Promise<void> {
+  try {
+    state.navidrome = await api.navidrome();
+  } catch {
+    state.navidrome = null; // not configured on this server, or logged out
+  }
+}
+function setNdBusy(key: string, on: boolean): void {
+  state.ndBusy = { ...state.ndBusy, [key]: on };
+  render();
+}
+async function linkNavidrome(): Promise<void> {
+  if (state.ndBusy.link) return;
+  if (!ndUser.trim() || !ndPass) {
+    toast("Enter your Navidrome username and password");
+    return;
+  }
+  setNdBusy("link", true);
+  try {
+    await api.navidromeLink(ndUser.trim(), ndPass);
+    ndPass = "";
+    toast("Navidrome linked — playlists you import will be created there too");
+    await loadNavidrome();
+  } catch (err) {
+    toast(`Couldn't link Navidrome: ${(err as Error).message}`);
+  } finally {
+    setNdBusy("link", false);
+  }
+}
+async function unlinkNavidrome(): Promise<void> {
+  if (!confirm("Unlink your Navidrome account? Playlists already created there stay.")) return;
+  try {
+    await api.navidromeUnlink();
+    toast("Navidrome unlinked");
+    await loadNavidrome();
+  } catch (err) {
+    toast(`Couldn't unlink: ${(err as Error).message}`);
+  }
+  render();
+}
+async function pushNavidrome(): Promise<void> {
+  if (state.ndBusy.push) return;
+  setNdBusy("push", true);
+  try {
+    await api.navidromePush();
+    toast("Updating your Navidrome playlists");
+  } catch (err) {
+    toast(`Couldn't start: ${(err as Error).message}`);
+  } finally {
+    setNdBusy("push", false);
+  }
+}
+async function toggleMirror(pid: string, name: string): Promise<void> {
+  const key = `pl:${pid}`;
+  if (state.ndBusy[key]) return;
+  const on = !!state.navidrome?.playlists.find((l) => l.spotify_id === pid && l.enabled);
+  setNdBusy(key, true);
+  try {
+    await api.navidromeMirror(pid, !on, name);
+    toast(on ? `Stopped mirroring “${name}”` : `Adding “${name}” to your Navidrome`);
+    await loadNavidrome();
+  } catch (err) {
+    toast(`Couldn't change: ${(err as Error).message}`);
+  } finally {
+    setNdBusy(key, false);
+  }
 }
 // Load the page's data and start the live log (one socket, kept open).
 function openSync(): void {
@@ -3311,6 +3393,20 @@ function bindSyncEvents(): void {
       render();
     } else if (act === "replayJob") void replayJob(el.dataset.id!);
     else if (act === "syncLogLive") backToLive();
+    else if (act === "ndLink") void linkNavidrome();
+    else if (act === "ndUnlink") void unlinkNavidrome();
+    else if (act === "ndPush") void pushNavidrome();
+    else if (act === "ndMirror") void toggleMirror(el.dataset.pid!, el.dataset.name!);
+  });
+  // Navidrome link form: keep what's typed across re-renders; Enter submits.
+  root.addEventListener("input", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.dataset?.inp === "ndUser") ndUser = el.value;
+    else if (el.dataset?.inp === "ndPass") ndPass = el.value;
+  });
+  root.addEventListener("keydown", (e) => {
+    const el = e.target as HTMLInputElement;
+    if ((el.dataset?.inp === "ndPass" || el.dataset?.inp === "ndUser") && e.key === "Enter") void linkNavidrome();
   });
   root.addEventListener("change", (e) => {
     const el = e.target as HTMLInputElement;
@@ -3491,8 +3587,70 @@ function playlistRowHtml(p: SyncPlaylist): string {
     </div>
     ${dot}
     <div style="display:flex;gap:1px;background:#0c0e0c;border:1px solid #22261f;border-radius:11px;padding:2px;flex-shrink:0">${(["inherit", "on", "off"] as const).map(seg).join("")}</div>
+    ${ndMirrorBtn(p)}
     ${imp}
   </div>`;
+}
+function ndMirrorBtn(p: SyncPlaylist): string {
+  if (!state.navidrome?.account) return "";
+  const link = state.navidrome.playlists.find((l) => l.spotify_id === p.spotify_id && l.enabled);
+  const busy = !!state.ndBusy[`pl:${p.spotify_id}`];
+  const title = !link
+    ? "Also create this playlist in your Navidrome"
+    : link.error
+      ? `Navidrome: ${link.error}`
+      : link.last_pushed_at
+        ? `In your Navidrome: ${link.matched} of ${link.total} songs. Click to stop mirroring.`
+        : "Adding to your Navidrome…";
+  const look = !link
+    ? "background:none;border:1px solid #272c25;color:#5d6456"
+    : link.error
+      ? "background:rgba(242,193,78,.1);border:1px solid rgba(242,193,78,.4);color:#f2c14e"
+      : "background:rgba(29,185,84,.12);border:1px solid rgba(29,185,84,.4);color:#1db954";
+  const count = link?.last_pushed_at ? ` ${link.matched}` : "";
+  return `<button data-act="ndMirror" data-pid="${esc(p.spotify_id)}" data-name="${esc(p.name)}" ${busy ? "disabled" : ""} title="${esc(title)}" style="flex-shrink:0;border-radius:10px;font:700 9px 'JetBrains Mono';letter-spacing:.06em;padding:5px 7px;cursor:${busy ? "wait" : "pointer"};${look}">ND${count}</button>`;
+}
+const ND_INPUT = "flex:1;min-width:130px;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:400 12px 'Instrument Sans';padding:8px 11px";
+function navidromeCardHtml(): string {
+  const nd = state.navidrome;
+  if (!nd?.configured) return "";
+  const btn = (act: string, label: string, busy = false, primary = false) =>
+    `<button data-act="${act}" ${busy ? "disabled" : ""} style="flex-shrink:0;border-radius:12px;font:700 11px 'Instrument Sans';padding:7px 13px;cursor:${busy ? "wait" : "pointer"};${primary ? "background:#e9ede3;border:1px solid transparent;color:#0c0e0c" : "background:none;border:1px solid #272c25;color:#99a091"}">${label}</button>`;
+  if (!nd.account) {
+    const busy = !!state.ndBusy.link;
+    return `<section style="${cardBox};padding:14px 16px">
+      <div style="font:600 13px 'Instrument Sans'">Navidrome</div>
+      <div style="font:400 11.5px 'Instrument Sans';color:#99a091;margin-top:4px;line-height:1.45">Link your own Navidrome account and every playlist you import is created there too, filling in as its songs download. Your password is checked with Navidrome, then stored encrypted.</div>
+      <div style="display:flex;gap:8px;margin-top:11px;flex-wrap:wrap">
+        <input data-inp="ndUser" value="${esc(ndUser)}" placeholder="Navidrome username" autocomplete="username" autocapitalize="none" spellcheck="false" style="${ND_INPUT}"/>
+        <input data-inp="ndPass" value="${esc(ndPass)}" type="password" placeholder="Password" autocomplete="current-password" style="${ND_INPUT}"/>
+        ${btn("ndLink", busy ? "Checking…" : "Link", busy, true)}
+      </div>
+    </section>`;
+  }
+  const mirrored = nd.playlists.filter((l) => l.enabled);
+  const songs = mirrored.reduce((a, l) => a + l.matched, 0);
+  const failing = mirrored.find((l) => l.error);
+  const open = nd.public_url
+    ? `<a href="${esc(nd.public_url)}/app/#/playlist" target="_blank" rel="noopener noreferrer" style="font:500 10.5px 'JetBrains Mono';color:#99a091;text-decoration:none">open ↗</a>`
+    : "";
+  const warn = failing
+    ? `<div style="margin-top:8px;font:400 11px 'Instrument Sans';color:#f2c14e;line-height:1.4">“${esc(failing.name)}”: ${esc(failing.error ?? "")}</div>`
+    : "";
+  const summary = mirrored.length
+    ? `${mirrored.length} playlist${mirrored.length === 1 ? "" : "s"} mirrored · ${songs} song${songs === 1 ? "" : "s"} there so far`
+    : "Nothing mirrored yet. Import a playlist, or press ND on one below.";
+  return `<section style="${cardBox};padding:14px 16px">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font:600 13px 'Instrument Sans'">Navidrome</span>
+      <span style="width:6px;height:6px;border-radius:50%;background:#1db954"></span>
+      <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nd.account.username)}</span>
+      <span style="margin-left:auto">${open}</span>
+    </div>
+    <div style="font:400 11.5px 'Instrument Sans';color:#99a091;margin-top:5px">${summary}</div>
+    ${warn}
+    <div style="display:flex;gap:8px;margin-top:11px;flex-wrap:wrap">${btn("ndPush", state.ndBusy.push ? "Starting…" : "Update now", !!state.ndBusy.push)}${btn("ndUnlink", "Unlink")}</div>
+  </section>`;
 }
 function playlistsHtml(s: SyncOverview): string {
   const rows = s.playlists.length
@@ -3576,7 +3734,7 @@ function syncSectionsHtml(): string {
     return `<div style="${cardBox};padding:28px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">${esc(msg)}</div>`;
   }
   const left = `${syncStatusHtml(s)}${historyBannerHtml()}<div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">${s.tiers.map(tierCardHtml).join("")}</div>`;
-  const right = `<div style="display:flex;flex-direction:column;gap:14px">${playlistsHtml(s)}${syncLogHtml()}${syncJobsHtml()}</div>`;
+  const right = `<div style="display:flex;flex-direction:column;gap:14px">${navidromeCardHtml()}${playlistsHtml(s)}${syncLogHtml()}${syncJobsHtml()}</div>`;
   if (state.isMobile) return `${left}<div style="margin-top:14px">${right}</div>`;
   return `<div class="grid2" style="display:grid;grid-template-columns:58fr 42fr;gap:16px;align-items:start"><div>${left}</div>${right}</div>`;
 }
