@@ -11,6 +11,7 @@ from typing import Any
 
 from crate.application.library_dedup import GroupRecord, IndexRow
 from crate.domain.chromaprint import unpack_raw
+from crate.domain.library_audit import folder_duplicates, folder_of, tags_disagree
 from crate.domain.library_dedup import Edge, pair
 from crate.infrastructure.sqlite.db import now_iso
 
@@ -292,6 +293,75 @@ class SqliteDedupStore:
             g["variant"] = bool(g["variant"])
             g["members"] = by_group.get(g["id"], [])
         return groups
+
+    # --- audits (the Dedup page's extra tabs) ---
+    def tag_audit(self, limit: int = 200) -> dict[str, Any]:
+        """Files whose tags disagree with a confident AcoustID match."""
+        with self._lock:
+            rows = [
+                dict(r)
+                for r in self._conn.execute(
+                    "SELECT id, path, artist, title, aid_artist, aid_title, acoustid_score "
+                    "FROM library_files WHERE missing_since IS NULL AND acoustid_score >= 0.8 "
+                    "AND (aid_title IS NOT NULL OR aid_artist IS NOT NULL) ORDER BY path"
+                )
+            ]
+        out = []
+        for r in rows:
+            field = tags_disagree(r["artist"], r["title"], r["aid_artist"], r["aid_title"])
+            if field:
+                out.append(r | {"disagrees": field})
+        return {"count": len(out), "items": out[:limit]}
+
+    def orphans(self, root: str, limit: int = 200) -> dict[str, Any]:
+        """Download records whose file isn't in the library any more, and library
+        files no download record points at (added by hand or by another tool)."""
+        prefix = root.rstrip("/") + "/"
+        with self._lock:
+            live = [
+                str(r[0])
+                for r in self._conn.execute(
+                    "SELECT path FROM library_files WHERE missing_since IS NULL ORDER BY path"
+                )
+            ]
+            downloads = [
+                dict(r)
+                for r in self._conn.execute(
+                    "SELECT d.request_id, d.path, d.quality_label, r.query, r.artist, r.title, "
+                    "r.finished_at FROM downloads d JOIN requests r ON r.id = d.request_id "
+                    "ORDER BY r.finished_at DESC"
+                )
+            ]
+        live_abs = {prefix + p for p in live}
+        gone = [d for d in downloads if d["path"].startswith(prefix) and d["path"] not in live_abs]
+        referenced = {d["path"] for d in downloads}
+        unrecorded = [p for p in live if prefix + p not in referenced]
+        return {
+            "records_missing": {"count": len(gone), "items": gone[:limit]},
+            "files_unrecorded": {"count": len(unrecorded), "items": unrecorded[:limit]},
+        }
+
+    def folder_dupes(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Album folders whose tracks are mostly duplicates of another folder's."""
+        with self._lock:
+            paths = [
+                str(r[0])
+                for r in self._conn.execute(
+                    "SELECT path FROM library_files WHERE missing_since IS NULL"
+                )
+            ]
+            members = [
+                (str(g), folder_of(str(p)))
+                for g, p in self._conn.execute(
+                    "SELECT m.group_id, f.path FROM dup_members m "
+                    "JOIN dup_groups g ON g.id = m.group_id AND g.variant = 0 "
+                    "JOIN library_files f ON f.id = m.file_id"
+                )
+            ]
+        sizes: dict[str, int] = {}
+        for p in paths:
+            sizes[folder_of(p)] = sizes.get(folder_of(p), 0) + 1
+        return [vars(d) for d in folder_duplicates(members, sizes)[:limit]]
 
     def file_path(self, file_id: str) -> str | None:
         """A live file's path relative to the library root (for playback)."""

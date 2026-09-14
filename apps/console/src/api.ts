@@ -490,6 +490,9 @@ export const api = {
   dedupResolveExact: () =>
     send<{ job: string; files: number; bytes: number }>("POST", "/api/dedup/resolve-exact", {}),
   dedupTrash: () => get<DedupTrash>("/api/dedup/trash"),
+  dedupAuditTags: () => get<TagAudit>("/api/dedup/audit/tags"),
+  dedupAuditOrphans: () => get<OrphanAudit>("/api/dedup/audit/orphans"),
+  dedupAuditFolders: () => get<FolderDup[]>("/api/dedup/audit/folders"),
   dedupRestore: (ids: string[]) =>
     send<{ job: string; files: number }>("POST", "/api/dedup/trash/restore", { ids }),
   dedupEmpty: () =>
@@ -731,4 +734,44 @@ export interface DedupTrash {
   items: TrashItem[];
   count: number;
   bytes: number;
+}
+
+// --- Deduplicate audits ---
+export interface TagAudit {
+  count: number;
+  items: {
+    id: string;
+    path: string;
+    artist: string | null;
+    title: string | null;
+    aid_artist: string | null;
+    aid_title: string | null;
+    acoustid_score: number;
+    disagrees: "title" | "artist" | "both";
+  }[];
+}
+
+export interface OrphanAudit {
+  records_missing: {
+    count: number;
+    items: {
+      request_id: string;
+      path: string;
+      quality_label: string;
+      query: string;
+      artist: string | null;
+      title: string | null;
+      finished_at: string | null;
+    }[];
+  };
+  files_unrecorded: { count: number; items: string[] };
+}
+
+export interface FolderDup {
+  folder: string;
+  other: string;
+  shared: number;
+  files: number;
+  other_files: number;
+  ratio: number;
 }
