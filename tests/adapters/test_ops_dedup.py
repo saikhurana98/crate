@@ -17,11 +17,17 @@ from crate.infrastructure.sqlite.library_store import SqliteLibraryStore
 from crate.infrastructure.sqlite.store import RequestStore
 
 
-def _client(tmp_path: Path) -> tuple[TestClient, dict[str, str]]:
+def _client(
+    tmp_path: Path, library_root: Path | None = None, extra: tuple[str, ...] = ()
+) -> tuple[TestClient, dict[str, str]]:
     conn = connect(tmp_path / "crate.db")
     lib = SqliteLibraryStore(conn)
     lib.apply_plan(
-        ScanPlan(new=[DiskEntry(p, 1000, 1, None) for p in ("a.flac", "b.mp3", "c.flac", "d.flac")])
+        ScanPlan(
+            new=[
+                DiskEntry(p, 1000, 1, None) for p in ("a.flac", "b.mp3", "c.flac", "d.flac", *extra)
+            ]
+        )
     )
     ids = {f.path: f.id for f in lib.indexed()}
     store = SqliteDedupStore(conn)
@@ -50,7 +56,9 @@ def _client(tmp_path: Path) -> tuple[TestClient, dict[str, str]]:
     )
     jobs = SqliteJobStore(conn)
     jobs.enqueue(JobKind.DEDUP_SCAN, triggered_by="schedule")
-    return TestClient(create_app(RequestStore(conn), dedup=store, jobs=jobs)), ids
+    return TestClient(
+        create_app(RequestStore(conn), dedup=store, jobs=jobs, library_root=library_root)
+    ), ids
 
 
 def test_overview_and_groups(tmp_path: Path) -> None:
@@ -75,3 +83,21 @@ def test_ignore(tmp_path: Path) -> None:
     assert r.status_code == 200 and r.json()["ignored_pairs"] == 1
     assert [g["id"] for g in client.get("/api/dedup/groups").json()] == ["g2"]
     assert client.post("/api/dedup/groups/g1/ignore").status_code == 404
+
+
+def test_file_audio_streams_only_indexed_files_inside_the_root(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "a.flac").write_bytes(b"fLaC0123456789")
+    (tmp_path / "secret.flac").write_bytes(b"do not serve")
+    client, ids = _client(tmp_path, root, extra=("../secret.flac",))
+    r = client.get(f"/api/dedup/files/{ids['a.flac']}/audio", headers={"Range": "bytes=0-3"})
+    assert r.status_code == 206 and r.content == b"fLaC"
+    assert client.get(f"/api/dedup/files/{ids['../secret.flac']}/audio").status_code == 404
+    assert client.get(f"/api/dedup/files/{ids['b.mp3']}/audio").status_code == 404  # not on disk
+    assert client.get("/api/dedup/files/nope/audio").status_code == 404
+
+
+def test_file_audio_404_without_a_library_root(tmp_path: Path) -> None:
+    client, ids = _client(tmp_path)
+    assert client.get(f"/api/dedup/files/{ids['a.flac']}/audio").status_code == 404

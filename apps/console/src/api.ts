@@ -469,6 +469,17 @@ export const api = {
   syncPreviewUrl: (spotifyId: string) => `/api/sync/preview/${encodeURIComponent(spotifyId)}`,
   syncMissing: (scope: string) =>
     get<{ scope: string; missing: number }>(`/api/sync/missing?scope=${encodeURIComponent(scope)}`),
+  // Deduplicate page: overview, ranked groups, ignore, and a file for the A/B test.
+  dedupOverview: () => get<DedupOverview>("/api/dedup/overview"),
+  dedupGroups: (variants: boolean, offset = 0, limit = 40) =>
+    get<DupGroup[]>(`/api/dedup/groups?variants=${variants}&offset=${offset}&limit=${limit}`),
+  dedupIgnore: (id: string) =>
+    send<{ id: string; ignored_pairs: number }>(
+      "POST",
+      `/api/dedup/groups/${encodeURIComponent(id)}/ignore`,
+      {},
+    ),
+  dedupAudioUrl: (fileId: string) => `/api/dedup/files/${encodeURIComponent(fileId)}/audio`,
   // Per-user library import (Phase 2).
   libraryPlaylists: () => get<Playlist[]>("/api/library/playlists"),
   importLibrary: (body: { source: "liked" | "playlist"; playlist_id?: string; name?: string }) =>
@@ -619,4 +630,67 @@ export interface SyncToggleResult {
   auto_sync: boolean;
   missing: number;
   baselined: number;
+}
+
+// --- Deduplicate (the Dedup page) ---
+export interface DedupOverview {
+  files: number;
+  analysed: number;
+  identified: number;
+  errors: number;
+  bytes: number;
+  groups: number;
+  variant_groups: number;
+  duplicate_files: number; // extra copies beyond each group's keeper (variants excluded)
+  reclaimable_bytes: number;
+  last_grouped_at: string | null;
+  last_scan: {
+    id: string;
+    status: JobSummary["status"];
+    created_at: string;
+    finished_at: string | null;
+    progress_done: number | null;
+    progress_total: number | null;
+    summary: Record<string, unknown> | null;
+    error: string | null;
+  } | null;
+}
+
+export interface DupMember {
+  id: string;
+  path: string; // relative to the library root
+  size: number;
+  codec: string | null;
+  lossless: boolean;
+  bitrate: number | null;
+  bit_depth: number | null;
+  sample_rate: number | null;
+  duration_s: number | null;
+  artist: string | null;
+  album: string | null;
+  title: string | null;
+  has_cover: boolean;
+  acoustid_id: string | null;
+  acoustid_score: number | null;
+  aid_artist: string | null;
+  aid_title: string | null;
+  mbid: string | null;
+  rank: number; // 0 = keeper
+  is_keeper: boolean;
+  score_vs_keeper: number | null;
+  reasons: string[]; // why the keeper beats this copy
+  tag_score?: number;
+  canonical?: boolean;
+  referenced?: boolean;
+}
+
+export interface DupGroup {
+  id: string;
+  reason: "exact" | "acoustid" | "fp";
+  confidence: number;
+  variant: boolean;
+  keeper_file_id: string;
+  reclaimable_bytes: number;
+  created_at: string;
+  members: DupMember[];
 }

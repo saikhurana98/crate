@@ -1239,6 +1239,7 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         sync=_build_sync_service(),
         sync_preview=_build_preview_resolver(),
         dedup=_build_dedup_store(),
+        library_root=Path(os.environ.get("CRATE_LIBRARY_ROOT") or "/library"),
         sync_interval_s=float(os.environ.get("CRATE_LIBRARY_SYNC_INTERVAL", "7200")),
     )
 
