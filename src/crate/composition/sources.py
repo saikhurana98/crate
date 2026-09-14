@@ -1238,6 +1238,7 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         uploads_dir=uploads_dir(),
         sync=_build_sync_service(),
         sync_preview=_build_preview_resolver(),
+        dedup=_build_dedup_store(),
         sync_interval_s=float(os.environ.get("CRATE_LIBRARY_SYNC_INTERVAL", "7200")),
     )
 
@@ -1512,14 +1513,34 @@ def _analyze_file(path: Path) -> Any:  # pragma: no cover - IO wiring
     )
 
 
+def _sha256_file(path: Path) -> str:  # pragma: no cover - file IO
+    """Content hash for exact-duplicate checks (only files whose sizes collide)."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _build_dedup_store() -> Any:  # pragma: no cover - IO wiring
+    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.dedup_store import SqliteDedupStore
+
+    return SqliteDedupStore(connect(db_path()))
+
+
 def _dedup_scan_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover - IO wiring
     """``dedup_scan`` (nightly + Run now + ``crate dedup scan``): index the library
     (orchestration in ``application.library_scan``). Needs CRATE_LIBRARY_ROOT and
     fpcalc; AcoustID lookups also need CRATE_ACOUSTID_KEY."""
+    from crate.application.library_dedup import run_grouping
     from crate.application.library_scan import RateLimiter, run_dedup_scan
     from crate.infrastructure.audio.fingerprint import fpcalc_available
     from crate.infrastructure.fs.library_walk import walk_library
-    from crate.infrastructure.sqlite.db import connect
+    from crate.infrastructure.sqlite.db import connect, now_iso
+    from crate.infrastructure.sqlite.dedup_store import SqliteDedupStore
     from crate.infrastructure.sqlite.library_store import SqliteLibraryStore
 
     root = os.environ.get("CRATE_LIBRARY_ROOT")
@@ -1538,7 +1559,7 @@ def _dedup_scan_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover -
     rate = float(os.environ.get("CRATE_ACOUSTID_RATE", "2.5"))
     conn = connect(db_path())
     try:
-        return run_dedup_scan(
+        summary = run_dedup_scan(
             ctx,
             Path(root),
             walk=walk_library,
@@ -1547,6 +1568,14 @@ def _dedup_scan_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cover -
             lookup=lookup,
             limiter=RateLimiter(rate),
         )
+        summary["grouping"] = run_grouping(
+            ctx,
+            SqliteDedupStore(conn),
+            root=Path(root),
+            hash_file=_sha256_file,
+            now=now_iso(),
+        )
+        return summary
     finally:
         conn.close()
 
