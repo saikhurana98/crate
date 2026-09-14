@@ -35,6 +35,9 @@ import {
   type DupGroup,
   type DupMember,
   type DedupTrash,
+  type TagAudit,
+  type OrphanAudit,
+  type FolderDup,
 } from "./api";
 import { bytes, dur, ago as relTime, pct, esc } from "./format";
 import { createRenderer, effect } from "./reactive";
@@ -192,7 +195,8 @@ interface State {
   // Deduplicate page
   dedup: DedupOverview | null;
   dedupErr: string | null;
-  dedupTab: "dupes" | "variants" | "trash";
+  dedupTab: "dupes" | "variants" | "trash" | "tags" | "orphans" | "folders";
+  dedupAudit: { tags?: TagAudit; orphans?: OrphanAudit; folders?: FolderDup[] };
   dedupTrash: DedupTrash | null;
   dedupConfirm: DedupConfirm | null; // trash / clean-up / empty confirmation
   dedupGroups: DupGroup[];
@@ -312,6 +316,7 @@ const state: State = {
   dedupErr: null,
   dedupTab: "dupes",
   dedupTrash: null,
+  dedupAudit: {},
   dedupConfirm: null,
   dedupGroups: [],
   dedupMore: false,
@@ -3668,6 +3673,7 @@ function bindDedupEvents(): void {
       state.dedupTab = tab;
       state.dedupGroups = [];
       if (tab === "trash") void loadTrash();
+      else if (tab === "tags" || tab === "orphans" || tab === "folders") void loadAudit(tab);
       else void loadDedupGroups();
     } else if (act === "dedupToggle") {
       const id = el.dataset.id!;
@@ -3850,9 +3856,13 @@ function dedupPageHtml(): string {
   }
   const tab = (t: State["dedupTab"], label: string, n: number) =>
     `<button data-act="dedupTab" data-tab="${t}" style="border:none;border-radius:14px;cursor:pointer;font:600 11px 'JetBrains Mono';padding:6px 13px;${state.dedupTab === t ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#99a091"}">${label} ${n}</button>`;
-  const tabs = `<div style="display:flex;gap:3px;background:#131612;border:1px solid #22261f;border-radius:18px;padding:3px;width:fit-content;margin:18px 0 12px">${tab("dupes", "duplicates", dedupCount())}${tab("variants", "variants", o.variant_groups)}${tab("trash", "trash", o.trash_count ?? 0)}</div>`;
+  const auditTab = (t: State["dedupTab"], label: string) =>
+    `<button data-act="dedupTab" data-tab="${t}" style="border:none;border-radius:14px;cursor:pointer;font:600 11px 'JetBrains Mono';padding:6px 13px;${state.dedupTab === t ? "background:#e9ede3;color:#0c0e0c" : "background:transparent;color:#5d6456"}">${label}</button>`;
+  const tabs = `<div style="display:flex;flex-wrap:wrap;gap:3px;background:#131612;border:1px solid #22261f;border-radius:18px;padding:3px;width:fit-content;margin:18px 0 12px">${tab("dupes", "duplicates", dedupCount())}${tab("variants", "variants", o.variant_groups)}${tab("trash", "trash", o.trash_count ?? 0)}${auditTab("tags", "tag audit")}${auditTab("orphans", "orphans")}${auditTab("folders", "album copies")}</div>`;
   let list: string;
   if (state.dedupTab === "trash") list = trashListHtml();
+  else if (state.dedupTab === "tags" || state.dedupTab === "orphans" || state.dedupTab === "folders")
+    list = auditHtml(state.dedupTab);
   else if (state.dedupGroups.length) list = state.dedupGroups.map(dupGroupHtml).join("");
   else {
     const empty = state.dedupLoading
@@ -3865,7 +3875,7 @@ function dedupPageHtml(): string {
     list = `<div style="background:#111411;border:1px dashed #272c25;border-radius:18px;padding:40px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">${esc(empty)}</div>`;
   }
   const more =
-    state.dedupMore && state.dedupTab !== "trash"
+    state.dedupMore && (state.dedupTab === "dupes" || state.dedupTab === "variants")
     ? `<button data-act="dedupMore" ${state.dedupLoading ? "disabled" : ""} class="ghost" style="margin:14px auto 0;display:block;background:none;border:1px solid #272c25;border-radius:14px;color:#99a091;font:600 11px 'JetBrains Mono';padding:8px 16px;cursor:pointer">${state.dedupLoading ? "loading…" : "load more"}</button>`
     : "";
   return `<main style="max-width:1300px;margin:0 auto;padding:${pad};animation:fadein .25s ease">${head}${dedupStatusHtml(o)}${dedupCardsHtml(o)}${tabs}<div style="display:flex;flex-direction:column;gap:10px">${list}</div>${more}</main>${dedupConfirmHtml()}`;
@@ -4006,6 +4016,70 @@ function dedupConfirmHtml(): string {
       </div>
     </div>
   </div>`;
+}
+
+// --- Deduplicate audits: tag mismatches, orphans, album copies (read-only) ---
+async function loadAudit(kind: "tags" | "orphans" | "folders"): Promise<void> {
+  state.dedupLoading = true;
+  render();
+  try {
+    if (kind === "tags") state.dedupAudit = { ...state.dedupAudit, tags: await api.dedupAuditTags() };
+    else if (kind === "orphans") state.dedupAudit = { ...state.dedupAudit, orphans: await api.dedupAuditOrphans() };
+    else state.dedupAudit = { ...state.dedupAudit, folders: await api.dedupAuditFolders() };
+  } catch (err) {
+    toast(`Couldn't load that report: ${(err as Error).message}`);
+  } finally {
+    state.dedupLoading = false;
+    render();
+  }
+}
+function auditBox(title: string, sub: string, rows: string): string {
+  return `<section style="${cardBox};overflow:hidden"><div style="padding:13px 16px"><div style="font:600 13px 'Instrument Sans'">${title}</div><div style="font:400 11px 'Instrument Sans';color:#5d6456;margin-top:3px">${sub}</div></div>${rows}</section>`;
+}
+function auditRow(main: string, sub: string): string {
+  return `<div style="padding:9px 16px;border-top:1px solid #1a1e19"><div style="font:400 11.5px 'JetBrains Mono';color:#c9cfbf;overflow-wrap:anywhere">${main}</div><div style="font:400 10.5px 'Instrument Sans';color:#5d6456;margin-top:3px">${sub}</div></div>`;
+}
+function auditHtml(kind: "tags" | "orphans" | "folders"): string {
+  const loading = `<div style="${cardBox};padding:28px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">Loading…</div>`;
+  const none = (msg: string) =>
+    `<div style="background:#111411;border:1px dashed #272c25;border-radius:18px;padding:40px 20px;text-align:center;font:500 12.5px 'Instrument Sans';color:#99a091">${msg}</div>`;
+  if (kind === "tags") {
+    const t = state.dedupAudit.tags;
+    if (!t) return loading;
+    if (!t.items.length) return none("Every identified file's tags agree with AcoustID.");
+    const rows = t.items
+      .map((i) =>
+        auditRow(
+          esc(i.path),
+          `Tagged <b style="color:#c9cfbf">${esc([i.artist, i.title].filter(Boolean).join(" – ") || "untagged")}</b> · AcoustID says <b style="color:#f2c14e">${esc([i.aid_artist, i.aid_title].filter(Boolean).join(" – "))}</b> (${Math.round(i.acoustid_score * 100)}%) · ${i.disagrees === "both" ? "artist and title differ" : `${i.disagrees} differs`}`,
+        ),
+      )
+      .join("");
+    return auditBox(`${t.count} files whose tags disagree with AcoustID`, "Often the wrong song was grabbed, or bad tags are hiding a duplicate. Worth an ear test.", rows);
+  }
+  if (kind === "orphans") {
+    const o = state.dedupAudit.orphans;
+    if (!o) return loading;
+    const gone = o.records_missing.items
+      .map((d) => auditRow(esc(d.path), `${esc([d.artist, d.title].filter(Boolean).join(" – ") || d.query)} · ${esc(d.quality_label)}${d.finished_at ? ` · ${esc(relTime(d.finished_at))}` : ""}`))
+      .join("");
+    const extra = o.files_unrecorded.items.map((p) => auditRow(esc(p), "no download record")).join("");
+    return `${auditBox(`${o.records_missing.count} download records whose file is gone`, "The file was moved, renamed or deleted outside crate. Re-request the track to get it back.", gone || auditRow("—", "none"))}
+      <div style="height:10px"></div>
+      ${auditBox(`${o.files_unrecorded.count} library files no download points at`, "Added by hand or by another tool (Explo, Picard, an old import). Fine to keep; listed so nothing is a surprise.", extra || auditRow("—", "none"))}`;
+  }
+  const f = state.dedupAudit.folders;
+  if (!f) return loading;
+  if (!f.length) return none("No album is filed twice.");
+  const rows = f
+    .map((d) =>
+      auditRow(
+        `${esc(d.folder)}  ⇄  ${esc(d.other)}`,
+        `${d.shared} of its ${d.files} tracks also sit in the other folder (${Math.round(d.ratio * 100)}%) · the other has ${d.other_files}`,
+      ),
+    )
+    .join("");
+  return auditBox(`${f.length} albums filed twice`, "Folders whose tracks are mostly duplicates of another folder's: a re-download, a deluxe copy, or a different artist spelling. The groups tab handles them track by track.", rows);
 }
 
 // ---------- boot ----------

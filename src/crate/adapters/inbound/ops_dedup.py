@@ -41,6 +41,9 @@ class DedupPort(Protocol):
     def group(self, group_id: str) -> dict[str, Any] | None: ...
     def exact_groups(self) -> list[dict[str, Any]]: ...
     def trash(self, limit: int = 200) -> dict[str, Any]: ...
+    def tag_audit(self, limit: int = 200) -> dict[str, Any]: ...
+    def orphans(self, root: str, limit: int = 200) -> dict[str, Any]: ...
+    def folder_dupes(self, limit: int = 100) -> list[dict[str, Any]]: ...
 
 
 def _last_scan(jobs: JobsPort | None) -> dict[str, Any] | None:
@@ -157,6 +160,20 @@ def dedup_router(
             JobKind.DEDUP_PURGE, triggered_by="manual", user_id=uid, params={"items": items}
         )
         return {"job": job_id, "files": len(items), "bytes": sum(i["size"] for i in items)}
+
+    @router.get("/dedup/audit/tags")
+    def audit_tags(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
+        return dedup.tag_audit(limit)
+
+    @router.get("/dedup/audit/orphans")
+    def audit_orphans(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
+        if library_root is None:
+            raise HTTPException(status_code=503, detail="library root not configured")
+        return dedup.orphans(str(library_root), limit)
+
+    @router.get("/dedup/audit/folders")
+    def audit_folders(limit: int = Query(default=100, ge=1, le=500)) -> list[dict[str, Any]]:
+        return dedup.folder_dupes(limit)
 
     @router.get("/dedup/trash")
     def trash(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
