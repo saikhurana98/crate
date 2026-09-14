@@ -67,8 +67,11 @@ class _Env:
         dw = {"spotify_id": "dw", "name": "DW", "owner_id": "spotify", "generated": True}
         self.playlists.save_playlist(uid, dw, changed=True)
         self.playlists.set_items(uid, "dw", [{"artist": "C", "title": "Three"}])
-        member = TierMember(AffinityTier.CONSTANT, merge_key("A", "Ever"), "id1", "A", "Ever", 3.0)
-        self.affinity.apply_members(uid, AffinityTier.CONSTANT, [member])
+        self.affinity.apply_members(uid, AffinityTier.CONSTANT, [_ever()])
+
+
+def _ever() -> TierMember:
+    return TierMember(AffinityTier.CONSTANT, merge_key("A", "Ever"), "id1", "A", "Ever", 3.0)
 
 
 def test_sync_routes_need_a_login(tmp_path: Path) -> None:
@@ -138,6 +141,19 @@ def test_members_missing_and_validation(tmp_path: Path) -> None:
     c = env.client
     rows = c.get("/api/sync/tiers/2/members", cookies=COOKIE).json()
     assert [(m["title"], m["in_library"]) for m in rows] == [("Ever", False)]
+    # songs already in the library are hidden unless asked for
+    have = TierMember(AffinityTier.CONSTANT, merge_key("A", "One"), "id2", "A", "One", 9.0)
+    env.affinity.apply_members(env.user.id, AffinityTier.CONSTANT, [have, _ever()])
+    rows = c.get("/api/sync/tiers/2/members", cookies=COOKIE).json()
+    assert [m["title"] for m in rows] == ["Ever"]
+    rows = c.get("/api/sync/tiers/2/members", params={"all": "true"}, cookies=COOKIE).json()
+    assert [(m["title"], m["in_library"]) for m in rows] == [("One", True), ("Ever", False)]
+    rows = c.get("/api/sync/tiers/2/members", params={"all": "true", "offset": 1}, cookies=COOKIE)
+    assert [m["title"] for m in rows.json()] == ["Ever"]
+    card = next(
+        t for t in c.get("/api/sync/overview", cookies=COOKIE).json()["tiers"] if t["tier"] == 2
+    )
+    assert (card["count"], card["in_library"], card["missing"]) == (2, 1, 1)
     assert c.get("/api/sync/tiers/1/members", cookies=COOKIE).status_code == 404
     assert c.get("/api/sync/tiers/2/members?limit=0", cookies=COOKIE).status_code == 422
     for scope, n in (("core", 1), ("affinity:2", 1), ("playlist:dw", 1), ("affinity:3", 0)):

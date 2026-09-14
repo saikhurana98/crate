@@ -3432,7 +3432,7 @@ function tierCardHtml(c: SyncTierCard): string {
     ? `<span title="From Spotify's top-tracks lists until your streaming-history export is imported" style="font:600 9px 'JetBrains Mono';letter-spacing:.08em;color:#f2c14e;border:1px solid rgba(242,193,78,.35);border-radius:10px;padding:2px 7px">APPROXIMATE</span>`
     : "";
   const expand =
-    c.tier === 1 || !c.count
+    c.tier === 1 || !c.missing
       ? ""
       : `<button data-act="toggleTierOpen" data-tier="${c.tier}" class="ghost" style="background:none;border:1px solid #272c25;border-radius:12px;color:#99a091;font:600 10.5px 'JetBrains Mono';padding:5px 10px;cursor:pointer;flex-shrink:0">${open ? "hide" : "songs"} ${open ? "▾" : "▸"}</button>`;
   const rows = state.syncMembers[c.tier];
@@ -3440,7 +3440,9 @@ function tierCardHtml(c: SyncTierCard): string {
     ? ""
     : !rows
       ? `<div style="padding:12px 2px 0;font:400 11px 'Instrument Sans';color:#5d6456">Loading songs…</div>`
-      : `<div style="margin-top:12px;max-height:420px;overflow:auto">${rows.map((m) => memberRowHtml(c.tier, m)).join("")}</div>`;
+      : !rows.length
+        ? `<div style="padding:12px 2px 0;font:400 11px 'Instrument Sans';color:#5d6456">Every song in this tier is already in your library.</div>`
+        : `<div style="margin-top:12px;max-height:420px;overflow:auto">${rows.map((m) => memberRowHtml(c.tier, m)).join("")}</div>`;
   const hint = c.tier === 1 ? `<span style="font:400 10px 'JetBrains Mono';color:#464d40">per playlist →</span>` : "";
   return `<section style="${cardBox};padding:16px 18px">
     <div style="display:flex;align-items:flex-start;gap:14px">
@@ -3452,9 +3454,9 @@ function tierCardHtml(c: SyncTierCard): string {
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0"><span style="font:600 8.5px 'JetBrains Mono';letter-spacing:.14em;color:#464d40">AUTO-SYNC</span>${switchHtml(c.auto_sync, !!state.syncBusy[`tier:${c.tier}`], `data-act="toggleTier" data-tier="${c.tier}"`)}</div>
     </div>
     <div style="display:flex;align-items:center;gap:12px;margin-top:14px">
-      <span style="font:800 20px 'Doto'">${c.count}</span><span style="font:500 10.5px 'JetBrains Mono';color:#5d6456">songs</span>
+      <span style="font:800 20px 'Doto'">${c.missing}</span><span style="font:500 10.5px 'JetBrains Mono';color:#5d6456">to download</span>
       <div style="flex:1;height:5px;background:#272c25;border-radius:3px;overflow:hidden"><div style="height:100%;width:${pctIn}%;background:#e9ede3;border-radius:3px"></div></div>
-      <span style="font:500 10.5px 'JetBrains Mono';color:#99a091;white-space:nowrap">${c.in_library} in library</span>
+      <span title="Songs in this tier you already have" style="font:500 10.5px 'JetBrains Mono';color:#99a091;white-space:nowrap">${c.in_library}/${c.count} in library</span>
       ${hint}${expand}
     </div>
     ${members}

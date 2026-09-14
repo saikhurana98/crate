@@ -839,15 +839,24 @@ class RequestStore:
 
     # --- Library Sync: what's already downloaded ---
     def library_index(self) -> tuple[set[str], set[str]]:
-        """``(isrcs, merge_keys)`` of every completed request, so Library Sync can
-        tell which playlist and tier tracks are already in the library. Legacy rows
-        without structured artist/title match by ISRC only."""
+        """``(isrcs, merge_keys)`` of what's already in the library, so Library Sync
+        can tell which playlist and tier tracks are already there. Two sources:
+        - every completed request (legacy rows without structured artist/title
+          match by ISRC only);
+        - every file the dedup scan found on disk, by its tags and by AcoustID's
+          identification, so music that never came through crate counts too."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT isrc, artist, title FROM requests WHERE status='done'"
             ).fetchall()
+            files = self._conn.execute(
+                "SELECT tag_key, aid_artist, aid_title FROM library_files "
+                "WHERE missing_since IS NULL"
+            ).fetchall()
         isrcs = {str(r["isrc"]).strip().upper() for r in rows if r["isrc"]}
         keys = {merge_key(r["artist"], r["title"]) for r in rows if r["artist"] or r["title"]}
+        keys.update(str(f["tag_key"]) for f in files if f["tag_key"])
+        keys.update(merge_key(f["aid_artist"], f["aid_title"]) for f in files if f["aid_title"])
         return isrcs, keys
 
     # --- maintenance (retention) ---

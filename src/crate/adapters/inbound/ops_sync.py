@@ -8,7 +8,7 @@ reports that user's ledger.
 
 ``/api/sync/*`` serves the Sync page:
 - the overview: tier cards, playlists, and last synced / next run / running job;
-- tier members;
+- tier members (only the songs not in the library yet, unless ``?all=true``);
 - auto-sync toggles for tiers and playlists, with baseline or backfill;
 - missing-track counts, shown before a scope is switched on;
 - previews: a 307 to a fresh ~30 s Deezer clip for a tier song.
@@ -45,7 +45,7 @@ class SyncPort(Protocol):
 
     def overview(self, user_id: str) -> dict[str, Any]: ...
     def tier_members(
-        self, user_id: str, tier: int, *, limit: int, offset: int
+        self, user_id: str, tier: int, *, limit: int, offset: int, include_in_library: bool = False
     ) -> list[dict[str, Any]]: ...
     def set_tier_auto_sync(
         self, user_id: str, tier: int, on: bool, *, backfill: bool
@@ -180,9 +180,14 @@ def sync_router(
         tier: int,
         limit: int = Query(default=100, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
+        all: bool = Query(default=False),
     ) -> list[dict[str, Any]]:
+        """The tier's songs that aren't in the library yet; ``?all=true`` includes
+        the ones that are."""
         uid = _uid(request)
-        return sync.tier_members(uid, _tier(tier, (2, 3)), limit=limit, offset=offset)
+        return sync.tier_members(
+            uid, _tier(tier, (2, 3)), limit=limit, offset=offset, include_in_library=all
+        )
 
     @router.put("/sync/tiers/{tier}")
     def set_tier(request: Request, tier: int, body: dict[str, Any] = Body(...)) -> dict[str, Any]:

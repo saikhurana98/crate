@@ -456,6 +456,7 @@ export const api = {
     send<{ id: string; status: string }>("POST", `/api/jobs/${encodeURIComponent(id)}/cancel`, {}),
   // Library Sync page: tiers, playlists, schedule; toggles; missing counts.
   syncOverview: () => get<SyncOverview>("/api/sync/overview"),
+  // Only the songs not in the library yet (the server filters before paginating).
   syncMembers: (tier: number, limit = 200, offset = 0) =>
     get<TierMember[]>(`/api/sync/tiers/${tier}/members?limit=${limit}&offset=${offset}`),
   syncSetTier: (tier: number, auto_sync: boolean, backfill = false) =>
@@ -582,6 +583,7 @@ export interface SyncTierCard {
   label: string;
   count: number;
   in_library: number;
+  missing: number; // count - in_library: what this tier would still download
   approximate: boolean; // from top-tracks lists until the history export is in
   auto_sync: boolean;
   enabled_at: string | null;

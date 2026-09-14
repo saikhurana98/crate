@@ -380,6 +380,20 @@ def test_library_index_from_completed_requests(tmp_path: Path) -> None:
     store._conn.execute("UPDATE requests SET status='done' WHERE id=?", (done,))
     isrcs, keys = store.library_index()
     assert isrcs == {"X1"} and keys == {merge_key("A", "One")}
+    # files the dedup scan found on disk count too: by tags, and by AcoustID's id
+    now = "2026-09-14T00:00:00+00:00"
+    for fid, tag_key, aid, missing in (
+        ("f1", merge_key("C", "Three"), None, None),
+        ("f2", None, ("D", "Four"), None),
+        ("f3", merge_key("E", "Gone"), None, now),  # trashed / deleted: not in the library
+    ):
+        store._conn.execute(
+            "INSERT INTO library_files(id, path, size, mtime_ns, tag_key, aid_artist, aid_title, "
+            "first_seen_at, scanned_at, missing_since) VALUES (?, ?, 1, 1, ?, ?, ?, ?, ?, ?)",
+            (fid, f"{fid}.flac", tag_key, *(aid or (None, None)), now, now, missing),
+        )
+    _, keys = store.library_index()
+    assert keys == {merge_key("A", "One"), merge_key("C", "Three"), merge_key("D", "Four")}
     assert track_key({"isrc": "x1"}) == "isrc:X1" and diff_playlist(set(), []) == []
 
 
