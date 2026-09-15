@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 import pytest
 
+from crate.domain.navidrome import NavidromeLogin
 from crate.infrastructure.navidrome.client import (
     NavidromeError,
     SubsonicClient,
     auth_params,
+    parse_app_config,
+    sso_login,
     start_scan,
 )
 
@@ -86,3 +90,45 @@ def test_start_scan() -> None:
     assert start_scan("http://nd/", "admin", "pw", get=get) is True
     assert seen == ["http://nd/rest/startScan"]
     assert start_scan("http://nd", "admin", "pw", get=lambda u, p: None) is False
+
+
+def _page(config: dict[str, Any]) -> str:
+    # what Navidrome serves: the JSON config inside a JS string literal
+    return f"<script>window.__APP_CONFIG__ = {json.dumps(json.dumps(config))}</script>"
+
+
+def test_token_login_sends_the_stored_pair() -> None:
+    post = _Post(OK)
+    c = SubsonicClient.for_login(
+        "http://nd", NavidromeLogin("sai", token="tk", salt="sl"), post=post
+    )
+    c.ping()
+    params = post.calls[0][1]
+    assert (params["u"], params["t"], params["s"]) == ("sai", "tk", "sl")
+
+
+def test_parse_app_config() -> None:
+    assert parse_app_config(_page({"baseURL": "", "auth": {"username": "a"}}))["auth"] == {
+        "username": "a"
+    }
+    with pytest.raises(NavidromeError, match="doesn't look like"):
+        parse_app_config("<html>nope</html>")
+    with pytest.raises(NavidromeError, match="couldn't read"):
+        parse_app_config('window.__APP_CONFIG__ = "{not json"')
+    with pytest.raises(NavidromeError, match="couldn't read"):
+        parse_app_config('window.__APP_CONFIG__ = "[1]"')
+
+
+def test_sso_login_reads_the_token_navidrome_issued() -> None:
+    seen: list[tuple[str, dict[str, str]]] = []
+    auth = {"username": "saik", "subsonicToken": "t0k", "subsonicSalt": "s4lt", "token": "jwt"}
+
+    def get(url: str, headers: dict[str, str]) -> str:
+        seen.append((url, headers))
+        return _page({"baseURL": "", "auth": auth})
+
+    login = sso_login("http://nd:4533/", "Remote-User", "saik", get=get)
+    assert login == NavidromeLogin("saik", token="t0k", salt="s4lt")
+    assert seen == [("http://nd:4533/app/", {"Remote-User": "saik"})]
+    with pytest.raises(NavidromeError, match="WHITELIST"):
+        sso_login("http://nd", "Remote-User", "saik", get=lambda u, h: _page({"baseURL": ""}))

@@ -3148,6 +3148,7 @@ async function loadSyncExtras(): Promise<void> {
 // --- Navidrome: link your own account; imported playlists are mirrored into it ---
 let ndUser = "";
 let ndPass = ""; // only until the link succeeds; never stored
+let ndPasswordForm = false; // SSO Navidrome: the user chose "use a password instead"
 async function loadNavidrome(): Promise<void> {
   try {
     state.navidrome = await api.navidrome();
@@ -3173,6 +3174,19 @@ async function linkNavidrome(): Promise<void> {
     await loadNavidrome();
   } catch (err) {
     toast(`Couldn't link Navidrome: ${(err as Error).message}`);
+  } finally {
+    setNdBusy("link", false);
+  }
+}
+async function linkNavidromeSso(): Promise<void> {
+  if (state.ndBusy.link) return;
+  setNdBusy("link", true);
+  try {
+    const r = await api.navidromeSso();
+    toast(`Signed in to Navidrome as ${r.account.username} — playlists you import will be created there too`);
+    await loadNavidrome();
+  } catch (err) {
+    toast(`Couldn't sign in to Navidrome: ${(err as Error).message}`);
   } finally {
     setNdBusy("link", false);
   }
@@ -3419,6 +3433,11 @@ function bindSyncEvents(): void {
     } else if (act === "replayJob") void replayJob(el.dataset.id!);
     else if (act === "syncLogLive") backToLive();
     else if (act === "ndLink") void linkNavidrome();
+    else if (act === "ndSso") void linkNavidromeSso();
+    else if (act === "ndUsePassword") {
+      ndPasswordForm = true;
+      render();
+    }
     else if (act === "ndUnlink") void unlinkNavidrome();
     else if (act === "ndPush") void pushNavidrome();
     else if (act === "ndMirror") void toggleMirror(el.dataset.pid!, el.dataset.name!);
@@ -3641,6 +3660,17 @@ function navidromeCardHtml(): string {
   if (!nd?.configured) return "";
   const btn = (act: string, label: string, busy = false, primary = false) =>
     `<button data-act="${act}" ${busy ? "disabled" : ""} style="flex-shrink:0;border-radius:12px;font:700 11px 'Instrument Sans';padding:7px 13px;cursor:${busy ? "wait" : "pointer"};${primary ? "background:#e9ede3;border:1px solid transparent;color:#0c0e0c" : "background:none;border:1px solid #272c25;color:#99a091"}">${label}</button>`;
+  if (!nd.account && nd.sso && !ndPasswordForm) {
+    const busy = !!state.ndBusy.link;
+    return `<section style="${cardBox};padding:14px 16px">
+      <div style="font:600 13px 'Instrument Sans'">Navidrome</div>
+      <div style="font:400 11.5px 'Instrument Sans';color:#99a091;margin-top:4px;line-height:1.45">Link your Navidrome account and every playlist you import is created there too, filling in as its songs download. Navidrome uses the same sign-in as crate, so there's no password to enter.</div>
+      <div style="display:flex;gap:8px;margin-top:11px;flex-wrap:wrap;align-items:center">
+        ${btn("ndSso", busy ? "Signing in…" : "Sign in with Navidrome", busy, true)}
+        <button data-act="ndUsePassword" style="background:none;border:none;color:#5d6456;font:500 11px 'Instrument Sans';cursor:pointer;text-decoration:underline;padding:4px">use a password instead</button>
+      </div>
+    </section>`;
+  }
   if (!nd.account) {
     const busy = !!state.ndBusy.link;
     return `<section style="${cardBox};padding:14px 16px">
@@ -3669,7 +3699,7 @@ function navidromeCardHtml(): string {
     <div style="display:flex;align-items:center;gap:8px">
       <span style="font:600 13px 'Instrument Sans'">Navidrome</span>
       <span style="width:6px;height:6px;border-radius:50%;background:#1db954"></span>
-      <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nd.account.username)}</span>
+      <span style="font:400 10.5px 'JetBrains Mono';color:#5d6456;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(nd.account.username)}${nd.account.via === "sso" ? " · via SSO" : ""}</span>
       <span style="margin-left:auto">${open}</span>
     </div>
     <div style="font:400 11.5px 'Instrument Sans';color:#99a091;margin-top:5px">${summary}</div>

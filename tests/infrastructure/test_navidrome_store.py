@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from crate.application.auth import SpotifyProfile
+from crate.domain.navidrome import NavidromeLogin
 from crate.infrastructure.crypto import SecretBox
 from crate.infrastructure.sqlite.db import connect
 from crate.infrastructure.sqlite.navidrome_store import SqliteNavidromeStore
@@ -24,10 +25,20 @@ def test_account_is_encrypted_and_never_read_back_in_plain(tmp_path: Path) -> No
     raw = conn.execute("SELECT password_ct FROM navidrome_accounts").fetchone()[0]  # type: ignore[attr-defined]
     assert b"s3cret-pw" not in bytes(raw)
     acct = store.account(uid)
-    assert acct is not None and acct["username"] == "sai" and "password" not in str(acct)
-    assert store.credentials(uid) == ("sai", "s3cret-pw")
+    assert acct is not None and acct["username"] == "sai" and "s3cret" not in str(acct)
+    assert acct["via"] == "password"
+    assert store.credentials(uid) == NavidromeLogin("sai", password="s3cret-pw")
     store.set_account(uid, "sai2", "new")
-    assert store.credentials(uid) == ("sai2", "new") and store.account_users() == [uid]
+    assert store.credentials(uid) == NavidromeLogin("sai2", "new") and store.account_users() == [
+        uid
+    ]
+    # Navidrome behind SSO: a token + salt instead of a password, encrypted the same way
+    store.set_login(uid, NavidromeLogin("sai", token="tok123", salt="ab12"))
+    raw = conn.execute("SELECT password_ct FROM navidrome_accounts").fetchone()[0]  # type: ignore[attr-defined]
+    assert b"tok123" not in bytes(raw)
+    login = store.credentials(uid)
+    assert login == NavidromeLogin("sai", token="tok123", salt="ab12") and login.via_sso
+    assert store.account(uid)["via"] == "sso"  # type: ignore[index]
 
 
 def test_links_and_pushes(tmp_path: Path) -> None:

@@ -103,3 +103,11 @@ def test_profile_and_admin() -> None:
     assert (q.display_name, q.email, q.avatar_url, q.groups) == ("sk", None, None, ("a", "b"))
     assert profile_from_claims({"sub": "u3", "groups": 7}, issuer=ISS).display_name == "u3"
     assert profile_from_claims({"sub": "u3", "groups": 7}, issuer=ISS).groups == ()
+
+
+def test_username_claim() -> None:
+    p = profile_from_claims({"sub": "u1", "preferred_username": " saik "}, issuer=ISS)
+    assert p.username == "saik"
+    q = profile_from_claims({"sub": "u1", "nickname": "sk"}, issuer=ISS, username_claim="nickname")
+    assert q.username == "sk"
+    assert profile_from_claims({"sub": "u1"}, issuer=ISS).username is None

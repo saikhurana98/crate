@@ -7,6 +7,11 @@ stored, is stored encrypted, and is never returned.
 
 - ``GET /navidrome``: whether it's configured, the linked account, the mirrors;
 - ``PUT /navidrome/account`` / ``DELETE /navidrome/account``: link or unlink;
+- ``POST /navidrome/account/sso``: "Sign in with Navidrome" when Navidrome sits
+  behind the same SSO as crate. Crate asks Navidrome, through its trusted-header
+  sign-in, for the account matching the username crate's own SSO asserted, and
+  keeps the token it issues. No password is involved, and a user can only link
+  their own name;
 - ``PUT /navidrome/playlists/{spotify_id}``: mirror a playlist, or stop;
 - ``POST /navidrome/push``: push this user's mirrors now.
 """
@@ -21,6 +26,7 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from crate.adapters.inbound.ops_jobs import JobsPort
 from crate.adapters.inbound.ops_sync import _logged_in
 from crate.domain.jobs import JobKind
+from crate.domain.navidrome import NavidromeLogin
 from crate.infrastructure.navidrome.client import NavidromeError
 
 LIKED_NAME = "Liked Songs"
@@ -33,10 +39,19 @@ VerifyFn = Callable[[str, str], None]  # (username, password); raises NavidromeE
 class NavidromePort(Protocol):
     def account(self, user_id: str) -> dict[str, Any] | None: ...
     def set_account(self, user_id: str, username: str, password: str) -> None: ...
+    def set_login(self, user_id: str, login: NavidromeLogin) -> None: ...
     def delete_account(self, user_id: str) -> bool: ...
     def links(self, user_id: str, *, enabled_only: bool = False) -> list[dict[str, Any]]: ...
     def link(self, user_id: str, spotify_id: str, name: str) -> None: ...
     def set_enabled(self, user_id: str, spotify_id: str, on: bool) -> bool: ...
+
+
+class NavidromeSsoPort(Protocol):
+    """Navidrome behind SSO: the SSO username for a crate user, and a checked
+    trusted-header sign-in for it."""
+
+    def username_of(self, user_id: str) -> str | None: ...
+    def login(self, username: str) -> NavidromeLogin: ...
 
 
 def _push(jobs: JobsPort | None, user_id: str, playlist_id: str | None = None) -> str | None:
@@ -67,6 +82,7 @@ def navidrome_router(
     *,
     verify: VerifyFn | None = None,
     public_url: str | None = None,
+    sso: NavidromeSsoPort | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -85,6 +101,9 @@ def navidrome_router(
             "public_url": public_url.rstrip("/") if public_url else None,
             "account": nd.account(uid),
             "playlists": nd.links(uid),
+            # "Sign in with Navidrome" is on offer: Navidrome is behind SSO and
+            # this user signed in to crate with SSO (so crate knows their name).
+            "sso": verify is not None and sso is not None and sso.username_of(uid) is not None,
         }
 
     @router.put("/navidrome/account")
@@ -110,6 +129,26 @@ def navidrome_router(
             raise HTTPException(status_code=502, detail="couldn't reach Navidrome") from exc
         nd.set_account(uid, username, password)
         _push(jobs, uid)  # re-push anything already mirrored, e.g. after a new password
+        return {"account": nd.account(uid)}
+
+    @router.post("/navidrome/account/sso")
+    def link_with_sso(request: Request) -> dict[str, Any]:
+        uid = _uid(request)
+        if verify is None or sso is None:
+            raise HTTPException(status_code=503, detail="Navidrome SSO sign-in is not configured")
+        username = sso.username_of(uid)
+        if username is None:
+            raise HTTPException(
+                status_code=409, detail="sign in to crate with SSO first, then link Navidrome"
+            )
+        try:
+            login = sso.login(username)
+        except NavidromeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="couldn't reach Navidrome") from exc
+        nd.set_login(uid, login)
+        _push(jobs, uid)
         return {"account": nd.account(uid)}
 
     @router.delete("/navidrome/account")

@@ -31,6 +31,7 @@ from crate.adapters.inbound.ops_dedup import DedupPort, dedup_router
 from crate.adapters.inbound.ops_jobs import JobsPort, jobs_router, mount_jobs_ws
 from crate.adapters.inbound.ops_navidrome import (
     NavidromePort,
+    NavidromeSsoPort,
     VerifyFn,
     mirror_import,
     navidrome_router,
@@ -217,6 +218,7 @@ def create_app(
     navidrome: NavidromePort | None = None,
     navidrome_verify: VerifyFn | None = None,
     navidrome_public_url: str | None = None,
+    navidrome_sso: NavidromeSsoPort | None = None,
     poll_interval: float = 2.0,
 ) -> FastAPI:
     # --- cross-source search cache (pre-warm while typing; TTL + orphan sweep) ---
@@ -1051,7 +1053,11 @@ def create_app(
     if navidrome is not None:
         api.include_router(
             navidrome_router(
-                navidrome, jobs, verify=navidrome_verify, public_url=navidrome_public_url
+                navidrome,
+                jobs,
+                verify=navidrome_verify,
+                public_url=navidrome_public_url,
+                sso=navidrome_sso,
             )
         )
     if dedup is not None:

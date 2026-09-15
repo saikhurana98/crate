@@ -25,7 +25,7 @@ from crate.application.auth import (
 from crate.domain.oidc import OidcProfile
 from crate.infrastructure.sqlite.db import now_iso
 
-_USER_COLS = "id, spotify_id, display_name, email, avatar_url, is_admin, oidc_sub"
+_USER_COLS = "id, spotify_id, display_name, email, avatar_url, is_admin, oidc_sub, sso_username"
 
 
 def _user(row: sqlite3.Row) -> User:
@@ -37,6 +37,7 @@ def _user(row: sqlite3.Row) -> User:
         avatar_url=row["avatar_url"],
         is_admin=bool(row["is_admin"]),
         oidc_sub=row["oidc_sub"],
+        sso_username=row["sso_username"],
     )
 
 
@@ -113,11 +114,11 @@ class SqliteUserRepository:
             now = now_iso()
             self._conn.execute(
                 "INSERT INTO users(id, oidc_issuer, oidc_sub, display_name, email, avatar_url, "
-                "created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "sso_username, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(oidc_issuer, oidc_sub) DO UPDATE SET "
                 "display_name=excluded.display_name, email=excluded.email, "
                 "avatar_url=COALESCE(excluded.avatar_url, users.avatar_url), "
-                "last_seen_at=excluded.last_seen_at",
+                "sso_username=excluded.sso_username, last_seen_at=excluded.last_seen_at",
                 (
                     uuid.uuid4().hex,
                     profile.issuer,
@@ -125,6 +126,7 @@ class SqliteUserRepository:
                     profile.display_name,
                     profile.email,
                     profile.avatar_url,
+                    profile.username,
                     now,
                     now,
                 ),
@@ -176,7 +178,8 @@ class SqliteUserRepository:
             self._conn.execute("SAVEPOINT merge_users")
             try:
                 src = self._conn.execute(
-                    "SELECT oidc_issuer, oidc_sub, display_name, email FROM users WHERE id=?",
+                    "SELECT oidc_issuer, oidc_sub, display_name, email, sso_username "
+                    "FROM users WHERE id=?",
                     (src_id,),
                 ).fetchone()
                 if src is None:
@@ -191,12 +194,13 @@ class SqliteUserRepository:
                 if src["oidc_sub"] is not None:
                     self._conn.execute(
                         "UPDATE users SET oidc_issuer=?, oidc_sub=?, display_name=?, "
-                        "email=COALESCE(?, email) WHERE id=?",
+                        "email=COALESCE(?, email), sso_username=? WHERE id=?",
                         (
                             src["oidc_issuer"],
                             src["oidc_sub"],
                             src["display_name"],
                             src["email"],
+                            src["sso_username"],
                             dst_id,
                         ),
                     )

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from crate.application.auth import SpotifyProfile
+from crate.domain.navidrome import NavidromeLogin
 from crate.domain.oidc import OidcProfile
 from crate.infrastructure.crypto import SecretBox
 from crate.infrastructure.sqlite.db import connect
@@ -38,7 +39,8 @@ def test_merge_moves_rows_sessions_and_identity(tmp_path: Path) -> None:
     sessions = SqliteSessionStore(conn)
     nd = SqliteNavidromeStore(conn, SecretBox(b"k" * 32))
     old = repo.upsert_spotify_user(SpotifyProfile("sp1", "Spotify Sai"))  # pre-SSO account
-    new = repo.upsert_oidc_user(OidcProfile(ISS, "sub1", "Sai", "s@x.io"))
+    new = repo.upsert_oidc_user(OidcProfile(ISS, "sub1", "Sai", "s@x.io", username="saik"))
+    assert new.sso_username == "saik"
     raw = sessions.create(new.id)
     bid = RequestStore(conn).create_batch("n", "bulk", "n", 1, user_id=new.id)
     nd.set_account(old.id, "old-nd", "pw1")  # one-per-user table: the older row wins
@@ -55,8 +57,9 @@ def test_merge_moves_rows_sessions_and_identity(tmp_path: Path) -> None:
         "s@x.io",
     )
     assert sessions.resolve(raw) == old.id
+    assert kept.sso_username == "saik"
     assert conn.execute("SELECT user_id FROM batches WHERE id=?", (bid,)).fetchone()[0] == old.id
-    assert nd.credentials(old.id) == ("old-nd", "pw1")
+    assert nd.credentials(old.id) == NavidromeLogin("old-nd", password="pw1")
     assert [link["spotify_id"] for link in nd.links(old.id)] == ["p1"]
     assert repo.upsert_oidc_user(OidcProfile(ISS, "sub1", "Sai")).id == old.id
     repo.merge_into(old.id, old.id)  # no-op

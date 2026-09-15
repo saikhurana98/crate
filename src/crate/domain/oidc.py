@@ -28,6 +28,7 @@ class OidcProfile:
     email: str | None = None
     avatar_url: str | None = None
     groups: tuple[str, ...] = ()
+    username: str | None = None  # what a reverse proxy would send (e.g. to Navidrome)
 
 
 def pkce_challenge(verifier: str) -> str:
@@ -93,7 +94,11 @@ def _groups(value: Any) -> tuple[str, ...]:
 
 
 def profile_from_claims(
-    claims: Mapping[str, Any], *, issuer: str, groups_claim: str = "groups"
+    claims: Mapping[str, Any],
+    *,
+    issuer: str,
+    groups_claim: str = "groups",
+    username_claim: str = "preferred_username",
 ) -> OidcProfile:
     """The profile to store, from ID-token claims merged with userinfo."""
     sub = str(claims["sub"])
@@ -107,6 +112,7 @@ def profile_from_claims(
     )
     email = claims.get("email")
     picture = claims.get("picture")
+    username = str(claims.get(username_claim) or "").strip() or None
     return OidcProfile(
         issuer=issuer.rstrip("/"),
         sub=sub,
@@ -114,6 +120,7 @@ def profile_from_claims(
         email=str(email) if email else None,
         avatar_url=str(picture) if picture else None,
         groups=_groups(claims.get(groups_claim)),
+        username=username,
     )
 
 
