@@ -93,6 +93,12 @@ class ConfigStore:
                 )
             }
 
+    def delete_secrets(self, name: str) -> int:
+        """Forget every credential stored under ``name``; return how many."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM source_secret WHERE name=?", (name,))
+        return cur.rowcount
+
     def get_secret(self, name: str, env_key: str) -> str | None:
         with self._lock:
             row = self._conn.execute(

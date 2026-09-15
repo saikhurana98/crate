@@ -45,6 +45,7 @@ from crate.adapters.inbound.ops_sync import (
 from crate.application.auth import SERVICE_USER_ID, SESSION_TTL_S, User
 from crate.application.bulk import ResolvedBatch
 from crate.application.library_import import to_identity
+from crate.application.oidc_auth import LinkUnavailableError, SpotifyTakenError
 from crate.composition.catalog import (
     KNOWN,
     PINNED,
@@ -100,6 +101,7 @@ _SOURCE_SWEEP_INTERVAL_S = 60.0  # background orphan-sweep cadence
 _FANOUT_EXCLUDE = frozenset({"soulseek"})
 _SLSK_BROWSE_TIMEOUT_S = 45.0  # slskd searches poll up to ~30 s; bound the endpoint
 _SESSION_COOKIE = "crate_session"
+_LINK_TTL_S = 600.0  # a Spotify link must come back within 10 minutes
 
 
 class AuthPort(Protocol):
@@ -120,6 +122,30 @@ class AuthPort(Protocol):
     def logout(self, raw_token: str) -> None:
         """Revoke a session (idempotent)."""
         ...
+
+
+class SsoPort(Protocol):
+    """SSO (OIDC) sign-in with Spotify as a linked account (ADR-0023). When wired,
+    it replaces Login-with-Spotify as the session authority."""
+
+    label: str
+
+    @property
+    def spotify_linkable(self) -> bool: ...
+
+    def login_url(self, state: str) -> str: ...
+
+    def complete_login(self, code: str, state: str) -> tuple[User, str]: ...
+
+    def resolve_session(self, raw_token: str) -> User | None: ...
+
+    def logout(self, raw_token: str) -> None: ...
+
+    def spotify_link_url(self, state: str) -> str: ...
+
+    def complete_spotify_link(self, code: str, user_id: str) -> User: ...
+
+    def unlink_spotify(self, user_id: str) -> None: ...
 
 
 class SpotifyPort(Protocol):
@@ -169,6 +195,7 @@ def create_app(
     spotify: SpotifyPort | None = None,
     library: LibraryPort | None = None,
     auth: AuthPort | None = None,
+    sso: SsoPort | None = None,
     bulk_resolve: BulkResolveFn | None = None,
     candidate_sources: CandidateSourcesFn | None = None,
     identify_hint: IdentifyFn | None = None,
@@ -237,6 +264,9 @@ def create_app(
         lifespan=_lifespan,
     )
 
+    # SSO, when configured, is the only session authority (ADR-0023).
+    session_auth: AuthPort | SsoPort | None = sso if sso is not None else auth
+
     def _authenticate(conn: HTTPConnection) -> str | None:
         """The user id for an HTTP request **or** WebSocket upgrade, else ``None``.
 
@@ -245,9 +275,9 @@ def create_app(
         AND no auth the console is open (single-user mode, as before)."""
         if api_key is not None and conn.headers.get("x-api-key") == api_key:
             return SERVICE_USER_ID
-        if auth is not None:
+        if session_auth is not None:
             raw = conn.cookies.get(_SESSION_COOKIE) or ""
-            user = auth.resolve_session(raw) if raw else None
+            user = session_auth.resolve_session(raw) if raw else None
             return user.id if user is not None else None
         return SERVICE_USER_ID if api_key is None else None
 
@@ -256,10 +286,10 @@ def create_app(
         flagged admin (CRATE_ADMIN_SPOTIFY_IDS, applied at login)."""
         if api_key is not None and request.headers.get("x-api-key") == api_key:
             return True
-        if auth is None:
+        if session_auth is None:
             return api_key is None  # single-user console: no accounts to tell apart
         raw = request.cookies.get(_SESSION_COOKIE) or ""
-        user = auth.resolve_session(raw) if raw else None
+        user = session_auth.resolve_session(raw) if raw else None
         return user is not None and user.is_admin
 
     def require_auth(request: Request) -> None:
@@ -842,13 +872,17 @@ def create_app(
         """The logged-in user (behind require_auth). A live session resolves the
         full profile; the API-key / single-user path returns the service user."""
         raw = request.cookies.get(_SESSION_COOKIE) or ""
-        user = auth.resolve_session(raw) if auth is not None and raw else None
+        user = session_auth.resolve_session(raw) if session_auth is not None and raw else None
+        mode = _auth_mode()
+        linkable = bool(sso is not None and sso.spotify_linkable)
         if user is not None:
-            out = _user_dict(user)
+            out = _user_dict(user) | {"auth_mode": mode, "spotify_linkable": linkable}
             try:
                 out["missing_scopes"] = spotify.missing_scopes(user.id) if spotify else []
+                out["spotify_linked"] = bool(spotify and spotify.connected(user.id))
             except Exception:  # vault/provider hiccup must not break /api/me
                 out["missing_scopes"] = []
+                out["spotify_linked"] = bool(user.spotify_id)
             return out
         uid = getattr(request.state, "user_id", SERVICE_USER_ID)
         return {
@@ -859,32 +893,23 @@ def create_app(
             "avatar_url": None,
             "is_admin": False,
             "missing_scopes": [],
+            "auth_mode": mode,
+            "spotify_linked": False,
+            "spotify_linkable": False,
         }
 
-    # --- Login with Spotify (unauthenticated: these establish the session) ---
-    @app.get("/api/auth/login")
-    def auth_login() -> RedirectResponse:
-        if auth is None:
-            raise HTTPException(status_code=503, detail="login not configured")
-        state = secrets.token_urlsafe(16)
-        if len(pending_states) < _MAX_PENDING_STATES:
-            pending_states.add(state)
-        return RedirectResponse(auth.login_url(state), status_code=307)
+    @api.post("/auth/spotify/unlink")
+    def spotify_unlink(request: Request) -> dict[str, Any]:
+        """SSO mode: forget the linked Spotify account (its tokens too)."""
+        if sso is None:
+            raise HTTPException(status_code=404, detail="Spotify is the sign-in; nothing to unlink")
+        sso.unlink_spotify(str(getattr(request.state, "user_id", SERVICE_USER_ID)))
+        return {"linked": False}
 
-    @app.get("/api/auth/callback")
-    def auth_callback(
-        code: str | None = None, state: str | None = None, error: str | None = None
-    ) -> RedirectResponse:
-        if auth is None:
-            raise HTTPException(status_code=503, detail="login not configured")
-        known = state in pending_states
-        pending_states.discard(state or "")
-        if error or not code or state is None or not known:
-            return RedirectResponse("/?login=error", status_code=303)
-        try:
-            _user, raw = auth.complete_login(code)
-        except Exception:  # bad code / exchange / profile failure -> surface in UI
-            return RedirectResponse("/?login=error", status_code=303)
+    def _auth_mode() -> str:
+        return "oidc" if sso is not None else "spotify" if auth is not None else "none"
+
+    def _session_redirect(raw: str) -> RedirectResponse:
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(
             _SESSION_COOKIE,
@@ -897,11 +922,112 @@ def create_app(
         )
         return resp
 
+    # Spotify-link states (SSO mode): state -> (user id, expiry). Bound to the user
+    # who started the link, and checked against the session on the way back.
+    pending_links: dict[str, tuple[str, float]] = {}
+
+    @app.get("/api/auth/config")
+    def auth_config() -> dict[str, str]:
+        """Unauthenticated: how the login gate should offer sign-in."""
+        return {"mode": _auth_mode(), "label": sso.label if sso is not None else "Spotify"}
+
+    # --- Login (unauthenticated: these establish the session) ---
+    @app.get("/api/auth/login")
+    def auth_login() -> RedirectResponse:
+        if sso is not None:
+            try:
+                url = sso.login_url(secrets.token_urlsafe(16))
+            except Exception:  # discovery failed / too many pending sign-ins
+                return RedirectResponse("/?login=error", status_code=303)
+            return RedirectResponse(url, status_code=307)
+        if auth is None:
+            raise HTTPException(status_code=503, detail="login not configured")
+        state = secrets.token_urlsafe(16)
+        if len(pending_states) < _MAX_PENDING_STATES:
+            pending_states.add(state)
+        return RedirectResponse(auth.login_url(state), status_code=307)
+
+    @app.get("/api/auth/oidc/callback")
+    def oidc_callback(
+        code: str | None = None, state: str | None = None, error: str | None = None
+    ) -> RedirectResponse:
+        if sso is None:
+            raise HTTPException(status_code=503, detail="SSO not configured")
+        if error or not code or not state:
+            return RedirectResponse("/?login=error", status_code=303)
+        try:
+            _user, raw = sso.complete_login(code, state)
+        except Exception:  # bad state/code/token/claims -> the login gate shows it
+            return RedirectResponse("/?login=error", status_code=303)
+        return _session_redirect(raw)
+
+    @app.get("/api/auth/spotify/link")
+    def spotify_link(request: Request) -> RedirectResponse:
+        """SSO mode: send the signed-in user to Spotify's consent screen."""
+        if sso is None:
+            raise HTTPException(status_code=404, detail="Spotify is the sign-in")
+        raw = request.cookies.get(_SESSION_COOKIE) or ""
+        user = sso.resolve_session(raw) if raw else None
+        if user is None:
+            return RedirectResponse("/", status_code=303)
+        now = time.time()
+        for key in [k for k, (_, exp) in pending_links.items() if exp < now]:
+            del pending_links[key]
+        if len(pending_links) >= _MAX_PENDING_STATES:
+            return RedirectResponse("/?spotify=error", status_code=303)
+        state = secrets.token_urlsafe(16)
+        try:
+            url = sso.spotify_link_url(state)
+        except LinkUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        pending_links[state] = (user.id, now + _LINK_TTL_S)
+        return RedirectResponse(url, status_code=307)
+
+    def _finish_spotify_link(
+        request: Request, code: str | None, state: str | None, error: str | None
+    ) -> RedirectResponse:
+        assert sso is not None
+        entry = pending_links.pop(state or "", None)
+        raw = request.cookies.get(_SESSION_COOKIE) or ""
+        user = sso.resolve_session(raw) if raw else None
+        fresh = entry is not None and entry[1] >= time.time()
+        if error or not code or not fresh or user is None or entry is None or user.id != entry[0]:
+            return RedirectResponse("/?spotify=error", status_code=303)
+        try:
+            sso.complete_spotify_link(code, user.id)
+        except SpotifyTakenError:
+            return RedirectResponse("/?spotify=taken", status_code=303)
+        except Exception:  # exchange / profile failure
+            return RedirectResponse("/?spotify=error", status_code=303)
+        return RedirectResponse("/?spotify=linked", status_code=303)
+
+    @app.get("/api/auth/callback")
+    def auth_callback(
+        request: Request,
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
+    ) -> RedirectResponse:
+        """Spotify's callback: signs in (Spotify mode) or links (SSO mode)."""
+        if sso is not None:
+            return _finish_spotify_link(request, code, state, error)
+        if auth is None:
+            raise HTTPException(status_code=503, detail="login not configured")
+        known = state in pending_states
+        pending_states.discard(state or "")
+        if error or not code or state is None or not known:
+            return RedirectResponse("/?login=error", status_code=303)
+        try:
+            _user, raw = auth.complete_login(code)
+        except Exception:  # bad code / exchange / profile failure -> surface in UI
+            return RedirectResponse("/?login=error", status_code=303)
+        return _session_redirect(raw)
+
     @app.post("/api/auth/logout")
     def auth_logout(request: Request) -> RedirectResponse:
         raw = request.cookies.get(_SESSION_COOKIE) or ""
-        if auth is not None and raw:
-            auth.logout(raw)
+        if session_auth is not None and raw:
+            session_auth.logout(raw)
         resp = RedirectResponse("/?login=out", status_code=303)
         resp.delete_cookie(_SESSION_COOKIE, path="/")
         return resp

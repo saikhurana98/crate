@@ -524,6 +524,10 @@ export const api = {
     return (await res.json()) as Me;
   },
   loginUrl: "/api/auth/login",
+  authConfig: () => get<AuthConfig>("/api/auth/config"),
+  // SSO mode: link / unlink the Spotify account crate reads your library through.
+  spotifyLinkUrl: "/api/auth/spotify/link",
+  unlinkSpotify: () => send<{ linked: boolean }>("POST", "/api/auth/spotify/unlink", {}),
   logout: async (): Promise<void> => {
     await fetch("/api/auth/logout", { method: "POST" });
     window.location.href = "/";
@@ -576,6 +580,15 @@ export interface Me {
   avatar_url: string | null;
   is_admin: boolean;
   missing_scopes?: string[]; // OAuth scopes to re-consent to (drives the re-login banner)
+  auth_mode?: "oidc" | "spotify" | "none"; // oidc = SSO sign-in, Spotify is a linked account
+  spotify_linked?: boolean;
+  spotify_linkable?: boolean; // SSO mode and Spotify linking is configured
+}
+
+// How the login gate offers sign-in (unauthenticated).
+export interface AuthConfig {
+  mode: "oidc" | "spotify" | "none";
+  label: string; // the SSO provider's name, e.g. "Authentik"
 }
 
 export interface Playlist {

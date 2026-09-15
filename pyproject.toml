@@ -63,6 +63,8 @@ max-args = 9
 # review re-download injects many collaborators (download/probe/finalize/replace/
 # recorder) the same way dedup does — allow the wide keyword-only signature.
 "src/crate/application/review.py" = ["TID251", "PLR0913"]
+# SSO provider: IdP, users, sessions, vault + keyword-only Spotify/admin settings.
+"src/crate/application/oidc_auth.py" = ["TID251", "PLR0913"]
 "src/crate/adapters/**" = ["TID251"]
 # FastAPI idioms: Depends/Body/Query in arg defaults (B008); route registration
 # in one factory is inherently long (PLR0915).
