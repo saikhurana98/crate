@@ -1,7 +1,9 @@
 """Authentication ports + policy (Phase 2 multi-user, ADR-0018 v5).
 
 Login is "Log in with Spotify": one OAuth round-trip both authenticates the user
-and links their Spotify account. This module owns the *use-case boundary* — the
+and links their Spotify account. With SSO configured (``CRATE_OIDC_*``, ADR-0023)
+people sign in with the identity provider instead, and Spotify is linked to the
+account separately (``application/oidc_auth``). This module owns the *use-case boundary* — the
 repository/session Protocols and the pure token policy (ttl, hashing). The SQLite
 implementations live in ``infrastructure/sqlite/user_store.py`` and the OAuth
 wiring in the composition root; nothing here does I/O.
@@ -12,6 +14,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from typing import Protocol
+
+from crate.domain.oidc import OidcProfile
 
 # A session lasts 30 days; the cookie carries the raw token, the DB only its hash.
 SESSION_TTL_S = 30 * 24 * 3600
@@ -44,6 +48,7 @@ class User:
     email: str | None = None
     avatar_url: str | None = None
     is_admin: bool = False
+    oidc_sub: str | None = None  # set once they've signed in with SSO
 
 
 class UserRepository(Protocol):
@@ -60,6 +65,25 @@ class UserRepository(Protocol):
 
     def set_admin(self, user_id: str, is_admin: bool) -> User | None:
         """Grant/revoke admin (destructive library actions); return the updated row."""
+        ...
+
+
+class SsoUserRepository(UserRepository, Protocol):
+    """The extra user operations SSO sign-in needs."""
+
+    def upsert_oidc_user(self, profile: OidcProfile) -> User:
+        """Insert or update the user for ``(issuer, sub)``; return the stored row."""
+        ...
+
+    def link_spotify(self, user_id: str, profile: SpotifyProfile) -> User:
+        """Attach a Spotify account (no other user may hold it)."""
+        ...
+
+    def unlink_spotify(self, user_id: str) -> None: ...
+
+    def merge_into(self, src_id: str, dst_id: str) -> None:
+        """Move everything of ``src_id`` (rows, sessions, SSO identity) onto
+        ``dst_id``, where ``dst_id``'s own rows win any clash, then delete ``src_id``."""
         ...
 
 

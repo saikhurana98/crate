@@ -39,6 +39,7 @@ import {
   type OrphanAudit,
   type FolderDup,
   type NavidromeState,
+  type AuthConfig,
 } from "./api";
 import { bytes, dur, ago as relTime, pct, esc } from "./format";
 import { createRenderer, effect } from "./reactive";
@@ -253,6 +254,7 @@ interface State {
   slskQueued: Record<string, boolean>; // `${id}|${ref}` -> download queued
   me: Me | null; // the logged-in user (Login with Spotify), or null in single-user mode
   authRequired: boolean; // true when /api/me 401s => render the login gate instead of the app
+  authConfig: AuthConfig | null; // how the login gate offers sign-in (SSO or Spotify)
 }
 
 const state: State = {
@@ -357,6 +359,7 @@ const state: State = {
   slskQueued: {},
   me: null,
   authRequired: false,
+  authConfig: null,
 };
 
 const root = document.getElementById("app")!;
@@ -1194,7 +1197,7 @@ function listeningHtml(): string {
       </div>${inner}</div>`;
   if (!state.spotifyConnected) {
     return wrap(
-      `<div style="background:#181c17;border:1px solid #272c25;border-radius:14px;padding:14px;font:400 11.5px 'Instrument Sans';color:#99a091">Log in with Spotify to see your now-playing and import your library.</div>`,
+      `<div style="background:#181c17;border:1px solid #272c25;border-radius:14px;padding:14px;font:400 11.5px 'Instrument Sans';color:#99a091">${state.me?.auth_mode === "oidc" ? "Link your Spotify account (banner at the top) to see your now-playing and import your library." : "Log in with Spotify to see your now-playing and import your library."}</div>`,
     );
   }
   const np = state.player?.now_playing ?? null;
@@ -1739,23 +1742,36 @@ function headerHtml(): string {
 // Shown when the user's Spotify token lacks a scope a feature needs (e.g.
 // user-top-read for Library Sync tiers). One click re-runs the login consent.
 function reloginBannerHtml(): string {
-  const missing = state.me?.missing_scopes ?? [];
-  if (!missing.length) return "";
-  return `<div style="background:rgba(242,193,78,.08);border-bottom:1px solid rgba(242,193,78,.3);padding:9px 18px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;font:500 12px 'Instrument Sans';color:#f2c14e">
-    <span>Library Sync needs one more Spotify permission (${esc(missing.join(", "))}) — re-login once to grant it.</span>
-    <a href="${api.loginUrl}" style="background:#f2c14e;color:#14170f;font:700 11.5px 'Instrument Sans';padding:6px 13px;border-radius:14px;text-decoration:none">Re-login with Spotify</a>
+  const me = state.me;
+  const sso = me?.auth_mode === "oidc";
+  const bar = (msg: string, href: string, cta: string) =>
+    `<div style="background:rgba(242,193,78,.08);border-bottom:1px solid rgba(242,193,78,.3);padding:9px 18px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;font:500 12px 'Instrument Sans';color:#f2c14e">
+    <span>${msg}</span>
+    <a href="${href}" style="background:#f2c14e;color:#14170f;font:700 11.5px 'Instrument Sans';padding:6px 13px;border-radius:14px;text-decoration:none">${cta}</a>
   </div>`;
+  if (sso && me?.spotify_linkable && !me.spotify_linked)
+    return bar("Link your Spotify account so crate can read your playlists, Liked Songs and plays.", api.spotifyLinkUrl, "Link Spotify");
+  const missing = me?.missing_scopes ?? [];
+  if (!missing.length) return "";
+  return sso
+    ? bar(`Library Sync needs one more Spotify permission (${esc(missing.join(", "))}) — re-link Spotify once to grant it.`, api.spotifyLinkUrl, "Re-link Spotify")
+    : bar(`Library Sync needs one more Spotify permission (${esc(missing.join(", "))}) — re-login once to grant it.`, api.loginUrl, "Re-login with Spotify");
 }
 
 function userChipHtml(): string {
   const me = state.me;
-  if (!me || !me.spotify_id) return "";
+  if (!me || (!me.spotify_id && me.auth_mode !== "oidc")) return "";
+  const unlink =
+    me.auth_mode === "oidc" && me.spotify_linked
+      ? `<button data-act="unlinkSpotify" title="Spotify linked — click to unlink" style="background:none;border:none;cursor:pointer;color:#1db954;padding:2px;display:inline-flex;border-radius:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm4.6 14.4a.6.6 0 01-.86.2c-2.35-1.44-5.3-1.76-8.8-.96a.62.62 0 11-.28-1.2c3.83-.88 7.1-.5 9.74 1.1.3.18.4.58.2.86z"></path></svg></button>`
+      : "";
   const avatar = me.avatar_url
     ? `<img src="${esc(me.avatar_url)}" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover"/>`
     : `<span style="width:22px;height:22px;border-radius:50%;background:#272c25;display:inline-flex;align-items:center;justify-content:center;font:700 10px 'JetBrains Mono';color:#99a091">${esc((me.display_name[0] || "?").toUpperCase())}</span>`;
   return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px 5px 6px;background:#131612;border:1px solid #272c25;border-radius:20px">
     ${avatar}
     <span style="font:600 11.5px 'Instrument Sans';color:#e9ede3;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(me.display_name)}</span>
+    ${unlink}
     <button data-act="logout" title="Log out" style="background:none;border:none;cursor:pointer;color:#5d6456;padding:2px;display:inline-flex;border-radius:6px">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
     </button>
@@ -2665,6 +2681,14 @@ function reviewPageHtml(): string {
 // this can run every tick without wiping the page.
 // Full-screen login gate shown when /api/me 401s (auth configured, no session).
 function loginGateHtml(): string {
+  const sso = state.authConfig?.mode === "oidc" ? state.authConfig.label : null;
+  const ssoGate = sso
+    ? `<div style="font:500 13px 'Instrument Sans';color:#99a091;margin-bottom:26px">Sign in with ${esc(sso)} to request and track FLAC downloads.</div>
+      <a href="${api.loginUrl}" style="display:inline-flex;align-items:center;gap:10px;background:#e9ede3;color:#0c0e0c;font:700 14px 'Instrument Sans';padding:13px 22px;border-radius:24px;text-decoration:none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>
+        Sign in with ${esc(sso)}
+      </a>`
+    : null;
   const err = state.error
     ? `<div style="margin-top:14px;color:#ff4c38;font:500 12.5px 'Instrument Sans'">${esc(state.error)}</div>`
     : "";
@@ -2674,11 +2698,11 @@ function loginGateHtml(): string {
         <span style="width:10px;height:10px;border-radius:50%;background:#ff4c38"></span>
         <span style="font:800 26px 'Doto';letter-spacing:.08em">crate</span>
       </div>
-      <div style="font:500 13px 'Instrument Sans';color:#99a091;margin-bottom:26px">Log in with Spotify to request and track FLAC downloads.</div>
+      ${ssoGate ?? `<div style="font:500 13px 'Instrument Sans';color:#99a091;margin-bottom:26px">Log in with Spotify to request and track FLAC downloads.</div>
       <a href="${api.loginUrl}" style="display:inline-flex;align-items:center;gap:10px;background:#1db954;color:#0a140c;font:700 14px 'Instrument Sans';padding:13px 22px;border-radius:24px;text-decoration:none">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm4.6 14.4a.6.6 0 01-.86.2c-2.35-1.44-5.3-1.76-8.8-.96a.62.62 0 11-.28-1.2c3.83-.88 7.1-.5 9.74 1.1.3.18.4.58.2.86zm1.23-2.74a.78.78 0 01-1.07.26c-2.69-1.65-6.79-2.13-9.97-1.17a.78.78 0 11-.45-1.5c3.63-1.09 8.15-.55 11.24 1.34.36.22.48.7.25 1.07zm.1-2.85C14.8 8.03 9.3 7.84 6.12 8.8a.94.94 0 11-.54-1.8c3.65-1.1 9.72-.89 13.55 1.38a.94.94 0 01-.96 1.62z"></path></svg>
         Log in with Spotify
-      </a>
+      </a>`}
       ${err}
     </div>
   </div>`;
@@ -2805,6 +2829,7 @@ function bindEvents(): void {
     e.stopPropagation();
     const act = el.dataset.act!;
     if (act === "logout") void api.logout();
+    else if (act === "unlinkSpotify") void unlinkSpotify();
     else if (act === "openSourceDialog") openSourceDialog();
     else if (act === "closeSourceDialog") closeSourceDialog();
     else if (act === "downloadSource") void downloadSourceCandidate(el.dataset.id!);
@@ -4243,12 +4268,28 @@ function auditHtml(kind: "tags" | "orphans" | "folders"): string {
 }
 
 // ---------- boot ----------
+async function unlinkSpotify(): Promise<void> {
+  if (!confirm("Unlink Spotify? Library Sync and playlist import stop until you link it again.")) return;
+  try {
+    await api.unlinkSpotify();
+    state.me = await api.me();
+    toast("Spotify unlinked");
+  } catch (err) {
+    toast(`Couldn't unlink: ${(err as Error).message}`);
+  }
+  render();
+}
+const SPOTIFY_RESULT: Record<string, string> = {
+  connected: "Spotify connected ✓",
+  linked: "Spotify linked ✓",
+  taken: "That Spotify account is already linked to another crate user",
+};
 function flashOAuthResult(): void {
   const params = new URLSearchParams(location.search);
   const s = params.get("spotify");
   const login = params.get("login");
   if (!s && !login) return;
-  if (s) toast(s === "connected" ? "Spotify connected ✓" : "Spotify connection failed — try again");
+  if (s) toast(SPOTIFY_RESULT[s] ?? "Spotify connection failed — try again");
   if (login === "error") state.error = "Login failed — please try again.";
   params.delete("spotify");
   params.delete("login");
@@ -4281,6 +4322,7 @@ async function boot(): Promise<void> {
     state.me = await api.me();
     if (state.me === null) {
       state.authRequired = true;
+      state.authConfig = await api.authConfig().catch(() => null);
       render();
       return;
     }

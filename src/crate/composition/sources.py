@@ -1091,6 +1091,79 @@ def build_auth(
     )
 
 
+def build_sso(config: Any, conn: Any) -> Any | None:  # pragma: no cover - IO wiring
+    """SSO sign-in (ADR-0023), or ``None`` when CRATE_OIDC_ISSUER is unset. A
+    half-configured provider fails at startup rather than locking everyone out
+    later. Spotify linking reuses the Login-with-Spotify client and callback."""
+    issuer = os.environ.get("CRATE_OIDC_ISSUER", "").strip()
+    if not issuer:
+        return None
+    client_id = os.environ.get("CRATE_OIDC_CLIENT_ID", "").strip()
+    redirect_uri = os.environ.get("CRATE_OIDC_REDIRECT_URI", "").strip()
+    if not client_id or not redirect_uri:
+        raise RuntimeError(
+            "CRATE_OIDC_ISSUER is set but CRATE_OIDC_CLIENT_ID or CRATE_OIDC_REDIRECT_URI is not"
+        )
+    import httpx
+
+    from crate.application.oidc_auth import OidcAuthProvider
+    from crate.infrastructure.oidc.client import DEFAULT_SCOPES, OidcClient
+    from crate.infrastructure.spotify.client import LOGIN_SCOPES, SpotifyClient
+    from crate.infrastructure.sqlite.user_store import SqliteSessionStore, SqliteUserRepository
+
+    http_client = httpx.Client(timeout=10.0, follow_redirects=True)
+
+    def post_form(url: str, data: dict[str, str], headers: dict[str, str]) -> Any:
+        resp = http_client.post(url, data=data, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
+    def oidc_get(url: str, headers: Any) -> Any:
+        resp = http_client.get(url, headers=dict(headers))
+        resp.raise_for_status()
+        return resp.json()
+
+    def spotify_get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
+        resp = http_client.get(url, params=params, headers=headers)
+        resp.raise_for_status()
+        return resp.json() if resp.content else None
+
+    oidc = OidcClient(
+        issuer,
+        client_id,
+        os.environ.get("CRATE_OIDC_CLIENT_SECRET") or None,
+        redirect_uri,
+        get_json=oidc_get,
+        post_form=post_form,
+        scopes=os.environ.get("CRATE_OIDC_SCOPES") or DEFAULT_SCOPES,
+    )
+    sp_id = os.environ.get("CRATE_SPOTIFY_CLIENT_ID")
+    sp_secret = os.environ.get("CRATE_SPOTIFY_CLIENT_SECRET")
+    sp_redirect = os.environ.get("CRATE_SPOTIFY_REDIRECT_URI")
+    spotify = (
+        SpotifyClient(sp_id, sp_secret, post_form=post_form, get_json=spotify_get)
+        if sp_id and sp_secret and sp_redirect
+        else None
+    )
+
+    def _csv(name: str) -> frozenset[str]:
+        return frozenset(s.strip() for s in os.environ.get(name, "").split(",") if s.strip())
+
+    return OidcAuthProvider(
+        oidc,
+        SqliteUserRepository(conn),
+        SqliteSessionStore(conn),
+        config,
+        label=os.environ.get("CRATE_OIDC_NAME", "").strip() or "SSO",
+        spotify=spotify,
+        spotify_redirect=sp_redirect,
+        spotify_scopes=LOGIN_SCOPES,
+        admin_groups=_csv("CRATE_OIDC_ADMIN_GROUPS"),
+        groups_claim=os.environ.get("CRATE_OIDC_GROUPS_CLAIM", "").strip() or "groups",
+        admin_spotify_ids=_csv("CRATE_ADMIN_SPOTIFY_IDS"),
+    )
+
+
 def build_identifier() -> Any:  # pragma: no cover - IO wiring
     """Advisory AcoustID identifier for the review hint: ``path -> IdentityHint``.
 
@@ -1217,6 +1290,7 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
     static_env = os.environ.get("CRATE_CONSOLE_STATIC")
     static_dir = Path(static_env) if static_env else None
     spotify_user = build_spotify_user(config, store)
+    sso = build_sso(config, conn)
     return create_app(
         store,
         api_key=os.environ.get("CRATE_OPS_API_KEY") or None,
@@ -1225,7 +1299,8 @@ def build_console_app() -> Any:  # pragma: no cover - IO wiring
         search=build_spotify_search(),
         spotify=spotify_user,
         library=spotify_user,
-        auth=build_auth(config, conn),
+        auth=None if sso is not None else build_auth(config, conn),
+        sso=sso,
         bulk_resolve=build_bulk_resolver(),
         candidate_sources=build_candidate_sources,
         identify_hint=build_identifier(),
