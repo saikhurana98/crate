@@ -4,11 +4,29 @@ playlists into a user's Navidrome account."""
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from crate.domain.listening import merge_key
 
 DURATION_TOLERANCE_S = 5.0
+
+
+@dataclass(frozen=True)
+class NavidromeLogin:
+    """How crate calls Navidrome as one user: a password, or (Navidrome behind
+    SSO) a Subsonic token + salt Navidrome issued, which works the same way."""
+
+    username: str
+    password: str | None = None
+    token: str | None = None
+    salt: str | None = None
+
+    @property
+    def via_sso(self) -> bool:
+        return self.token is not None
+
+
 _LOSSLESS = frozenset({"flac", "alac", "wav", "aiff", "aif", "ape", "wv"})
 _EMPTY_KEY = merge_key(None, None)
 

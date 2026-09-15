@@ -4,6 +4,8 @@
   up in the player without waiting for Navidrome's own schedule.
 - :class:`SubsonicClient`: a user's own account, used to mirror imported
   playlists (ping, search3, createPlaylist).
+- ``sso_login``: for a Navidrome behind SSO (reverse-proxy auth), sign a user in
+  through the trusted user header and keep the Subsonic token it issues.
 
 Token auth throughout: ``t = md5(password + salt)``; the password itself is never
 sent."""
@@ -11,11 +13,16 @@ sent."""
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import secrets
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from crate.domain.navidrome import NavidromeLogin
+
 GetJson = Callable[[str, dict[str, str]], Any]
+GetText = Callable[[str, dict[str, str]], str]  # (url, headers) -> body
 Params = Mapping[str, "str | list[str]"]
 # POST the form ``params`` (a list value repeats the key) to the URL; return the JSON.
 PostJson = Callable[[str, Params], Any]
@@ -63,17 +70,81 @@ def start_scan(base_url: str, user: str, password: str, *, get: GetJson) -> bool
     return reply.get("status") == "ok"
 
 
-class SubsonicClient:
-    """One user's Navidrome account."""
+_APP_CONFIG = re.compile(r'window\.__APP_CONFIG__\s*=\s*("(?:[^"\\]|\\.)*")')
 
-    def __init__(self, base_url: str, user: str, password: str, *, post: PostJson) -> None:
+
+def parse_app_config(html: str) -> dict[str, Any]:
+    """The config Navidrome embeds in its web app page (a JSON document inside a
+    JavaScript string)."""
+    match = _APP_CONFIG.search(html)
+    if match is None:
+        raise NavidromeError("that doesn't look like Navidrome's web app page")
+    try:
+        config = json.loads(json.loads(match.group(1)))
+    except ValueError as exc:
+        raise NavidromeError("couldn't read Navidrome's app config") from exc
+    if not isinstance(config, dict):
+        raise NavidromeError("couldn't read Navidrome's app config")
+    return config
+
+
+def sso_login(base_url: str, header: str, username: str, *, get: GetText) -> NavidromeLogin:
+    """Sign ``username`` in to a Navidrome that trusts a reverse proxy's user
+    header (``ND_REVERSEPROXYUSERHEADER``), from an address it whitelists
+    (``ND_REVERSEPROXYWHITELIST``). Navidrome embeds the signed-in user's Subsonic
+    token + salt in its app page; that pair is what crate keeps. Navidrome creates
+    the account if it doesn't exist yet, as it would on a first visit."""
+    page = get(f"{base_url.rstrip('/')}/app/", {header: username})
+    auth = parse_app_config(page).get("auth") or {}
+    token, salt, name = auth.get("subsonicToken"), auth.get("subsonicSalt"), auth.get("username")
+    if not (token and salt and name):
+        raise NavidromeError(
+            "Navidrome didn't sign that user in. Check that ND_REVERSEPROXYUSERHEADER "
+            "matches and that ND_REVERSEPROXYWHITELIST includes crate's address"
+        )
+    return NavidromeLogin(str(name), token=str(token), salt=str(salt))
+
+
+class SubsonicClient:
+    """One user's Navidrome account: with a password, or a token + salt."""
+
+    def __init__(
+        self,
+        base_url: str,
+        user: str,
+        password: str | None = None,
+        *,
+        post: PostJson,
+        token: str | None = None,
+        salt: str | None = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._user = user
         self._password = password
+        self._token = token
+        self._salt = salt
         self._post = post
 
+    @classmethod
+    def for_login(cls, base_url: str, login: NavidromeLogin, *, post: PostJson) -> SubsonicClient:
+        return cls(
+            base_url, login.username, login.password, post=post, token=login.token, salt=login.salt
+        )
+
+    def _auth(self) -> dict[str, str]:
+        if self._token and self._salt:
+            return {
+                "u": self._user,
+                "t": self._token,
+                "s": self._salt,
+                "v": API_VERSION,
+                "c": "crate",
+                "f": "json",
+            }
+        return auth_params(self._user, self._password or "")
+
     def _call(self, endpoint: str, params: Params | None = None) -> dict[str, Any]:
-        form: dict[str, str | list[str]] = {**auth_params(self._user, self._password)}
+        form: dict[str, str | list[str]] = {**self._auth()}
         form.update(params or {})
         return _reply(self._post(f"{self._base}/rest/{endpoint}", form))
 

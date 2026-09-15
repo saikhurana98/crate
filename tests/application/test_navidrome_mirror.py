@@ -109,7 +109,7 @@ def _run(store: _Store, api: _Api, jobs: _Jobs | None = None, **kw: Any) -> dict
     return run_navidrome_push(
         _ctx(jobs or _Jobs()),
         store,
-        client_for=lambda u, p: api,
+        client_for=lambda login: api,
         tracks_for=lambda uid, sid: tracks[sid],
         index=INDEX,
         now=NOW,

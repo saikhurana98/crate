@@ -1160,6 +1160,8 @@ def build_sso(config: Any, conn: Any) -> Any | None:  # pragma: no cover - IO wi
         spotify_scopes=LOGIN_SCOPES,
         admin_groups=_csv("CRATE_OIDC_ADMIN_GROUPS"),
         groups_claim=os.environ.get("CRATE_OIDC_GROUPS_CLAIM", "").strip() or "groups",
+        username_claim=os.environ.get("CRATE_OIDC_USERNAME_CLAIM", "").strip()
+        or "preferred_username",
         admin_spotify_ids=_csv("CRATE_ADMIN_SPOTIFY_IDS"),
     )
 
@@ -1671,6 +1673,33 @@ def _navidrome_post(url: str, params: Any) -> Any:  # pragma: no cover - IO wiri
     return resp.json()
 
 
+def _navidrome_get_text(url: str, headers: dict[str, str]) -> str:  # pragma: no cover - IO
+    import httpx
+
+    resp = httpx.get(url, headers=headers, timeout=15.0)
+    resp.raise_for_status()
+    return resp.text
+
+
+class _NavidromeSso:  # pragma: no cover - IO wiring (the pieces are tested in the client)
+    """Navidrome behind SSO: a crate user's SSO username, and a trusted-header
+    sign-in for it, checked with a Subsonic ping before it's kept."""
+
+    def __init__(self, url: str, header: str, users: Any) -> None:
+        self._url, self._header, self._users = url, header, users
+
+    def username_of(self, user_id: str) -> str | None:
+        user = self._users.get(user_id)
+        return user.sso_username if user is not None and user.oidc_sub else None
+
+    def login(self, username: str) -> Any:
+        from crate.infrastructure.navidrome.client import SubsonicClient, sso_login
+
+        login = sso_login(self._url, self._header, username, get=_navidrome_get_text)
+        SubsonicClient.for_login(self._url, login, post=_navidrome_post).ping()
+        return login
+
+
 def _build_navidrome() -> dict[str, Any]:  # pragma: no cover - IO wiring
     """Console side of per-user Navidrome: the account store and a credential check.
     Empty (the feature is off) unless CRATE_NAVIDROME_URL is set. The browser
@@ -1686,7 +1715,16 @@ def _build_navidrome() -> dict[str, Any]:  # pragma: no cover - IO wiring
     def verify(user: str, password: str) -> None:
         SubsonicClient(url, user, password, post=_navidrome_post).ping()
 
+    # Navidrome behind SSO: only when crate itself signs people in with SSO, so the
+    # username it hands Navidrome was asserted by the identity provider.
+    header = os.environ.get("CRATE_NAVIDROME_SSO_HEADER", "").strip()
+    sso = None
+    if header and os.environ.get("CRATE_OIDC_ISSUER", "").strip():
+        from crate.infrastructure.sqlite.user_store import SqliteUserRepository
+
+        sso = _NavidromeSso(url, header, SqliteUserRepository(connect(db_path())))
     return {
+        "navidrome_sso": sso,
         "navidrome": SqliteNavidromeStore(connect(db_path()), SecretBox.from_keyfile(_keyfile())),
         "navidrome_verify": verify,
         "navidrome_public_url": os.environ.get("CRATE_NAVIDROME_PUBLIC_URL") or None,
@@ -1733,7 +1771,7 @@ def _navidrome_push_job(job: Any, ctx: Any) -> dict[str, Any]:  # pragma: no cov
         return run_navidrome_push(
             ctx,
             SqliteNavidromeStore(conn, box),
-            client_for=lambda u, p: SubsonicClient(url, u, p, post=_navidrome_post),
+            client_for=lambda login: SubsonicClient.for_login(url, login, post=_navidrome_post),
             tracks_for=tracks_for,
             index=LibraryIndex(frozenset(isrcs), frozenset(keys)),
             now=datetime.now(UTC),

@@ -21,7 +21,7 @@ from typing import Any, Protocol
 from crate.application.jobs import JobContext
 from crate.application.library_sync import LibraryIndex
 from crate.domain.listening import merge_key
-from crate.domain.navidrome import pick_song, search_query
+from crate.domain.navidrome import NavidromeLogin, pick_song, search_query
 from crate.infrastructure.navidrome.client import ERR_NOT_FOUND, NavidromeError
 
 SONG_CACHE_DAYS = 3  # re-check cached song ids after this (files move, get trashed)
@@ -37,7 +37,7 @@ class NavidromeApi(Protocol):
 
 class MirrorStore(Protocol):
     def account_users(self) -> list[str]: ...
-    def credentials(self, user_id: str) -> tuple[str, str] | None: ...
+    def credentials(self, user_id: str) -> NavidromeLogin | None: ...
     def links(self, user_id: str, *, enabled_only: bool = False) -> list[dict[str, Any]]: ...
     def record_push(
         self,
@@ -54,7 +54,7 @@ class MirrorStore(Protocol):
     def put_song(self, key: str, song_id: str) -> None: ...
 
 
-ClientFactory = Callable[[str, str], NavidromeApi]  # (username, password) -> client
+ClientFactory = Callable[[NavidromeLogin], NavidromeApi]
 TracksFn = Callable[[str, str], list[dict[str, Any]]]  # (user_id, spotify_id) -> tracks
 
 
@@ -139,7 +139,7 @@ def run_navidrome_push(
         if creds is None or not links:
             continue
         totals["users"] += 1
-        api = client_for(*creds)
+        api = client_for(creds)
         for link in links:
             ctx.check_cancelled()
             sid = str(link["spotify_id"])

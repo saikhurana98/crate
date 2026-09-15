@@ -90,6 +90,7 @@ class OidcAuthProvider:
         spotify_scopes: str = "",
         admin_groups: frozenset[str] = frozenset(),
         groups_claim: str = "groups",
+        username_claim: str = "preferred_username",
         admin_spotify_ids: frozenset[str] = frozenset(),
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -103,6 +104,7 @@ class OidcAuthProvider:
         self._spotify_scopes = spotify_scopes
         self._admin_groups = admin_groups
         self._groups_claim = groups_claim
+        self._username_claim = username_claim
         self._admin_spotify_ids = admin_spotify_ids
         self._clock = clock
         self._pending: dict[str, _Pending] = {}
@@ -139,7 +141,10 @@ class OidcAuthProvider:
                 raise OidcError("the provider's userinfo is for a different user")
             claims = {**claims, **info, "sub": claims["sub"], "iss": claims["iss"]}
         profile = profile_from_claims(
-            claims, issuer=self._oidc.issuer, groups_claim=self._groups_claim
+            claims,
+            issuer=self._oidc.issuer,
+            groups_claim=self._groups_claim,
+            username_claim=self._username_claim,
         )
         user = self._with_admin(self._users.upsert_oidc_user(profile), profile)
         return user, self._sessions.create(user.id)

@@ -475,6 +475,7 @@ export const api = {
   navidrome: () => get<NavidromeState>("/api/navidrome"),
   navidromeLink: (username: string, password: string) =>
     send<{ account: NavidromeAccount }>("PUT", "/api/navidrome/account", { username, password }),
+  navidromeSso: () => send<{ account: NavidromeAccount }>("POST", "/api/navidrome/account/sso", {}),
   navidromeUnlink: () => send<{ removed: boolean }>("DELETE", "/api/navidrome/account", {}),
   navidromeMirror: (spotifyId: string, mirror: boolean, name?: string) =>
     send<NavidromeLink & { job: string | null }>(
@@ -808,6 +809,7 @@ export interface FolderDup {
 export interface NavidromeAccount {
   username: string;
   verified_at: string;
+  via: "sso" | "password"; // linked through Navidrome's SSO sign-in, or a password
 }
 
 export interface NavidromeLink {
@@ -827,4 +829,5 @@ export interface NavidromeState {
   public_url: string | null;
   account: NavidromeAccount | null;
   playlists: NavidromeLink[];
+  sso: boolean; // Navidrome is behind SSO: offer "Sign in with Navidrome"
 }

@@ -49,6 +49,7 @@ class User:
     avatar_url: str | None = None
     is_admin: bool = False
     oidc_sub: str | None = None  # set once they've signed in with SSO
+    sso_username: str | None = None  # the provider's username claim, for Navidrome SSO
 
 
 class UserRepository(Protocol):

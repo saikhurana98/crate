@@ -4,11 +4,13 @@ merge key -> Navidrome song id cache. Passwords are encrypted with
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from collections.abc import Iterable
 from typing import Any
 
+from crate.domain.navidrome import NavidromeLogin
 from crate.infrastructure.crypto import SecretBox
 from crate.infrastructure.sqlite.db import now_iso
 
@@ -25,30 +27,50 @@ class SqliteNavidromeStore:
 
     # --- accounts ---
     def set_account(self, user_id: str, username: str, password: str) -> None:
+        self.set_login(user_id, NavidromeLogin(username, password=password))
+
+    def set_login(self, user_id: str, login: NavidromeLogin) -> None:
+        """Store a checked login, encrypted: the password, or the token + salt."""
+        if login.via_sso:
+            kind, secret = "token", json.dumps({"t": login.token, "s": login.salt})
+        else:
+            kind, secret = "password", login.password or ""
         now = now_iso()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO navidrome_accounts(user_id, username, password_ct, verified_at, "
-                "updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET "
-                "username=excluded.username, password_ct=excluded.password_ct, "
-                "verified_at=excluded.verified_at, updated_at=excluded.updated_at",
-                (user_id, username, self._box.encrypt(password), now, now),
+                "INSERT INTO navidrome_accounts(user_id, username, password_ct, auth_kind, "
+                "verified_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_id) DO "
+                "UPDATE SET username=excluded.username, password_ct=excluded.password_ct, "
+                "auth_kind=excluded.auth_kind, verified_at=excluded.verified_at, "
+                "updated_at=excluded.updated_at",
+                (user_id, login.username, self._box.encrypt(secret), kind, now, now),
             )
 
     def account(self, user_id: str) -> dict[str, Any] | None:
-        """``{username, verified_at}``; never the password."""
+        """``{username, verified_at, via}`` (``via`` = sso | password); never a secret."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT username, verified_at FROM navidrome_accounts WHERE user_id=?", (user_id,)
+                "SELECT username, verified_at, auth_kind FROM navidrome_accounts WHERE user_id=?",
+                (user_id,),
             ).fetchone()
-        return dict(row) if row else None
+        if row is None:
+            return None
+        via = "sso" if row["auth_kind"] == "token" else "password"
+        return {"username": row["username"], "verified_at": row["verified_at"], "via": via}
 
-    def credentials(self, user_id: str) -> tuple[str, str] | None:
+    def credentials(self, user_id: str) -> NavidromeLogin | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT username, password_ct FROM navidrome_accounts WHERE user_id=?", (user_id,)
+                "SELECT username, password_ct, auth_kind FROM navidrome_accounts WHERE user_id=?",
+                (user_id,),
             ).fetchone()
-        return (str(row["username"]), self._box.decrypt(row["password_ct"])) if row else None
+        if row is None:
+            return None
+        secret = self._box.decrypt(row["password_ct"])
+        if row["auth_kind"] == "token":
+            pair = json.loads(secret)
+            return NavidromeLogin(str(row["username"]), token=pair["t"], salt=pair["s"])
+        return NavidromeLogin(str(row["username"]), password=secret)
 
     def delete_account(self, user_id: str) -> bool:
         """Forget the login and the mirror links (the playlists stay in Navidrome)."""
