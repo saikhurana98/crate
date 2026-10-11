@@ -3,15 +3,21 @@
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from crate.application.multiplex import MuxStrategy
+from crate.composition import sources
 from crate.composition.sources import (
     _enabled,
     _retention_days,
     _strategy,
+    build_candidate_sources,
+    build_candidate_streamers,
     build_maintenance,
     prune_attempts,
 )
+from crate.domain.candidate import Candidate
+from crate.domain.download import DownloadOutcome
 from crate.infrastructure.sqlite.db import connect
 from crate.infrastructure.sqlite.store import RequestStore
 
@@ -38,6 +44,33 @@ def test_strategy_uniform_from_uniform_or_distribute(monkeypatch) -> None:  # ty
     assert _strategy(2) is MuxStrategy.UNIFORM
     monkeypatch.setenv("CRATE_MUX_TIER2", "all")
     assert _strategy(2) is MuxStrategy.ALL
+
+
+def test_manual_monochrome_search_is_available_when_cascade_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    candidate = Candidate("monochrome", 1, "7", "Song", "Artist", None, "FLAC", True, 1, 2)
+
+    def search(query: str, want: Any) -> list[Candidate]:
+        return [candidate]
+
+    def download(cand: Candidate, out_dir: Path, want: Any) -> DownloadOutcome:
+        raise AssertionError("download should not run")
+
+    monkeypatch.setattr(sources, "_enabled_source_names", lambda: [])
+    monkeypatch.setitem(sources._CANDIDATE_FACTORIES, "monochrome", lambda: (search, download))
+
+    available = build_candidate_sources()
+
+    assert list(available) == ["monochrome"]
+    assert available["monochrome"][0]("Song", None) == [candidate]
+
+
+def test_monochrome_audition_stream_is_available_when_cascade_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(sources, "_enabled_source_names", lambda: [])
+    monkeypatch.setenv("CRATE_MONOCHROME_BASE", "https://mono.example/")
+
+    streamers = build_candidate_streamers()
+
+    assert streamers["monochrome"]("42") == "https://mono.example/track/42"
 
 
 def _seed_old_attempt(db: Path) -> str:

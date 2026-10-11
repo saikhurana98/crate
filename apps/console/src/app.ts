@@ -1642,7 +1642,7 @@ function sourceDialogHtml(): string {
     <div style="display:flex;align-items:center;gap:12px;padding:16px 18px 12px">
       <div style="flex:1;min-width:0">
         <div style="font:600 15px 'Instrument Sans';color:#e9ede3">Search download sources</div>
-        <div style="font:400 11.5px 'Instrument Sans';color:#5d6456;margin-top:2px">Not on Spotify? Search Qobuz, Deezer, arcod &amp; co. directly, then queue the exact match.</div>
+        <div style="font:400 11.5px 'Instrument Sans';color:#5d6456;margin-top:2px">Not on Spotify? Search Monochrome, Qobuz, Deezer, arcod &amp; co. directly, then queue the exact match.</div>
       </div>
       <button data-act="closeSourceDialog" class="closebtn" style="background:#181c17;border:1px solid #272c25;border-radius:10px;color:#99a091;cursor:pointer;padding:6px 9px;flex-shrink:0;display:inline-flex"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"></path></svg></button>
     </div>

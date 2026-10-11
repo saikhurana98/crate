@@ -336,6 +336,12 @@ _CANDIDATE_FACTORIES: dict[str, Callable[[], CandidateSource]] = {
     "soulseek": _soulseek_candidate,
 }
 
+# Manual searches are operator-initiated and do not participate in the automatic
+# cascade. Credential-free providers can therefore remain searchable even when a
+# host's stored tier layout has them in the disabled tray. This also keeps the
+# provider Test action, Review search, and direct source search consistent.
+_MANUAL_CANDIDATES_ALWAYS_AVAILABLE = frozenset({"monochrome"})
+
 
 def _enabled_source_names() -> list[str]:  # pragma: no cover - env + IO wiring
     """Names of currently-enabled sources, honouring the same rules as build_tiers:
@@ -353,11 +359,13 @@ def _enabled_source_names() -> list[str]:  # pragma: no cover - env + IO wiring
 def build_candidate_sources() -> dict[str, CandidateSource]:  # pragma: no cover - IO wiring
     """The review flow's candidate sources: ``{name: (search_fn, download_fn)}``.
 
-    Only enabled, candidate-capable sources are wired (same enable/stored-layout
-    rules as ``build_tiers``); a factory that raises for missing creds is skipped.
-    Telegram is excluded by construction (deferred)."""
+    Enabled candidate-capable sources are wired, plus credential-free manual
+    search providers such as Monochrome. Automatic cascade membership is still
+    controlled by the stored layout. A factory that raises for missing creds is
+    skipped. Telegram is excluded by construction (deferred)."""
     out: dict[str, CandidateSource] = {}
-    for name in _enabled_source_names():
+    names = dict.fromkeys([*_enabled_source_names(), *sorted(_MANUAL_CANDIDATES_ALWAYS_AVAILABLE)])
+    for name in names:
         factory = _CANDIDATE_FACTORIES.get(name)
         if factory is None:
             continue
@@ -1194,8 +1202,7 @@ def build_candidate_streamers() -> dict[str, Callable[[str], str]]:  # pragma: n
     from crate.infrastructure.monochrome.client import DEFAULT_BASE
 
     mono_base = os.environ.get("CRATE_MONOCHROME_BASE", DEFAULT_BASE).rstrip("/")
-    if "monochrome" in _enabled_source_names():
-        streamers["monochrome"] = lambda ref: f"{mono_base}/track/{int(ref)}"
+    streamers["monochrome"] = lambda ref: f"{mono_base}/track/{int(ref)}"
     return streamers
 
 
