@@ -97,6 +97,20 @@ jobs:
           docker compose -f "$STACK" logs --tail=80 $SERVICES || true
           exit 1
 
+      - name: Monochrome search smoke test
+        run: |
+          docker compose -f "$STACK" exec -T crate-console python - <<'PY'
+          from crate.composition.sources import build_candidate_sources
+
+          sources = build_candidate_sources()
+          if "monochrome" not in sources:
+              raise SystemExit("Monochrome manual search is unavailable")
+          results = sources["monochrome"][0]("Zara Sa", None)
+          if not any(row.title.casefold() == "zara sa" for row in results):
+              raise SystemExit("Monochrome live search returned no Zara Sa match")
+          print(f"Monochrome live search healthy: {len(results)} candidate(s)")
+          PY
+
       - name: Rollback on failure
         if: failure() && steps.prev.outputs.img != 'none'
         run: |

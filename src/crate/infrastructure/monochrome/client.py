@@ -16,7 +16,14 @@ class MonochromeClient:  # pragma: no cover - network I/O
         self, base_url: str = DEFAULT_BASE, *, transport: httpx.BaseTransport | None = None
     ) -> None:
         self._base = base_url.rstrip("/")
-        self._http = httpx.Client(timeout=20.0, follow_redirects=True, transport=transport)
+        # HTTPTransport retries transient connection failures, including temporary
+        # DNS resolution errors. Monochrome sits behind Cloudflare and both
+        # production hosts have occasionally observed EAI_AGAIN/EAI_NONAME from
+        # their local resolvers; a single miss should not discard the source.
+        resilient_transport = transport or httpx.HTTPTransport(retries=2)
+        self._http = httpx.Client(
+            timeout=20.0, follow_redirects=True, transport=resilient_transport
+        )
 
     def search(self, query: str) -> dict[str, Any]:
         resp = self._http.get(f"{self._base}/search/tracks", params={"q": query, "limit": 20})
