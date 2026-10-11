@@ -402,6 +402,12 @@ def build_candidate_sources() -> dict[str, CandidateSource]:  # pragma: no cover
     search providers such as Monochrome. Automatic cascade membership is still
     controlled by the stored layout. A factory that raises for missing creds is
     skipped. Telegram is excluded by construction (deferred)."""
+    # Console-saved credentials live in the shared config DB. The console process
+    # may already have loaded them while validating a provider, but the separate
+    # queue worker process has its own environment and must load them too.
+    config = _config_store_if_enabled()
+    if config is not None:
+        _apply_stored_secrets(config)
     out: dict[str, CandidateSource] = {}
     names = dict.fromkeys([*_enabled_source_names(), *sorted(_MANUAL_CANDIDATES_ALWAYS_AVAILABLE)])
     for name in names:
@@ -696,7 +702,6 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
     finalizer = build_finalizer()
     run = _bound_run(probe, finalizer)
     replace = _atomic_replace()
-    candidate_sources = build_candidate_sources()
     out_dir = Path(os.environ.get("CRATE_SERVE_DOWNLOADS", "downloads"))
     poll = float(os.environ.get("CRATE_QUEUE_POLL", "2.0"))
     # Fingerprint gate is opt-in: only armed when the fpcalc binary is present
@@ -707,7 +712,11 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
         review = store.get_review_candidate(claimed["id"])
         if review is not None:
             candidate = _review_candidate(review)
-            source = candidate_sources.get(candidate.source)
+            # Provider settings and tier placement are hot-reloadable. Resolve the
+            # map when the job starts instead of freezing it when this worker
+            # thread starts; otherwise a newly enabled provider can appear in the
+            # console search but fail here as "not available".
+            source = build_candidate_sources().get(candidate.source)
             if source is None:
                 raise RuntimeError(f"candidate source {candidate.source!r} not available")
             try:

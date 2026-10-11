@@ -1,5 +1,6 @@
 """Composition config helpers: enable flags + per-tier mux strategy selection."""
 
+import os
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -62,6 +63,36 @@ def test_manual_monochrome_search_is_available_when_cascade_disabled(monkeypatch
 
     assert list(available) == ["monochrome"]
     assert available["monochrome"][0]("Song", None) == [candidate]
+
+
+def test_candidate_sources_load_stored_credentials_in_worker_process(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Config:
+        def secret_keys(self, name: str) -> set[str]:
+            return {"CRATE_ANTRA_USERNAME", "CRATE_ANTRA_PASSWORD"} if name == "antra" else set()
+
+        def get_secret(self, name: str, key: str) -> str:
+            return {"CRATE_ANTRA_USERNAME": "user", "CRATE_ANTRA_PASSWORD": "pass"}[key]
+
+    def factory() -> sources.CandidateSource:
+        assert os.environ["CRATE_ANTRA_USERNAME"] == "user"
+        assert os.environ["CRATE_ANTRA_PASSWORD"] == "pass"
+
+        def search(query: str, want: Any) -> list[Candidate]:
+            return []
+
+        def download(cand: Candidate, out_dir: Path, want: Any) -> DownloadOutcome:
+            raise AssertionError("download should not run")
+
+        return search, download
+
+    monkeypatch.delenv("CRATE_ANTRA_USERNAME", raising=False)
+    monkeypatch.delenv("CRATE_ANTRA_PASSWORD", raising=False)
+    config = Config()
+    monkeypatch.setattr(sources, "_config_store_if_enabled", lambda: config)
+    monkeypatch.setattr(sources, "_enabled_source_names", lambda: ["antra"])
+    monkeypatch.setitem(sources._CANDIDATE_FACTORIES, "antra", factory)
+
+    assert "antra" in build_candidate_sources()
 
 
 def test_monochrome_audition_stream_is_available_when_cascade_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
