@@ -111,6 +111,27 @@ jobs:
           print(f"Monochrome live search healthy: {len(results)} candidate(s)")
           PY
 
+      - name: Configured Antra worker smoke test
+        run: |
+          docker compose -f "$STACK" exec -T crate-serve python - <<'PY'
+          from crate.composition.catalog import default_layout, reconcile_layout
+          from crate.composition.sources import build_candidate_sources, build_config_store
+
+          config = build_config_store()
+          stored = config.get_layout()
+          layout = reconcile_layout(stored) if stored else default_layout()
+          enabled = {name for tier in layout["tiers"] for name in tier["sources"]}
+          if "antra" not in enabled:
+              print("Antra disabled on this host; worker smoke test skipped")
+          else:
+              sources = build_candidate_sources()
+              if "antra" not in sources:
+                  raise SystemExit(
+                      "Antra is enabled but the worker could not load its credentials/provider"
+                  )
+              print("Antra worker provider healthy: stored credentials loaded")
+          PY
+
       - name: Rollback on failure
         if: failure() && steps.prev.outputs.img != 'none'
         run: |
