@@ -113,7 +113,23 @@ def _antra_client() -> Any:  # pragma: no cover - IO wiring
 def _antra_metadata(query: str, want: TrackIdentity | None) -> tuple[str | None, str | None]:
     """Best-effort album/art metadata for Antra's metadata-only import request."""
     from crate.adapters.sources import monochrome as mono_adapter
+    from crate.infrastructure.deezer.public import DeezerPublic
     from crate.infrastructure.monochrome.client import DEFAULT_BASE
+
+    # An exact public ISRC lookup is the safest metadata source and needs no
+    # account. This covers tracks Antra can resolve even when Monochrome's search
+    # catalogue has no result (the live Ashke case that exposed this bug).
+    if want is not None and want.isrc:
+        try:
+            track = DeezerPublic(lambda url: http.get_json(url, {})).track_by_isrc(want.isrc)
+            if track is not None:
+                album = track.get("album") or {}
+                album_name = str(album.get("title") or "").strip() or None
+                art_url = album.get("cover_xl") or album.get("cover_big")
+                if album_name or art_url:
+                    return album_name, str(art_url) if art_url else None
+        except Exception:
+            pass
 
     try:
         mono = _monochrome_client(os.environ.get("CRATE_MONOCHROME_BASE", DEFAULT_BASE))

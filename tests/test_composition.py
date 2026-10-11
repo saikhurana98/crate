@@ -19,6 +19,7 @@ from crate.composition.sources import (
 )
 from crate.domain.candidate import Candidate
 from crate.domain.download import DownloadOutcome
+from crate.domain.identity import TrackIdentity
 from crate.infrastructure.sqlite.db import connect
 from crate.infrastructure.sqlite.store import RequestStore
 
@@ -93,6 +94,26 @@ def test_candidate_sources_load_stored_credentials_in_worker_process(monkeypatch
     monkeypatch.setitem(sources._CANDIDATE_FACTORIES, "antra", factory)
 
     assert "antra" in build_candidate_sources()
+
+
+def test_antra_metadata_prefers_public_isrc_art(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def get_json(url: str, params: dict[str, Any]) -> dict[str, Any]:
+        assert url.endswith("/track/isrc:GXLEL2633343")
+        return {
+            "id": 1,
+            "title": "Ashke",
+            "album": {
+                "title": "AUJLA SZN 1",
+                "cover_xl": "https://img.example/ashke.jpg",
+            },
+        }
+
+    monkeypatch.setattr(sources.http, "get_json", get_json)
+
+    assert sources._antra_metadata(
+        "Karan Aujla, Mxrci Ashke",
+        TrackIdentity("Karan Aujla, Mxrci", "Ashke", "GXLEL2633343", 218),
+    ) == ("AUJLA SZN 1", "https://img.example/ashke.jpg")
 
 
 def test_monochrome_audition_stream_is_available_when_cascade_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
