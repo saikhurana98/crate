@@ -33,6 +33,13 @@ SOURCES: tuple[SourceSpec, ...] = (
         True,
     ),
     SourceSpec("monochrome", 1, "CRATE_MONOCHROME", (), True),  # public API, no env secret
+    SourceSpec(
+        "antra",
+        1,
+        "CRATE_ANTRA",
+        ("CRATE_ANTRA_USERNAME", "CRATE_ANTRA_PASSWORD"),
+        True,
+    ),
     SourceSpec("deezer", 2, "CRATE_DEEZER", ("CRATE_DEEZER_ARL",), True),
     SourceSpec("arcod", 2, "CRATE_ARCOD", (), False),  # Qobuz proxy, no auth; may serve MP3
     SourceSpec(
@@ -178,3 +185,32 @@ def validate_layout(layout: Any) -> dict[str, Any]:
         if pin not in tier3["sources"]:
             raise LayoutError(f"{pin} is pinned to Tier 3 and cannot be moved or disabled")
     return {"tiers": norm_tiers, "disabled": list(disabled)}
+
+
+def reconcile_layout(layout: Any) -> dict[str, Any]:
+    """Upgrade a previously valid layout when the source catalog changes.
+
+    Newly introduced providers start disabled, preserving the operator's existing
+    cascade. Removed provider names are discarded. Structural errors still fail
+    through the normal validator.
+    """
+    if not isinstance(layout, dict):
+        return validate_layout(layout)
+    tiers = layout.get("tiers")
+    disabled = layout.get("disabled", [])
+    if not isinstance(tiers, list) or not isinstance(disabled, list):
+        return validate_layout(layout)
+    if any(not isinstance(t, dict) or not isinstance(t.get("sources", []), list) for t in tiers):
+        return validate_layout(layout)
+    copy = {
+        "tiers": [
+            {**t, "sources": [name for name in t.get("sources", []) if name in KNOWN]}
+            for t in tiers
+        ],
+        "disabled": [name for name in disabled if name in KNOWN],
+    }
+    placed = {name for tier in copy["tiers"] for name in tier.get("sources", [])} | set(
+        copy["disabled"]
+    )
+    copy["disabled"].extend(spec.name for spec in SOURCES if spec.name not in placed)
+    return validate_layout(copy)

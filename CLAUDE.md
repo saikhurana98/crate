@@ -67,7 +67,7 @@ Requests carry a `TrackIdentity` (from Spotify search/playlist: artist/title/ISR
 
 | Tier | Sources | Enable |
 |---|---|---|
-| 1 (lossless FLAC) | Qobuz (direct), Monochrome (direct Tracks API) | `CRATE_QOBUZ=1`, `CRATE_MONOCHROME=1` |
+| 1 (lossless FLAC) | Qobuz (direct), Monochrome (direct Tracks API), Antra (hosted resolver) | `CRATE_QOBUZ=1`, `CRATE_MONOCHROME=1`, `CRATE_ANTRA=1` |
 | 2 (lossless-ish) | Deezer (ARL), Soulseek (via external slskd), Telegram bot, **arcod** (Qobuz proxy, no creds — may serve MP3, so not lossless-gated) | `CRATE_DEEZER=1`, `CRATE_SOULSEEK=1`, `CRATE_TELEGRAM=1`, `CRATE_ARCOD=1` |
 | 3 (lossy fallback) | yt-dlp | always on |
 

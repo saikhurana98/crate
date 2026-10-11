@@ -7,6 +7,7 @@ via ``CRATE_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
 
   Tier 1  Qobuz (hi-res FLAC, direct)        opt-in CRATE_QOBUZ=1
           Monochrome (direct FLAC)          opt-in CRATE_MONOCHROME=1
+          Antra (hosted lossless resolver)  opt-in CRATE_ANTRA=1
   Tier 2  Deezer (16-bit FLAC via ARL)       opt-in CRATE_DEEZER=1
           arcod (Qobuz proxy, no auth)       opt-in CRATE_ARCOD=1
           Soulseek (via slskd)               opt-in CRATE_SOULSEEK=1
@@ -97,6 +98,27 @@ def _monochrome_source() -> SourceEntry:  # pragma: no cover - IO wiring
         )
 
     return SourceEntry(SourceRef("monochrome", Tier.ONE), monochrome, expected_lossless=True)
+
+
+def _antra_client() -> Any:  # pragma: no cover - IO wiring
+    from crate.infrastructure.antra.client import DEFAULT_BASE, AntraClient
+
+    return AntraClient(
+        os.environ["CRATE_ANTRA_USERNAME"],
+        os.environ["CRATE_ANTRA_PASSWORD"],
+        os.environ.get("CRATE_ANTRA_BASE", DEFAULT_BASE),
+    )
+
+
+def _antra_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from crate.adapters.sources.antra import antra_download
+
+    client = _antra_client()
+
+    def antra(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return antra_download(query, out_dir, want, download=client.download_track)
+
+    return SourceEntry(SourceRef("antra", Tier.ONE), antra, expected_lossless=True)
 
 
 def _telegram_source() -> SourceEntry:  # pragma: no cover - IO wiring
@@ -197,6 +219,7 @@ def _ytdlp_source() -> SourceEntry:  # pragma: no cover - IO wiring
 _FACTORIES: dict[str, Callable[[], SourceEntry]] = {
     "qobuz": _qobuz_source,
     "monochrome": _monochrome_source,
+    "antra": _antra_source,
     "deezer": _deezer_source,
     "arcod": _arcod_source,
     "soulseek": _soulseek_source,
@@ -242,6 +265,20 @@ def _monochrome_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
 
     def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return monochrome.download_candidate(cand, out_dir, want, fetch=client.fetch)
+
+    return search, download
+
+
+def _antra_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import antra
+
+    client = _antra_client()
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return antra.search_candidates(query, want)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return antra.download_candidate(cand, out_dir, want, download=client.download_track)
 
     return search, download
 
@@ -330,6 +367,7 @@ def _ytdlp_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
 _CANDIDATE_FACTORIES: dict[str, Callable[[], CandidateSource]] = {
     "qobuz": _qobuz_candidate,
     "monochrome": _monochrome_candidate,
+    "antra": _antra_candidate,
     "deezer": _deezer_candidate,
     "arcod": _arcod_candidate,
     "ytdlp": _ytdlp_candidate,
@@ -346,11 +384,12 @@ _MANUAL_CANDIDATES_ALWAYS_AVAILABLE = frozenset({"monochrome"})
 def _enabled_source_names() -> list[str]:  # pragma: no cover - env + IO wiring
     """Names of currently-enabled sources, honouring the same rules as build_tiers:
     the stored layout (CRATE_DB set) wins, else the env enable flags."""
-    from crate.composition.catalog import SOURCES, default_layout
+    from crate.composition.catalog import SOURCES, default_layout, reconcile_layout
 
     config = _config_store_if_enabled()
     if config is not None:
-        layout = config.get_layout() or default_layout()
+        stored = config.get_layout()
+        layout = reconcile_layout(stored) if stored else default_layout()
         return [name for t in layout["tiers"] for name in t["sources"]]
     names = [s.name for s in SOURCES if s.enable_flag is None or _enabled(s.enable_flag)]
     return names
@@ -431,6 +470,8 @@ def _tiers_from_env() -> list[TierMux]:  # pragma: no cover - env + IO wiring
         tier1.append(_qobuz_source())
     if _enabled("CRATE_MONOCHROME"):
         tier1.append(_monochrome_source())
+    if _enabled("CRATE_ANTRA"):
+        tier1.append(_antra_source())
     tier2: list[SourceEntry] = []
     if _enabled("CRATE_DEEZER"):
         tier2.append(_deezer_source())
@@ -455,7 +496,7 @@ def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     """Build the per-tier source pools. When a config store is active (CRATE_DB
     set), the stored layout (membership/order/strategy) and encrypted credentials
     drive it; otherwise fall back to env flags."""
-    from crate.composition.catalog import default_layout
+    from crate.composition.catalog import default_layout, reconcile_layout
 
     config = _config_store_if_enabled()
     if config is None:
@@ -465,6 +506,8 @@ def build_tiers() -> list[TierMux]:  # pragma: no cover - env + IO wiring
     if layout is None:
         layout = default_layout()
         config.seed_layout(layout)
+    else:
+        layout = reconcile_layout(layout)
     return _tiers_from_layout(layout)
 
 

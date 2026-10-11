@@ -9,6 +9,7 @@ from crate.composition.catalog import (
     KNOWN,
     LayoutError,
     default_layout,
+    reconcile_layout,
     source_status,
     validate_layout,
 )
@@ -105,6 +106,16 @@ def test_default_layout_places_every_source_once() -> None:
 
 def test_validate_accepts_default_layout() -> None:
     assert validate_layout(default_layout())["tiers"]
+
+
+def test_reconcile_layout_adds_new_source_disabled_and_drops_removed() -> None:
+    layout = default_layout()
+    layout["disabled"].remove("antra")
+    layout["disabled"].append("retired-source")
+    reconciled = reconcile_layout(layout)
+    assert "antra" in reconciled["disabled"]
+    assert "retired-source" not in reconciled["disabled"]
+    assert validate_layout(reconciled) == reconciled
 
 
 def test_validate_rejects_incomplete_and_bad_shapes() -> None:

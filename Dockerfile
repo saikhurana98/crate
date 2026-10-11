@@ -1,5 +1,5 @@
 # crate image. Ships the configured headless sources, including direct Monochrome FLAC:
-#   Tier 1 Qobuz · Monochrome · Tier 2 Deezer + Soulseek(via slskd) · Tier 3 yt-dlp
+#   Tier 1 Qobuz · Monochrome · Antra · Tier 2 Deezer + Soulseek(via slskd) · Tier 3 yt-dlp
 
 FROM python:3.12-slim AS builder
 RUN pip install --no-cache-dir uv

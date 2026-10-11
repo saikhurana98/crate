@@ -3,7 +3,7 @@
 Tiered FLAC acquisition as a CLI, compatible with [Explo](https://github.com/LumePart/Explo)
 via an slskd-compatible REST shim.
 
-- **Tier 1** — **Qobuz** (hi-res 24-bit FLAC, direct) · **Monochrome** (direct FLAC)
+- **Tier 1** — **Qobuz** (hi-res 24-bit FLAC, direct) · **Monochrome** (direct FLAC) · **Antra** (authenticated multi-source lossless resolver)
 - **Tier 2** — **Deezer** (16-bit FLAC) · **Soulseek** (via slskd) · Telegram bot
 - **Tier 3** — **yt-dlp** (lossy fallback, always on)
 
@@ -39,7 +39,7 @@ uv run crate download "Artist Title" -o ./downloads
 ## Deploy (Docker)
 
 A headless image is published to GHCR on every push to `main` and every `v*`
-tag. It ships **Qobuz, Monochrome, Deezer, Soulseek (via an external slskd),
+tag. It ships **Qobuz, Monochrome, Antra, Deezer, Soulseek (via an external slskd),
 and yt-dlp**.
 
 ```bash

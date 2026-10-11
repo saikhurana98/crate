@@ -14,6 +14,11 @@ services:
       CRATE_QOBUZ_APP_ID: ${CRATE_QOBUZ_APP_ID:-}
       CRATE_QOBUZ_APP_SECRET: ${CRATE_QOBUZ_APP_SECRET:-}
       CRATE_QOBUZ_TOKEN: ${CRATE_QOBUZ_TOKEN:-}
+      # Tier 1 — Antra hosted lossless resolver
+      CRATE_ANTRA: ${CRATE_ANTRA:-}
+      CRATE_ANTRA_BASE: ${CRATE_ANTRA_BASE:-https://antra.hoshi.cfd}
+      CRATE_ANTRA_USERNAME: ${CRATE_ANTRA_USERNAME:-}
+      CRATE_ANTRA_PASSWORD: ${CRATE_ANTRA_PASSWORD:-}
       # Tier 2 — Deezer (16-bit FLAC)
       CRATE_DEEZER: ${CRATE_DEEZER:-}
       CRATE_DEEZER_ARL: ${CRATE_DEEZER_ARL:-}

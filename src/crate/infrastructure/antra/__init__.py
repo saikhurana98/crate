@@ -1,0 +1,1 @@
+"""Antra hosted resolver client."""

@@ -18,7 +18,7 @@ Tiers (by convention — see [`domain/tiers.py`](../src/crate/domain/tiers.py)):
 
 | Tier | Meaning | Examples |
 |---|---|---|
-| 1 | hi-res / 24-bit FLAC, direct | qobuz, monochrome |
+| 1 | lossless FLAC, direct or resolved | qobuz, monochrome, antra |
 | 2 | lossless (16-bit FLAC) or good P2P | deezer, soulseek, telegram |
 | 3 | lossy fallback, **always on** | ytdlp |
 

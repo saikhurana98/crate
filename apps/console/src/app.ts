@@ -97,6 +97,15 @@ const PANELDEF: Record<string, PanelDef> = {
     note: "Direct FLAC through Monochrome's public Tracks API — no credentials required.",
     validate: true,
   },
+  antra: {
+    creds: [
+      ["CRATE_ANTRA_USERNAME", "Username"],
+      ["CRATE_ANTRA_PASSWORD", "Password"],
+    ],
+    settings: [],
+    note: "Authenticated lossless resolver across Antra's source chain. Downloads count against your Antra account quota.",
+    validate: true,
+  },
   deezer: { creds: [["CRATE_DEEZER_ARL", "ARL cookie"]], settings: [], validate: true },
   soulseek: {
     creds: [
@@ -1504,7 +1513,7 @@ function panelHtml(): string {
           <span style="font:500 12px 'JetBrains Mono';color:#e9ede3">${esc(label)}</span>
           <span style="display:inline-flex;align-items:center;gap:5px;font:500 10px 'JetBrains Mono';color:${ok ? C.good : C.bad}"><span style="width:5px;height:5px;border-radius:50%;background:${ok ? C.good : C.bad}"></span>${ok ? "configured" : "not set"}</span>
         </label>
-        <input data-inp="panelField" data-key="${env}" value="${esc(state.panelValues[env] ?? "")}" type="password" placeholder="${ok ? "•••••••• configured — type to replace" : "not set"}" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:500 13px 'JetBrains Mono';padding:10px 13px"/>
+        <input data-inp="panelField" data-key="${env}" value="${esc(state.panelValues[env] ?? "")}" type="${env.endsWith("_USERNAME") ? "text" : "password"}" placeholder="${ok ? "•••••••• configured — type to replace" : "not set"}" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:12px;color:#e9ede3;font:500 13px 'JetBrains Mono';padding:10px 13px"/>
         <div style="font:400 10px 'JetBrains Mono';color:#464d40;margin-top:5px">${env}</div>
       </div>`;
       })

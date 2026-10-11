@@ -53,6 +53,7 @@ from crate.composition.catalog import (
     TIER_OF,
     LayoutError,
     default_layout,
+    reconcile_layout,
     source_status,
     validate_layout,
 )
@@ -307,7 +308,8 @@ def create_app(
         stored credentials (=> configured), falling back to the injected default."""
         if config is None:
             return sources()
-        layout = config.get_layout() or default_layout()
+        stored = config.get_layout()
+        layout = reconcile_layout(stored) if stored else default_layout()
         in_tier = {name for t in layout["tiers"] for name in t["sources"]}
         return source_status(
             enabled_of=lambda n: n in in_tier,
@@ -726,6 +728,11 @@ def create_app(
         if layout is None:
             layout = default_layout()
             cfg.seed_layout(layout)
+        else:
+            reconciled = reconcile_layout(layout)
+            if reconciled != layout:
+                cfg.put_layout(reconciled)
+            layout = reconciled
         return {**layout, "version": cfg.version()}
 
     @api.put("/config")
@@ -774,7 +781,8 @@ def create_app(
             enabled = bool(body["enabled"])
             if name in PINNED and not enabled:
                 raise HTTPException(status_code=400, detail=f"{name} is pinned; cannot disable")
-            layout = cfg.get_layout() or default_layout()
+            stored = cfg.get_layout()
+            layout = reconcile_layout(stored) if stored else default_layout()
             for t in layout["tiers"]:
                 t["sources"] = [s for s in t["sources"] if s != name]
             layout["disabled"] = [s for s in layout["disabled"] if s != name]
