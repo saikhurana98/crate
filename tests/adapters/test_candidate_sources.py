@@ -124,66 +124,44 @@ def test_deezer_download_candidate_by_ref(tmp_path: Path) -> None:
 
 # --- monochrome ---------------------------------------------------------------
 MONO_SEARCH = {
-    "data": {
-        "items": [
-            {
-                "id": 700,
-                "title": "Rhubarb",
-                "artist": {"name": "Aphex Twin"},
-                "album": {"title": "Selected Ambient Works", "cover": "aa-bb"},
-                "duration": 451,
-                "audioQuality": "HI_RES",
-            },
-            {
-                "id": 701,
-                "title": "Something Else",
-                "artist": {"name": "Other"},
-                "album": {"title": "Z"},
-                "duration": 100,
-            },
-        ]
-    }
-}
-AMZ_RESPONSE = {
-    "stream_url": "https://cf/stream.mp4",
-    "decryption_key": "deadbeef",
-    "available_qualities": [{"codec": "flac", "bitDepth": 24, "sampleRate": 96000}],
+    "tracks": [
+        {
+            "trackId": "700",
+            "title": "Rhubarb",
+            "artistNames": ["Aphex Twin"],
+            "albumTitle": "Selected Ambient Works",
+            "artwork": "https://example.test/cover.jpg",
+            "duration": 451000,
+            "playable": True,
+        },
+        {"trackId": "701", "title": "Something Else", "artistNames": ["Other"]},
+    ]
 }
 
 
 def test_monochrome_search_candidates() -> None:
-    cands = monochrome.search_candidates("Aphex Twin Rhubarb", search_json=lambda q: MONO_SEARCH)
+    cands = monochrome.search_candidates("Aphex Twin Rhubarb", search=lambda q: MONO_SEARCH)
     assert [c.ref for c in cands] == ["700"]
-    assert cands[0].source == "monochrome" and cands[0].quality_label == "FLAC 24"
+    assert cands[0].source == "monochrome" and cands[0].quality_label == "FLAC"
 
 
-def test_monochrome_download_candidate_rebuilds_amz_params_no_search(tmp_path: Path) -> None:
+def test_monochrome_download_candidate_fetches_ref_without_search(tmp_path: Path) -> None:
     seen: dict[str, object] = {}
 
-    def amz_fetch(params: dict[str, object]) -> dict[str, object]:
-        seen["params"] = params
-        return AMZ_RESPONSE
-
-    def fetch(url: str, dest: Path) -> None:
-        dest.write_bytes(b"\x00tenc" + b"\x00" * 32)  # includes a fake tenc box
-
-    def decrypt(enc: Path, kid: str, key: str, out: Path) -> None:
+    def fetch(track_id: str, out: Path) -> None:
+        seen["id"] = track_id
         out.write_bytes(b"fLaC\x00")
 
     cand = Candidate(
-        "monochrome", 1, "700", "Rhubarb", "Aphex Twin", "SAW", "FLAC 24", True, 451, None
+        "monochrome", 1, "700", "Rhubarb", "Aphex Twin", "SAW", "FLAC", True, 451, None
     )
     outcome = monochrome.download_candidate(
         cand,
         tmp_path,
-        amz_fetch=amz_fetch,
         fetch=fetch,
-        decrypt=decrypt,
         clock=iter([0.0, 1.0]).__next__,
     )
-    # the amz lookup was rebuilt from the candidate's own metadata — no TIDAL search
-    assert seen["params"]["track"] == "Rhubarb"  # type: ignore[index]
-    assert seen["params"]["artist"] == "Aphex Twin"  # type: ignore[index]
+    assert seen["id"] == "700"
     assert outcome.source == "monochrome" and outcome.path.suffix == ".flac"
 
 

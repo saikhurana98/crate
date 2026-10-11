@@ -3,7 +3,7 @@
 Tiered FLAC acquisition as a CLI, compatible with [Explo](https://github.com/LumePart/Explo)
 via an slskd-compatible REST shim.
 
-- **Tier 1** — **Qobuz** (hi-res 24-bit FLAC, direct) · Monochrome/Amazon (local only, needs a headed browser)
+- **Tier 1** — **Qobuz** (hi-res 24-bit FLAC, direct) · **Monochrome** (direct FLAC)
 - **Tier 2** — **Deezer** (16-bit FLAC) · **Soulseek** (via slskd) · Telegram bot
 - **Tier 3** — **yt-dlp** (lossy fallback, always on)
 
@@ -39,8 +39,8 @@ uv run crate download "Artist Title" -o ./downloads
 ## Deploy (Docker)
 
 A headless image is published to GHCR on every push to `main` and every `v*`
-tag. It ships the headless sources — **Qobuz, Deezer, Soulseek (via an external
-slskd), yt-dlp**. Monochrome/Amazon is excluded (it needs a headed browser).
+tag. It ships **Qobuz, Monochrome, Deezer, Soulseek (via an external slskd),
+and yt-dlp**.
 
 ```bash
 docker pull ghcr.io/saikhurana98/crate:latest
@@ -57,5 +57,5 @@ Or with compose (put creds in a `.env`):
 docker compose run --rm crate download "Artist Title" -o /downloads
 ```
 
-CI runs ruff + mypy + pytest on every PR; the release workflow builds a
-multi-arch (amd64/arm64) image.
+CI runs ruff + mypy + pytest on every PR; the release workflow builds the
+amd64 image used by both deployment targets.

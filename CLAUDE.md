@@ -47,7 +47,7 @@ Hexagonal / ports-and-adapters, single package `src/crate`, layers:
   - `dedup.py::resolve_request` — identity de-dup + **lossless upgrade**: reuse an existing file only if it matches (ISRC → normalized artist+title) AND is lossless; a lossy match re-runs Tiers 1–2 and atomically replaces the file on a lossless win (keeps the lossy one on failure).
   - `bulk.py` (playlist/list → `TrackIdentity[]`), `recording.py` (`RequestRecorder` protocol), `download.py::acquire` (older single-source helper — cascade is the real entry).
 - `adapters/` — implement source/inbound behavior. `sources/{qobuz,monochrome,deezer,soulseek,telegram_bot,ytdlp,arcod}.py` are thin functions taking their IO collaborators **injected** (search/fetch/decrypt/poll/clock…) for testability; each returns a `DownloadOutcome`. `inbound/{slskd_shim,ops_api}.py` are the two HTTP surfaces.
-- `infrastructure/` — concrete IO: `sqlite/` (hand-rolled migrations `001`–`005`, `store.py` history + 2 s stats cache + retention, `config_store.py` encrypted secrets + tier layout), `qobuz/ deezer/ soulseek/ spotify/ telegram/ arcod/` clients, `browser/amz_session.py` (Playwright, lazy-imported), `audio/{probe,decrypt,tags}.py` (`tags.py` = mutagen read/write + `embed_cover`), `crypto.py` (`SecretBox`), `http.py` (`stream_to` streams downloads to disk — no whole-file buffers), `http_server/serve.py`.
+- `infrastructure/` — concrete IO: `sqlite/` (history, config and encrypted secrets), `qobuz/ deezer/ soulseek/ spotify/ telegram/ arcod/ monochrome/` clients, `audio/{probe,tags}.py`, `crypto.py` (`SecretBox`), and `http.py` (streaming downloads).
 
 ### Track identity & selection (why the right song wins)
 Requests carry a `TrackIdentity` (from Spotify search/playlist: artist/title/ISRC/duration). Every selecting adapter applies gates in this order: **ISRC exact match → `title_matches` → `artist_matches` → duration prefilter (±7 s) → `match_score` rank**. ISRC short-circuits; the artist gate rejects a right-title/wrong-artist track (the "Alfaaz → Alka Yagnik" class). yt-dlp uses `ytsearch5:` + scored selection (not the first hit). This whole stack is the accuracy core — do not weaken a gate without a regression test.
@@ -67,11 +67,11 @@ Requests carry a `TrackIdentity` (from Spotify search/playlist: artist/title/ISR
 
 | Tier | Sources | Enable |
 |---|---|---|
-| 1 (hi-res FLAC) | Qobuz (direct), Monochrome (Amazon, needs headed browser) | `CRATE_QOBUZ=1`, `CRATE_MONOCHROME=1` |
+| 1 (lossless FLAC) | Qobuz (direct), Monochrome (direct Tracks API) | `CRATE_QOBUZ=1`, `CRATE_MONOCHROME=1` |
 | 2 (lossless-ish) | Deezer (ARL), Soulseek (via external slskd), Telegram bot, **arcod** (Qobuz proxy, no creds — may serve MP3, so not lossless-gated) | `CRATE_DEEZER=1`, `CRATE_SOULSEEK=1`, `CRATE_TELEGRAM=1`, `CRATE_ARCOD=1` |
 | 3 (lossy fallback) | yt-dlp | always on |
 
-Per-source credential env vars are read by the factories in `composition/sources.py`; see [`.crate.env.example`](.crate.env.example) and [`SECRETS.md`](SECRETS.md). **Important:** when `CRATE_DB` is set the **stored config-store tier layout wins over the env flags** — enabling a source needs it added to that layout (env flags only seed the *first* run), so a brand-new source won't appear just from its `CRATE_*=1` flag on an existing deployment. The Docker image **bundles Chromium + Xvfb + mp4decrypt**, so Monochrome works in-container (it runs headed under a virtual display).
+Per-source credential env vars are read by the factories in `composition/sources.py`; see [`.crate.env.example`](.crate.env.example) and [`SECRETS.md`](SECRETS.md). **Important:** when `CRATE_DB` is set the **stored config-store tier layout wins over the env flags** — enabling a source needs it added to that layout (env flags only seed the *first* run), so a brand-new source won't appear just from its `CRATE_*=1` flag on an existing deployment. Monochrome now uses the public Tracks API directly; it needs no browser, secret, or decrypt binary.
 
 ### Library, staging & art (env)
 - `CRATE_SERVE_DOWNLOADS` — staging dir downloads land in first.
@@ -83,7 +83,7 @@ Per-source credential env vars are read by the factories in `composition/sources
 - `uv` is the only env/dep tool; `pyproject.toml` is the single manifest. Don't add `requirements.txt` / `poetry` / `pip`.
 - Adapters take collaborators as keyword-injected callables (hence `ruff` `max-args = 9`). Test them with fakes, not network — live integration is env-gated.
 - Errors surface as exceptions at boundaries (no `Result` type — ADR-0017 reversed ADR-0006). Use-case boundaries like `TierMux.acquire` catch per-source failures and turn them into `CascadeAttempt(ok=False)` so one bad source never breaks the cascade.
-- Optional deps (`playwright`, `telethon`) are lazy-imported inside the adapter that needs them; keep it that way. Keep the stack lean — no new runtime dependency without a strong reason (current runtime deps: typer, httpx, pydantic, fastapi, uvicorn, pycryptodome, mutagen).
+- Optional deps such as `telethon` are lazy-imported inside the adapter that needs them; keep it that way. Keep the stack lean — no new runtime dependency without a strong reason (current runtime deps: typer, httpx, pydantic, fastapi, uvicorn, pycryptodome, mutagen).
 - **Stream, never buffer** whole audio files — downloads go to disk via `http.stream_to` / client `fetch`; Deezer decrypts stripe-by-stripe file→file. No `resp.content` on an audio payload.
 - **Every subprocess / network / bot / browser wait has a bounded deadline** that raises (so a hung source advances the cascade instead of killing a queue worker). Preserve this when touching probe/decrypt/ytdlp/telegram/browser/arcod-poll.
 - The console DB must be on local disk, never NFS (ADR-0018).

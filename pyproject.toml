@@ -26,7 +26,6 @@ dev = [
   "pytest-cov>=6.0",
   "ruff>=0.9",
   "mypy>=1.14",
-  "playwright>=1.61.0",
   "telethon>=1.36",
 ]
 
@@ -76,9 +75,6 @@ max-args = 9
 "src/crate/infrastructure/**" = ["TID251"]
 "src/crate/composition/**" = ["TID251", "PLC0415"]
 "src/crate/cli/**" = ["TID251", "PLC0415"]
-# browser layer embeds JS strings (E501), checks HTTP status codes (PLR2004),
-# and lazy-imports playwright (PLC0415) to keep it an optional dependency.
-"src/crate/infrastructure/browser/**" = ["E501", "PLR2004", "PLC0415"]
 # telegram client lazy-imports telethon (optional dep) inside methods
 "src/crate/infrastructure/telegram/**" = ["PLC0415"]
 "tests/**" = ["TID251", "PLR2004", "E501", "PLC0415"]

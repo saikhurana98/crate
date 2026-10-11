@@ -749,9 +749,9 @@ def create_app(
         which is how an operator pins down which source is broken for a track the
         cascade is failing on.
 
-        Offloaded off the event loop — it does real network IO (and, for a browser
-        source, a headed-Chromium resolve). Never raises for a bad credential; a
-        failure comes back as ``{ok: false, detail: ...}``."""
+        Offloaded off the event loop because it performs real network IO. Never
+        raises for a bad credential; a failure comes back as
+        ``{ok: false, detail: ...}``."""
         if name not in KNOWN:
             raise HTTPException(status_code=404, detail="unknown source")
         if source_validator is None:

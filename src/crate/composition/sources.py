@@ -6,7 +6,7 @@ via ``CRATE_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
 ``uniform``/``distribute`` (round-robin one source per request).
 
   Tier 1  Qobuz (hi-res FLAC, direct)        opt-in CRATE_QOBUZ=1
-          Monochrome (Amazon 24-bit FLAC)   opt-in CRATE_MONOCHROME=1
+          Monochrome (direct FLAC)          opt-in CRATE_MONOCHROME=1
   Tier 2  Deezer (16-bit FLAC via ARL)       opt-in CRATE_DEEZER=1
           arcod (Qobuz proxy, no auth)       opt-in CRATE_ARCOD=1
           Soulseek (via slskd)               opt-in CRATE_SOULSEEK=1
@@ -22,11 +22,12 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from crate.adapters.sources import ytdlp
-from crate.adapters.sources.monochrome import DEFAULT_TIDAL_BASE, monochrome_download
+from crate.adapters.sources.monochrome import monochrome_download
 from crate.application.auth import SessionStore, SpotifyProfile, User, UserRepository
 from crate.application.cascade import MuxStrategy, SourceEntry, TierMux
 from crate.domain.candidate import Candidate
@@ -34,7 +35,6 @@ from crate.domain.download import DownloadOutcome
 from crate.domain.identity import TrackIdentity
 from crate.domain.tiers import SourceRef, Tier
 from crate.infrastructure import http
-from crate.infrastructure.audio.decrypt import mp4decrypt_cenc
 
 # Review-tab candidate source: (search-without-downloading, download-one-candidate).
 SearchCandidatesFn = Callable[[str, "TrackIdentity | None"], list[Candidate]]
@@ -51,24 +51,12 @@ def _strategy(tier_num: int) -> MuxStrategy:
     return MuxStrategy.UNIFORM if value in ("uniform", "distribute") else MuxStrategy.ALL
 
 
-_amz_lock = threading.Lock()
-_amz_holder: dict[str, Any] = {}  # holder (not a global rebind) for the singleton
+@lru_cache(maxsize=4)
+def _monochrome_client(base_url: str) -> Any:  # pragma: no cover - IO wiring
+    """Reuse HTTP connections across downloads, review searches and tier rebuilds."""
+    from crate.infrastructure.monochrome.client import MonochromeClient
 
-
-def _shared_amz() -> Any:  # pragma: no cover - IO wiring
-    """Process-wide singleton :class:`AmzSession` — one headed browser shared by
-    every monochrome wiring (each of the N queue workers, the review-candidate
-    path, and every config hot-reload rebuild). Constructing one per build leaked
-    a ~2 GB Chromium each time, blowing the serve container past its memory limit;
-    the session marshals all Playwright work to its own thread so sharing is safe."""
-    with _amz_lock:
-        session = _amz_holder.get("session")
-        if session is None:
-            from crate.infrastructure.browser.amz_session import AmzSession
-
-            session = AmzSession()
-            _amz_holder["session"] = session
-        return session
+    return MonochromeClient(base_url)
 
 
 def _qobuz_source() -> SourceEntry:  # pragma: no cover - IO wiring
@@ -95,23 +83,17 @@ def _qobuz_source() -> SourceEntry:  # pragma: no cover - IO wiring
 
 
 def _monochrome_source() -> SourceEntry:  # pragma: no cover - IO wiring
-    session = _shared_amz()
+    from crate.infrastructure.monochrome.client import DEFAULT_BASE
 
-    def search_json(query: str) -> Any:
-        return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
-
-    def fetch(url: str, dest: Path) -> None:
-        http.stream_to(url, dest)  # discard the bytes-written count
+    client = _monochrome_client(os.environ.get("CRATE_MONOCHROME_BASE", DEFAULT_BASE))
 
     def monochrome(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return monochrome_download(
             query,
             out_dir,
             want,
-            search_json=search_json,
-            amz_fetch=session.fetch_amz,
-            fetch=fetch,
-            decrypt=mp4decrypt_cenc,
+            search=client.search,
+            fetch=client.fetch,
         )
 
     return SourceEntry(SourceRef("monochrome", Tier.ONE), monochrome, expected_lossless=True)
@@ -251,22 +233,15 @@ def _qobuz_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
 
 def _monochrome_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
     from crate.adapters.sources import monochrome
+    from crate.infrastructure.monochrome.client import DEFAULT_BASE
 
-    session = _shared_amz()
-
-    def search_json(query: str) -> Any:
-        return http.get_json(f"{DEFAULT_TIDAL_BASE}/search/", {"s": query})
-
-    def fetch(url: str, dest: Path) -> None:
-        http.stream_to(url, dest)
+    client = _monochrome_client(os.environ.get("CRATE_MONOCHROME_BASE", DEFAULT_BASE))
 
     def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
-        return monochrome.search_candidates(query, want, search_json=search_json)
+        return monochrome.search_candidates(query, want, search=client.search)
 
     def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
-        return monochrome.download_candidate(
-            cand, out_dir, want, amz_fetch=session.fetch_amz, fetch=fetch, decrypt=mp4decrypt_cenc
-        )
+        return monochrome.download_candidate(cand, out_dir, want, fetch=client.fetch)
 
     return search, download
 
@@ -1194,9 +1169,8 @@ def build_identifier() -> Any:  # pragma: no cover - IO wiring
 def build_candidate_streamers() -> dict[str, Callable[[str], str]]:  # pragma: no cover - IO wiring
     """Per-source resolvers ``ref -> direct streamable URL`` for the review A/B
     audition proxy. Only sources with a cheap direct URL (Range-able, no full
-    download) are wired: Qobuz (signed FLAC url) and yt-dlp (``-g``). Deezer plays
-    its static preview clip client-side; arcod (async job) / monochrome (DRM) have
-    no such URL and are simply absent -> their rows show no play button."""
+    download) are wired: Qobuz (signed FLAC), Monochrome (direct FLAC), and
+    yt-dlp (``-g``). Deezer plays its preview clip client-side; arcod has no URL."""
     import subprocess
 
     streamers: dict[str, Callable[[str], str]] = {}
@@ -1217,6 +1191,11 @@ def build_candidate_streamers() -> dict[str, Callable[[str], str]]:  # pragma: n
         return ytdlp.parse_stream_url(out.stdout)
 
     streamers["ytdlp"] = ytdlp_stream
+    from crate.infrastructure.monochrome.client import DEFAULT_BASE
+
+    mono_base = os.environ.get("CRATE_MONOCHROME_BASE", DEFAULT_BASE).rstrip("/")
+    if "monochrome" in _enabled_source_names():
+        streamers["monochrome"] = lambda ref: f"{mono_base}/track/{int(ref)}"
     return streamers
 
 

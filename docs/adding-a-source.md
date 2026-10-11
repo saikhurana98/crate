@@ -27,11 +27,13 @@ Tiers (by convention — see [`domain/tiers.py`](../src/crate/domain/tiers.py)):
 Every source is a callable with this exact shape (the "downloader"):
 
 ```python
-download(query: str, out_dir: Path) -> DownloadOutcome
+download(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome
 ```
 
 - **`query`** — free text ("Artist Title") or a URL. You search for it.
 - **`out_dir`** — where to write the file. Write the final audio file here.
+- **`want`** — optional structured artist, title, ISRC and duration. Use it to
+  reject wrong recordings when present.
 - **Returns** a [`DownloadOutcome`](../src/crate/domain/download.py). On **any**
   failure (not found, auth, transport, wrong quality) **raise** — the cascade
   catches it, records a failed `CascadeAttempt`, and advances. Never return a
@@ -64,7 +66,7 @@ onto the file for Navidrome. It builds the tags by **merging source metadata
 over the file's own tags** (source wins, file fills gaps, `query` is the
 last-resort title). So:
 
-- If your source hands back **untagged** audio (Qobuz/Deezer/Monochrome do),
+- If your source hands back **untagged** audio (Qobuz/Deezer do),
   you **must** populate `title/artist/album` on the `DownloadOutcome`, or every
   track lands in `Unknown Artist/Unknown Album/`.
 - If your source's files are **already tagged** (Soulseek/Telegram/yt-dlp
@@ -86,8 +88,8 @@ Hexagonal boundaries are enforced by ruff `flake8-tidy-imports`
 - **`composition/sources.py`** — the only place that wires a concrete client
   into an adapter and reads env. Everything else stays decoupled.
 
-Optional heavy deps (playwright, telethon) are **lazy-imported inside the
-method that needs them**, never at module top.
+Optional heavy deps (such as telethon) are **lazy-imported inside the method
+that needs them**, never at module top.
 
 ## Step-by-step: add a source named `foo`
 
@@ -101,10 +103,11 @@ missing** (a raising source is skipped, not fatal).
 Pattern (mirror qobuz):
 - A frozen `FooTrack` dataclass with `title/artist/album` (+ id, isrc, …).
 - `parse_search(json) -> list[FooTrack]` — pure.
-- `select_track(tracks, query, isrc=None) -> FooTrack` — pick the best; use
-  [`domain.matching.title_matches`](../src/crate/domain/matching.py) so you
-  don't accept a wrong title. Raise `LookupError` if nothing matches.
-- `foo_download(query, out_dir, *, search, get_bytes, ..., clock=time.monotonic)
+- `select_track(tracks, query, want=None) -> FooTrack` — pick the best; use
+  [`domain.matching.title_matches`](../src/crate/domain/matching.py) and
+  `artist_matches` so you don't accept a wrong song. Prefer an exact ISRC
+  when available. Raise `LookupError` if nothing matches.
+- `foo_download(query, out_dir, want=None, *, search, fetch, ..., clock=time.monotonic)
   -> DownloadOutcome` — orchestrate: search → select → fetch → write file →
   return `DownloadOutcome` **with metadata** (see above).
 - Filename convention: `"{artist} - {title} [{id}].{ext}"` run through the
@@ -121,8 +124,8 @@ def _foo_source() -> SourceEntry:  # pragma: no cover - IO wiring
 
     client = FooClient(os.environ["CRATE_FOO_TOKEN"])  # raises if unset -> skipped
 
-    def foo(query: str, out_dir: Path) -> DownloadOutcome:
-        return foo_download(query, out_dir, search=client.search, get_bytes=client.get_bytes)
+    def foo(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return foo_download(query, out_dir, want, search=client.search, fetch=client.fetch)
 
     return SourceEntry(SourceRef("foo", Tier.TWO), foo, expected_lossless=True)
 ```
@@ -150,6 +153,12 @@ free — `crate download --source foo` and the console's Sources → Test button
 both force a download through just this source, falling back to your `download`
 callable when the source has no candidate/search-by-ref path. Nothing extra to
 implement.
+
+For Review search and re-download, also implement `search_candidates` and
+`download_candidate` in the adapter and register a factory in
+`_CANDIDATE_FACTORIES`. The latter must fetch the selected ref without
+re-running search. A direct Range-able stream can also be registered in
+`build_candidate_streamers()` for the Review A/B player.
 
 ### 5. Env template — `.crate.env.example`
 Document the enable flag + every `required_env` var with a one-line "how to get

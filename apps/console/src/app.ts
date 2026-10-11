@@ -94,7 +94,8 @@ const PANELDEF: Record<string, PanelDef> = {
   monochrome: {
     creds: [],
     settings: [],
-    note: "Browser-based source — no credentials required. Enable it and crate drives a headless session.",
+    note: "Direct FLAC through Monochrome's public Tracks API — no credentials required.",
+    validate: true,
   },
   deezer: { creds: [["CRATE_DEEZER_ARL", "ARL cookie"]], settings: [], validate: true },
   soulseek: {
