@@ -11,14 +11,18 @@ from crate.domain.identity import TrackIdentity
 
 def test_search_candidate_preserves_structured_identity() -> None:
     want = TrackIdentity("Karan Aujla", "Ashke", "GXLEL2633343", 218)
-    candidates = antra.search_candidates("ignored", want)
+    candidates = antra.search_candidates(
+        "ignored", want, album="AUJLA SZN 1", art_url="https://img.example/ashke.jpg"
+    )
 
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate.source == "antra" and candidate.tier == 1 and candidate.lossless
     assert candidate.quality_label == "FLAC 16-bit via Antra"
+    assert candidate.album == "AUJLA SZN 1"
+    assert candidate.art_url == "https://img.example/ashke.jpg"
     assert json.loads(candidate.ref) == {
-        "album": "",
+        "album": "AUJLA SZN 1",
         "artists": ["Karan Aujla"],
         "disc_number": None,
         "duration_ms": 218000,
@@ -67,8 +71,15 @@ def test_automatic_download_builds_candidate(tmp_path: Path) -> None:
         assert track["artists"] == ["Artist"]
         dest.write_bytes(b"fLaC")
 
-    outcome = antra.antra_download("Artist - Song", tmp_path, download=download)
+    outcome = antra.antra_download(
+        "Artist - Song",
+        tmp_path,
+        album="Album",
+        art_url="https://img.example/cover.jpg",
+        download=download,
+    )
     assert outcome.title == "Song" and outcome.artist == "Artist"
+    assert outcome.album == "Album" and outcome.art_url == "https://img.example/cover.jpg"
 
     with pytest.raises(LookupError, match="artist and title"):
         antra.antra_download("Song", tmp_path, download=download)

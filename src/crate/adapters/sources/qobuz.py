@@ -237,4 +237,5 @@ def download_candidate(
         title=candidate.title,
         artist=candidate.artist,
         album=candidate.album,
+        art_url=candidate.art_url,
     )

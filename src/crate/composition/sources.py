@@ -110,13 +110,36 @@ def _antra_client() -> Any:  # pragma: no cover - IO wiring
     )
 
 
+def _antra_metadata(query: str, want: TrackIdentity | None) -> tuple[str | None, str | None]:
+    """Best-effort album/art metadata for Antra's metadata-only import request."""
+    from crate.adapters.sources import monochrome as mono_adapter
+    from crate.infrastructure.monochrome.client import DEFAULT_BASE
+
+    try:
+        mono = _monochrome_client(os.environ.get("CRATE_MONOCHROME_BASE", DEFAULT_BASE))
+        matches = mono_adapter.search_candidates(query, want, search=mono.search)
+        if matches:
+            return matches[0].album, matches[0].art_url
+    except Exception:
+        pass
+    return None, None
+
+
 def _antra_source() -> SourceEntry:  # pragma: no cover - IO wiring
     from crate.adapters.sources.antra import antra_download
 
     client = _antra_client()
 
     def antra(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
-        return antra_download(query, out_dir, want, download=client.download_track)
+        album, art_url = _antra_metadata(query, want)
+        return antra_download(
+            query,
+            out_dir,
+            want,
+            album=album,
+            art_url=art_url,
+            download=client.download_track,
+        )
 
     return SourceEntry(SourceRef("antra", Tier.ONE), antra, expected_lossless=True)
 
@@ -275,7 +298,13 @@ def _antra_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
     client = _antra_client()
 
     def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
-        return antra.search_candidates(query, want)
+        # Antra's import endpoint resolves audio from artist/title/ISRC but does
+        # not expose a public metadata-search endpoint. Reuse Monochrome's public
+        # catalogue result for album + artwork so the finalized Antra file is not
+        # left with only the synthetic import fields. Metadata lookup is optional:
+        # an Antra outage must not be coupled to Monochrome availability.
+        album, art_url = _antra_metadata(query, want)
+        return antra.search_candidates(query, want, album=album, art_url=art_url)
 
     def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return antra.download_candidate(cand, out_dir, want, download=client.download_track)
@@ -638,7 +667,8 @@ def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - 
 
     recorder = build_recorder("explo")
     current_tiers = _tiers_provider(_config_store_if_enabled())
-    run = _bound_run(probe, build_finalizer())
+    finalizer = build_finalizer()
+    run = _bound_run(probe, finalizer)
     replace = _atomic_replace()
 
     def download(query: str, out_dir: Path) -> Path:
@@ -654,6 +684,7 @@ def build_shim_download() -> Callable[[str, Path], Path]:  # pragma: no cover - 
             run=run,
             exists=lambda p: p.exists(),
             replace=replace,
+            finalizer=finalizer,
         )
 
     return download
@@ -678,6 +709,7 @@ def _review_candidate(row: dict[str, Any]) -> Candidate:  # pragma: no cover - t
         lossless=bool(row["lossless"]),
         duration_s=row["duration_s"],
         size_bytes=row["size_bytes"],
+        art_url=row["art_url"],
     )
 
 
@@ -764,6 +796,7 @@ def build_queue_worker() -> Callable[[threading.Event], None]:  # pragma: no cov
             run=run,
             exists=lambda p: p.exists(),
             replace=replace,
+            finalizer=finalizer,
         )
 
     def loop(stop: threading.Event) -> None:

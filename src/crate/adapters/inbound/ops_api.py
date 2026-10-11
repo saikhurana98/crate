@@ -1176,6 +1176,7 @@ def _candidate_from_body(body: Any) -> Candidate | None:
         duration_s=int(duration) if duration is not None else None,
         size_bytes=int(size) if size is not None else None,
         preview_url=_clean(body.get("preview_url")),
+        art_url=_clean(body.get("art") or body.get("art_url")),
     )
 
 

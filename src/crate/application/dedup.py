@@ -7,8 +7,8 @@ raw query string). Three outcomes:
   * a **lossless** completed match exists (and the file is still on disk)
     -> reuse it: no download, mark the request done as a duplicate.
   * a **lossy** completed match exists -> run the cascade restricted to the
-    lossless tiers (1-2). On a lossless win, atomically replace the library file
-    in place, keep the request pointed at that path, and note the upgrade. On no
+    lossless tiers (1-2). On a lossless win, finalize the new file to its
+    canonical path, remove the old lossy copy, and note the upgrade. On no
     lossless win, keep the existing lossy file (request done as a duplicate).
   * no match -> run the full cascade as before.
 
@@ -33,6 +33,7 @@ from crate.domain.identity import TrackIdentity
 RunCascade = Callable[..., CascadeResult]
 # atomically move a produced file over an existing library path.
 Replace = Callable[[Path, Path], None]
+Remove = Callable[[Path], None]
 
 
 class DedupRecorder(Protocol):
@@ -53,7 +54,7 @@ def _tiers_1_2(tiers: list[TierMux]) -> list[TierMux]:
     return [t for t in tiers if int(t.tier) in (1, 2)]
 
 
-def resolve_request(
+def resolve_request(  # noqa: PLR0913 - orchestration boundary with injected IO
     query: str,
     out_dir: Path,
     request_id: str,
@@ -64,6 +65,8 @@ def resolve_request(
     run: RunCascade,
     exists: Callable[[Path], bool],
     replace: Replace,
+    finalizer: Any = None,
+    remove: Remove | None = None,
 ) -> Path:
     """Resolve one request (identified by ``request_id``, already ``downloading``).
 
@@ -86,6 +89,8 @@ def resolve_request(
             recorder=recorder,
             run=run,
             replace=replace,
+            finalizer=finalizer,
+            remove=remove or (lambda path: path.unlink(missing_ok=True)),
         )
 
     # no prior copy — run the full cascade; the recorder finishes/fails the row.
@@ -108,7 +113,7 @@ def _reuse(request_id: str, existing: dict[str, Any], recorder: DedupRecorder) -
     return Path(str(existing["path"]))
 
 
-def _upgrade(
+def _upgrade(  # noqa: PLR0913 - explicit collaborators keep this use-case testable
     query: str,
     out_dir: Path,
     request_id: str,
@@ -119,15 +124,20 @@ def _upgrade(
     recorder: DedupRecorder,
     run: RunCascade,
     replace: Replace,
+    finalizer: Any,
+    remove: Remove,
 ) -> Path:
     """A lossy copy exists — race Tiers 1-2 for a lossless replacement.
 
-    On a lossless win, atomically move it over the existing library path and point
-    the request at that path. On no win, keep the lossy file (done as a
-    duplicate); the existing file is never deleted on failure."""
+    On a lossless win, run the configured librarian before removing the old file.
+    On no win, keep the lossy file (done as a duplicate); the existing file is
+    never deleted on failure."""
     lossless_tiers = _tiers_1_2(tiers)
     existing_path = Path(str(existing["path"]))
-    result = run(query, out_dir, lossless_tiers, recorder=None, want=identity, finalizer=None)
+    # A configured librarian must see upgrades too. It writes tags/artwork and
+    # gives the new codec its canonical suffix and library path. Without a
+    # librarian (standalone use), retain the legacy in-place replacement.
+    result = run(query, out_dir, lossless_tiers, recorder=None, want=identity, finalizer=finalizer)
     winner = result.winner
     if (
         winner is None
@@ -148,13 +158,20 @@ def _upgrade(
         recorder.complete_as_duplicate(request_id, existing)
         return existing_path
 
-    # lossless win — replace the library file in place and finish the request there
-    replace(winner.outcome.path, existing_path)
+    # lossless win — after successful finalization, remove the obsolete lossy
+    # copy. Never put FLAC bytes under the old .opus/.webm suffix.
+    final_path = winner.outcome.path
+    if finalizer is not None:
+        if final_path != existing_path:
+            remove(existing_path)
+    else:
+        replace(final_path, existing_path)
+        final_path = existing_path
     for a in result.attempts:
         recorder.record_attempt(request_id, a.source, a.tier, a.ok, a.detail)
     recorder.record_attempt(
         request_id, winner.outcome.source, winner.outcome.tier, True, "upgraded from lossy"
     )
-    final = dc_replace(winner, outcome=dc_replace(winner.outcome, path=existing_path))
+    final = dc_replace(winner, outcome=dc_replace(winner.outcome, path=final_path))
     recorder.finish_request(request_id, final)
-    return existing_path
+    return final_path

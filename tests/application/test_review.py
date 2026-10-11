@@ -82,7 +82,47 @@ def test_upgrade_replaces_in_place_and_finishes_at_target(tmp_path: Path) -> Non
     rid, report = recorder.finished[0]
     assert rid == "req1"
     assert report.outcome is not None and report.outcome.path == Path("/nas/lib/old.opus")
-    assert recorder.attempts[0][4].startswith("review: replaced")
+    assert recorder.attempts[0][4].startswith("review: finalized")
+
+
+def test_upgrade_finalizes_metadata_and_removes_old_lossy_path(tmp_path: Path) -> None:
+    produced = tmp_path / "new.flac"
+    existing = tmp_path / "Unknown Album" / "old.opus"
+    existing.parent.mkdir()
+    existing.write_bytes(b"OggS")
+    filed = tmp_path / "Artist" / "Album" / "01 Song.flac"
+    recorder = _Recorder()
+
+    def download(c: Candidate, out_dir: Path, want: object) -> DownloadOutcome:
+        produced.write_bytes(b"fLaC")
+        return DownloadOutcome(produced, c.tier, c.source, 2.0, "q", art_url="cover")
+
+    def finalizer(report: DownloadReport) -> DownloadReport:
+        import dataclasses
+
+        assert report.outcome is not None and report.outcome.art_url == "cover"
+        filed.parent.mkdir(parents=True)
+        report.outcome.path.replace(filed)
+        return dataclasses.replace(report, outcome=dataclasses.replace(report.outcome, path=filed))
+
+    final = run_review_download(
+        "req-meta",
+        tmp_path,
+        _cand(),
+        want=None,
+        is_upgrade=True,
+        target_path=str(existing),
+        download=download,
+        prober=lambda p: _info("flac"),
+        finalizer=finalizer,
+        replace=lambda src, dst: src.replace(dst),
+        recorder=recorder,
+    )
+
+    assert final == filed and filed.exists()
+    assert not existing.exists()
+    assert recorder.finished[0][1].outcome is not None
+    assert recorder.finished[0][1].outcome.path == filed
 
 
 def test_fulfil_failed_request_finalizes_into_library(tmp_path: Path) -> None:

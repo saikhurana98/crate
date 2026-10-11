@@ -210,6 +210,37 @@ def test_lossy_match_upgrades_over_tiers_1_2_only() -> None:
     assert any(a[4] == "upgraded from lossy" for a in rec.attempts)
 
 
+def test_lossy_match_upgrade_uses_librarian_path_and_removes_old_file() -> None:
+    existing = {"path": "/nas/old/song.opus", "lossless": 0}
+    rec = SpyRecorder(existing=existing)
+    removed: list[Path] = []
+    marker = lambda report: report  # noqa: E731 - identity marks configured librarian
+
+    def run(query, out_dir, tiers, **kw):  # type: ignore[no-untyped-def]
+        assert kw["finalizer"] is marker
+        # run_cascade would have applied the librarian before returning.
+        return _winner("/nas/Artist/Album/01 Song.flac", "antra", 1, True)
+
+    out = resolve_request(
+        "Artist - Song",
+        Path("/out"),
+        "rid",
+        identity=TrackIdentity(artist="Artist", title="Song"),
+        tiers=ALL_TIERS,
+        recorder=rec,
+        run=run,
+        exists=lambda p: True,
+        replace=lambda a, b: (_ for _ in ()).throw(AssertionError("must not overwrite suffix")),
+        finalizer=marker,
+        remove=removed.append,
+    )
+
+    assert out == Path("/nas/Artist/Album/01 Song.flac")
+    assert removed == [Path("/nas/old/song.opus")]
+    assert rec.finished[0][1].outcome is not None
+    assert rec.finished[0][1].outcome.path == out
+
+
 def test_lossy_match_upgrade_failure_keeps_the_lossy_file() -> None:
     existing = {"path": "/nas/song.opus", "lossless": 0, "source_won": "ytdlp", "tier_won": 3}
     rec = SpyRecorder(existing=existing)

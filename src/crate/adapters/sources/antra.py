@@ -43,11 +43,17 @@ def _track(identity: TrackIdentity, album: str | None = None) -> dict[str, Any]:
     }
 
 
-def search_candidates(query: str, want: TrackIdentity | None = None) -> list[Candidate]:
+def search_candidates(
+    query: str,
+    want: TrackIdentity | None = None,
+    *,
+    album: str | None = None,
+    art_url: str | None = None,
+) -> list[Candidate]:
     """Return Antra's resolver target without spending quota during search."""
     identity = _identity(query, want)
     try:
-        track = _track(identity)
+        track = _track(identity, album)
     except LookupError:
         return []
     return [
@@ -57,11 +63,12 @@ def search_candidates(query: str, want: TrackIdentity | None = None) -> list[Can
             ref=json.dumps(track, separators=(",", ":"), sort_keys=True),
             title=str(track["title"]),
             artist=str(track["artists"][0]),
-            album=None,
+            album=album,
             quality_label="FLAC 16-bit via Antra",
             lossless=True,
             duration_s=identity.duration_s,
             size_bytes=None,
+            art_url=art_url,
         )
     ]
 
@@ -107,6 +114,7 @@ def download_candidate(
         title=candidate.title,
         artist=candidate.artist,
         album=candidate.album,
+        art_url=candidate.art_url,
     )
 
 
@@ -115,10 +123,12 @@ def antra_download(
     out_dir: Path,
     want: TrackIdentity | None = None,
     *,
+    album: str | None = None,
+    art_url: str | None = None,
     download: Download,
     clock: Clock = time.monotonic,
 ) -> DownloadOutcome:
-    candidates = search_candidates(query, want)
+    candidates = search_candidates(query, want, album=album, art_url=art_url)
     if not candidates:
         raise LookupError("Antra needs artist and title metadata (use 'Artist - Title')")
     return download_candidate(candidates[0], out_dir, want, download=download, clock=clock)

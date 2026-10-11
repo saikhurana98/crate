@@ -93,7 +93,17 @@ def test_review_stats_counts(tmp_path: Path) -> None:
 
 def _cand() -> Candidate:
     return Candidate(
-        "qobuz", 1, "42", "Lossy Track", "Artist", "Album", "FLAC 24/96", True, 200, None
+        "qobuz",
+        1,
+        "42",
+        "Lossy Track",
+        "Artist",
+        "Album",
+        "FLAC 24/96",
+        True,
+        200,
+        None,
+        art_url="https://img.example/cover.jpg",
     )
 
 
@@ -112,6 +122,7 @@ def test_queue_review_download_arms_candidate_and_requeues(tmp_path: Path) -> No
     armed = store.get_review_candidate(lossy)
     assert armed is not None
     assert armed["source"] == "qobuz" and armed["ref"] == "42"
+    assert armed["art_url"] == "https://img.example/cover.jpg"
     assert armed["is_upgrade"] == 1 and armed["target_path"] == "/nas/Lossy Track.opus"
 
     claimed = store.claim_next()

@@ -149,15 +149,49 @@ def run_review_download(
             if score < threshold:
                 outcome.path.unlink(missing_ok=True)  # discard the rejected download
                 raise MatchTooLow(score)
-        replace(outcome.path, dest)
+        if finalizer is not None:
+            # Run upgrades through the same librarian as fresh downloads. The old
+            # path often has a lossy suffix (for example .opus), so replacing it
+            # byte-for-byte with FLAC both hid the real codec and skipped tags and
+            # cover art. Finalize first while the old file is still safe; only
+            # remove the old copy after tagging, artwork and the canonical move
+            # have all succeeded.
+            report = finalizer(report)
+            assert report.outcome is not None
+            final_path = report.outcome.path
+            if final_path != dest:
+                # If the canonical target was occupied by the old same-format
+                # file, librarian chose " (2)". Collapse that temporary collision
+                # back onto the stable path; otherwise keep the corrected path.
+                collision = (
+                    final_path.parent == dest.parent
+                    and final_path.suffix.casefold() == dest.suffix.casefold()
+                    and final_path.stem.startswith(f"{dest.stem} (")
+                )
+                if collision:
+                    replace(final_path, dest)
+                    report = dataclasses.replace(
+                        report, outcome=dataclasses.replace(report.outcome, path=dest)
+                    )
+                else:
+                    dest.unlink(missing_ok=True)
+        else:
+            replace(outcome.path, dest)
+            report = dataclasses.replace(
+                report, outcome=dataclasses.replace(outcome, path=dest)
+            )
         recorder.record_attempt(
-            request_id, outcome.source, outcome.tier, True, "review: replaced file from candidate"
+            request_id,
+            outcome.source,
+            outcome.tier,
+            True,
+            "review: finalized upgrade from candidate",
         )
         if score is not None:
             recorder.set_match_similarity(request_id, score)
-        final = dataclasses.replace(report, outcome=dataclasses.replace(outcome, path=dest))
-        recorder.finish_request(request_id, final)
-        return dest
+        recorder.finish_request(request_id, report)
+        assert report.outcome is not None
+        return report.outcome.path
 
     # Fulfil a failed request: finalize the fresh file into the library (when a
     # library root is configured), then finish the request there.

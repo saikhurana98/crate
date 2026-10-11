@@ -144,6 +144,7 @@ def test_review_download_failed_request_is_not_upgrade(tmp_path: Path) -> None:
         "ref": "9",
         "title": "Str8 Outta Mumbai",
         "artist": "Jai Paul",
+        "art": "https://img.example/bait-ones.jpg",
     }
     r = client.post(f"/api/review/{rid}/download", json={"candidate": cand})
     assert r.status_code == 200
@@ -431,6 +432,7 @@ def test_download_source_candidate_opens_request_and_arms(tmp_path: Path) -> Non
         "ref": "42",
         "title": "Str8 Outta Mumbai",
         "artist": "Jai Paul",
+        "art": "https://img.example/bait-ones.jpg",
         "lossless": True,
         "duration_s": 200,
     }
@@ -446,6 +448,7 @@ def test_download_source_candidate_opens_request_and_arms(tmp_path: Path) -> Non
     assert len(queued) == 1 and queued[0]["id"] == out["id"]
     armed = store.get_review_candidate(out["id"])
     assert armed is not None and armed["source"] == "deezer" and armed["is_upgrade"] == 0
+    assert armed["art_url"] == "https://img.example/bait-ones.jpg"
 
 
 def test_download_source_candidate_validation(tmp_path: Path) -> None:

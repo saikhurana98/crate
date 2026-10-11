@@ -735,8 +735,8 @@ class RequestStore:
             self._conn.execute(
                 "INSERT OR REPLACE INTO review_candidates("
                 "request_id, source, tier, ref, title, artist, album, quality_label, "
-                "lossless, duration_s, size_bytes, is_upgrade, target_path, force, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "lossless, duration_s, size_bytes, art_url, is_upgrade, target_path, force, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     request_id,
                     candidate.source,
@@ -749,6 +749,7 @@ class RequestStore:
                     1 if candidate.lossless else 0,
                     candidate.duration_s,
                     candidate.size_bytes,
+                    candidate.art_url,
                     1 if is_upgrade else 0,
                     target_path,
                     1 if force else 0,

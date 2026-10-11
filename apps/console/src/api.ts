@@ -269,6 +269,7 @@ export type DownloadableCandidate = Pick<
   | "lossless"
   | "duration_s"
   | "size_bytes"
+  | "art"
 >;
 
 // One file from the Soulseek browser (the Nicotine+ columns) plus the candidate
