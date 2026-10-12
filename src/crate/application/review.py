@@ -177,9 +177,7 @@ def run_review_download(
                     dest.unlink(missing_ok=True)
         else:
             replace(outcome.path, dest)
-            report = dataclasses.replace(
-                report, outcome=dataclasses.replace(outcome, path=dest)
-            )
+            report = dataclasses.replace(report, outcome=dataclasses.replace(outcome, path=dest))
         recorder.record_attempt(
             request_id,
             outcome.source,
