@@ -21,6 +21,7 @@ _CHUNK = 64 * 1024
 _TOKEN_TTL_S = 45 * 60
 _UNAUTHORIZED = 401
 _NUMBER = re.compile(r"\$Number(?:%0(\d+)d)?\$")
+_MANIFEST_QUALITIES = ("HI_RES_LOSSLESS", "HI_RES", "LOSSLESS")
 Remux = Callable[[Path, Path], None]
 
 
@@ -117,12 +118,20 @@ class TidalClient:  # pragma: no cover - network I/O; covered with MockTransport
     def manifest(self, track_id: str) -> dict[str, Any]:
         if not track_id.isdecimal():
             raise ValueError("invalid TIDAL track ID")
-        resp = self._authorized_get(
-            f"{self._hifi}/manifests",
-            "playback",
-            params={"id": track_id, "quality": "HI_RES"},
-        )
-        return dict(resp.json())
+        last_error: httpx.HTTPStatusError | None = None
+        for quality in _MANIFEST_QUALITIES:
+            try:
+                resp = self._authorized_get(
+                    f"{self._hifi}/manifests",
+                    "playback",
+                    params={"id": track_id, "quality": quality},
+                )
+                return dict(resp.json())
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise AssertionError("TIDAL manifest quality list is empty")
 
     @staticmethod
     def _safe_tidal_url(url: str) -> str:
@@ -147,7 +156,26 @@ class TidalClient:  # pragma: no cover - network I/O; covered with MockTransport
         resp = self._http.get(mpd_url, timeout=60.0)
         resp.raise_for_status()
         root = ElementTree.fromstring(resp.content)
-        template = root.find(".//{*}SegmentTemplate")
+        representations = root.findall(".//{*}Representation")
+        flac = [
+            representation
+            for representation in representations
+            if "flac" in str(representation.get("codecs") or "").casefold()
+            or "flac" in str(representation.get("id") or "").casefold()
+        ]
+
+        def quality(representation: ElementTree.Element) -> tuple[int, int]:
+            return (
+                int(representation.get("audioSamplingRate") or 0),
+                int(representation.get("bandwidth") or 0),
+            )
+
+        selected = max(flac, key=quality) if flac else None
+        template = (
+            selected.find("{*}SegmentTemplate")
+            if selected is not None
+            else root.find(".//{*}SegmentTemplate")
+        )
         if template is None:
             raise ValueError("TIDAL MPD has no segment template")
         initialization = template.get("initialization")
