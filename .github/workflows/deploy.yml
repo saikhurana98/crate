@@ -111,6 +111,26 @@ jobs:
           print(f"Monochrome live search healthy: {len(results)} candidate(s)")
           PY
 
+      - name: TIDAL catalog and manifest smoke test
+        run: |
+          docker compose -f "$STACK" exec -T crate-console python - <<'PY'
+          from crate.composition.sources import build_candidate_sources, _configured_tidal_client
+          from crate.domain.identity import TrackIdentity
+
+          sources = build_candidate_sources()
+          if "tidal" not in sources:
+              raise SystemExit("TIDAL manual search is unavailable")
+          want = TrackIdentity("Karan Aujla", "Ashke", "GXLEL2633343", 218)
+          results = sources["tidal"][0]("Karan Aujla Ashke", want)
+          if not any(row.ref == "562641091" for row in results):
+              raise SystemExit("TIDAL live search returned no Ashke match")
+          manifest = _configured_tidal_client().manifest("562641091")
+          attrs = (manifest.get("data") or {}).get("attributes") or {}
+          if attrs.get("trackPresentation") != "FULL" or not attrs.get("uri"):
+              raise SystemExit("TIDAL playback manifest is unavailable")
+          print(f"TIDAL live search and manifest healthy: {len(results)} candidate(s)")
+          PY
+
       - name: Configured Antra worker smoke test
         run: |
           docker compose -f "$STACK" exec -T crate-serve python - <<'PY'

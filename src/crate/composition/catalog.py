@@ -33,6 +33,7 @@ SOURCES: tuple[SourceSpec, ...] = (
         True,
     ),
     SourceSpec("monochrome", 1, "CRATE_MONOCHROME", (), True),  # public API, no env secret
+    SourceSpec("tidal", 1, "CRATE_TIDAL", (), True),  # public catalog/manifests, no secret
     SourceSpec(
         "antra",
         1,

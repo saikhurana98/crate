@@ -97,6 +97,12 @@ const PANELDEF: Record<string, PanelDef> = {
     note: "Direct FLAC through Monochrome's public Tracks API — no credentials required.",
     validate: true,
   },
+  tidal: {
+    creds: [],
+    settings: [],
+    note: "Hi-res FLAC through Rhythmax/ODSkyler's public TIDAL service — no credentials required.",
+    validate: true,
+  },
   antra: {
     creds: [
       ["CRATE_ANTRA_USERNAME", "Username"],

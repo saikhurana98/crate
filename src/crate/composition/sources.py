@@ -7,6 +7,7 @@ via ``CRATE_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
 
   Tier 1  Qobuz (hi-res FLAC, direct)        opt-in CRATE_QOBUZ=1
           Monochrome (direct FLAC)          opt-in CRATE_MONOCHROME=1
+          TIDAL (hi-res FLAC via DASH)      opt-in CRATE_TIDAL=1
           Antra (hosted lossless resolver)  opt-in CRATE_ANTRA=1
   Tier 2  Deezer (16-bit FLAC via ARL)       opt-in CRATE_DEEZER=1
           arcod (Qobuz proxy, no auth)       opt-in CRATE_ARCOD=1
@@ -98,6 +99,39 @@ def _monochrome_source() -> SourceEntry:  # pragma: no cover - IO wiring
         )
 
     return SourceEntry(SourceRef("monochrome", Tier.ONE), monochrome, expected_lossless=True)
+
+
+@lru_cache(maxsize=4)
+def _tidal_client(hifi_base: str, auth_base: str, catalog_base: str) -> Any:
+    """Reuse public TIDAL tokens and HTTP connections across requests."""
+    from crate.infrastructure.tidal.client import TidalClient
+
+    return TidalClient(hifi_base, auth_base, catalog_base)
+
+
+def _configured_tidal_client() -> Any:  # pragma: no cover - IO wiring
+    from crate.infrastructure.tidal.client import (
+        DEFAULT_AUTH_BASE,
+        DEFAULT_CATALOG_BASE,
+        DEFAULT_HIFI_BASE,
+    )
+
+    return _tidal_client(
+        os.environ.get("CRATE_TIDAL_HIFI_BASE", DEFAULT_HIFI_BASE),
+        os.environ.get("CRATE_TIDAL_AUTH_BASE", DEFAULT_AUTH_BASE),
+        os.environ.get("CRATE_TIDAL_CATALOG_BASE", DEFAULT_CATALOG_BASE),
+    )
+
+
+def _tidal_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from crate.adapters.sources.tidal import tidal_download
+
+    client = _configured_tidal_client()
+
+    def tidal(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return tidal_download(query, out_dir, want, search=client.search, fetch=client.fetch)
+
+    return SourceEntry(SourceRef("tidal", Tier.ONE), tidal, expected_lossless=True)
 
 
 def _antra_client() -> Any:  # pragma: no cover - IO wiring
@@ -258,6 +292,7 @@ def _ytdlp_source() -> SourceEntry:  # pragma: no cover - IO wiring
 _FACTORIES: dict[str, Callable[[], SourceEntry]] = {
     "qobuz": _qobuz_source,
     "monochrome": _monochrome_source,
+    "tidal": _tidal_source,
     "antra": _antra_source,
     "deezer": _deezer_source,
     "arcod": _arcod_source,
@@ -304,6 +339,20 @@ def _monochrome_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
 
     def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return monochrome.download_candidate(cand, out_dir, want, fetch=client.fetch)
+
+    return search, download
+
+
+def _tidal_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import tidal
+
+    client = _configured_tidal_client()
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return tidal.search_candidates(query, want, search=client.search)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return tidal.download_candidate(cand, out_dir, want, fetch=client.fetch)
 
     return search, download
 
@@ -412,6 +461,7 @@ def _ytdlp_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
 _CANDIDATE_FACTORIES: dict[str, Callable[[], CandidateSource]] = {
     "qobuz": _qobuz_candidate,
     "monochrome": _monochrome_candidate,
+    "tidal": _tidal_candidate,
     "antra": _antra_candidate,
     "deezer": _deezer_candidate,
     "arcod": _arcod_candidate,
@@ -423,7 +473,7 @@ _CANDIDATE_FACTORIES: dict[str, Callable[[], CandidateSource]] = {
 # cascade. Credential-free providers can therefore remain searchable even when a
 # host's stored tier layout has them in the disabled tray. This also keeps the
 # provider Test action, Review search, and direct source search consistent.
-_MANUAL_CANDIDATES_ALWAYS_AVAILABLE = frozenset({"monochrome"})
+_MANUAL_CANDIDATES_ALWAYS_AVAILABLE = frozenset({"monochrome", "tidal"})
 
 
 def _enabled_source_names() -> list[str]:  # pragma: no cover - env + IO wiring
@@ -521,6 +571,8 @@ def _tiers_from_env() -> list[TierMux]:  # pragma: no cover - env + IO wiring
         tier1.append(_qobuz_source())
     if _enabled("CRATE_MONOCHROME"):
         tier1.append(_monochrome_source())
+    if _enabled("CRATE_TIDAL"):
+        tier1.append(_tidal_source())
     if _enabled("CRATE_ANTRA"):
         tier1.append(_antra_source())
     tier2: list[SourceEntry] = []

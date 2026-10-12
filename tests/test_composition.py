@@ -48,7 +48,7 @@ def test_strategy_uniform_from_uniform_or_distribute(monkeypatch) -> None:  # ty
     assert _strategy(2) is MuxStrategy.ALL
 
 
-def test_manual_monochrome_search_is_available_when_cascade_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_public_manual_searches_are_available_when_cascade_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     candidate = Candidate("monochrome", 1, "7", "Song", "Artist", None, "FLAC", True, 1, 2)
 
     def search(query: str, want: Any) -> list[Candidate]:
@@ -59,10 +59,11 @@ def test_manual_monochrome_search_is_available_when_cascade_disabled(monkeypatch
 
     monkeypatch.setattr(sources, "_enabled_source_names", lambda: [])
     monkeypatch.setitem(sources._CANDIDATE_FACTORIES, "monochrome", lambda: (search, download))
+    monkeypatch.setitem(sources._CANDIDATE_FACTORIES, "tidal", lambda: (search, download))
 
     available = build_candidate_sources()
 
-    assert list(available) == ["monochrome"]
+    assert list(available) == ["monochrome", "tidal"]
     assert available["monochrome"][0]("Song", None) == [candidate]
 
 
