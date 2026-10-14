@@ -83,7 +83,7 @@ def test_fetch_rejects_untrusted_media_host_and_cleans_up(tmp_path: Path) -> Non
             )
         return httpx.Response(500)
 
-    client = TidalClient(transport=httpx.MockTransport(respond))
+    client = TidalClient(transport=httpx.MockTransport(respond), manifest_attempts=1)
     try:
         with pytest.raises(ValueError, match="untrusted"):
             client.fetch("1", tmp_path / "song.flac")
@@ -104,7 +104,7 @@ def test_manifest_falls_back_to_lossless_when_hires_qualities_fail() -> None:
             return httpx.Response(500, json={"error": "Client cannot access this content"})
         return httpx.Response(200, json={"data": {"attributes": {"uri": "ok"}}})
 
-    client = TidalClient(transport=httpx.MockTransport(respond))
+    client = TidalClient(transport=httpx.MockTransport(respond), manifest_attempts=1)
     try:
         assert client.manifest("236908111")["data"]["attributes"]["uri"] == "ok"
         assert qualities == ["HI_RES_LOSSLESS", "HI_RES", "LOSSLESS"]
@@ -143,6 +143,28 @@ def test_mpd_selects_highest_quality_flac_representation() -> None:
             "https://sp.audio.tidal.com/hires-init",
             "https://sp.audio.tidal.com/hires-1.m4s",
         ]
+    finally:
+        client.close()
+
+
+def test_manifest_retries_transient_wrapped_upstream_error() -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        if request.url.path == "/token":
+            return httpx.Response(200, json={"token": "playback"})
+        calls += 1
+        if calls == 1:
+            return httpx.Response(500, json={"error": "TIDAL request failed (429)"})
+        return httpx.Response(200, json={"data": {"attributes": {"uri": "ok"}}})
+
+    client = TidalClient(transport=httpx.MockTransport(respond), sleep=sleeps.append)
+    try:
+        assert client.manifest("236908111")["data"]["attributes"]["uri"] == "ok"
+        assert calls == 2
+        assert sleeps == [1]
     finally:
         client.close()
 

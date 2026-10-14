@@ -23,6 +23,7 @@ _UNAUTHORIZED = 401
 _NUMBER = re.compile(r"\$Number(?:%0(\d+)d)?\$")
 _MANIFEST_QUALITIES = ("HI_RES_LOSSLESS", "HI_RES", "LOSSLESS")
 Remux = Callable[[Path, Path], None]
+Sleep = Callable[[float], None]
 
 
 def _default_remux(source: Path, dest: Path) -> None:  # pragma: no cover - subprocess I/O
@@ -59,6 +60,8 @@ class TidalClient:  # pragma: no cover - network I/O; covered with MockTransport
         *,
         transport: httpx.BaseTransport | None = None,
         remux: Remux = _default_remux,
+        manifest_attempts: int = 3,
+        sleep: Sleep = time.sleep,
     ) -> None:
         self._hifi = hifi_base.rstrip("/")
         self._auth = auth_base.rstrip("/")
@@ -68,6 +71,8 @@ class TidalClient:  # pragma: no cover - network I/O; covered with MockTransport
             timeout=30.0, follow_redirects=True, transport=resilient_transport
         )
         self._remux = remux
+        self._manifest_attempts = max(1, manifest_attempts)
+        self._sleep = sleep
         self._tokens: dict[str, tuple[str, float]] = {}
         self._token_lock = threading.Lock()
 
@@ -120,15 +125,18 @@ class TidalClient:  # pragma: no cover - network I/O; covered with MockTransport
             raise ValueError("invalid TIDAL track ID")
         last_error: httpx.HTTPStatusError | None = None
         for quality in _MANIFEST_QUALITIES:
-            try:
-                resp = self._authorized_get(
-                    f"{self._hifi}/manifests",
-                    "playback",
-                    params={"id": track_id, "quality": quality},
-                )
-                return dict(resp.json())
-            except httpx.HTTPStatusError as exc:
-                last_error = exc
+            for attempt in range(self._manifest_attempts):
+                try:
+                    resp = self._authorized_get(
+                        f"{self._hifi}/manifests",
+                        "playback",
+                        params={"id": track_id, "quality": quality},
+                    )
+                    return dict(resp.json())
+                except httpx.HTTPStatusError as exc:
+                    last_error = exc
+                    if attempt + 1 < self._manifest_attempts:
+                        self._sleep(2**attempt)
         if last_error is not None:
             raise last_error
         raise AssertionError("TIDAL manifest quality list is empty")
