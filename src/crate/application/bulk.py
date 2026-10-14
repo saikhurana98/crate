@@ -1,12 +1,13 @@
 """Bulk-download resolution: turn a pasted blob into a batch of track queries.
 
-A batch comes from one of three origins, dispatched purely on the input text:
+A batch comes from one of four origins, dispatched purely on the input text:
 
   - a Spotify playlist link / URI   -> resolve via the Spotify Web API
   - a YouTube playlist link          -> resolve via yt-dlp (flat playlist)
+  - an Octave album link             -> resolve via Octave's public catalog
   - anything else                    -> a pasted list, one query per line
 
-The two playlist resolvers are injected (IO lives at the edges), so this
+The playlist and album resolvers are injected (IO lives at the edges), so this
 dispatcher is unit tested without a network.
 """
 
@@ -25,7 +26,7 @@ PlaylistResolver = Callable[[str], dict[str, Any]]
 @dataclass(frozen=True, slots=True)
 class ResolvedBatch:
     name: str
-    origin: str  # spotify | youtube | paste
+    origin: str  # spotify | youtube | octave | paste
     owner: str
     tracks: list[TrackIdentity]
 
@@ -57,11 +58,16 @@ def _is_youtube_playlist(text: str) -> bool:
     return has_list and ("youtube.com" in text or "youtu.be" in text)
 
 
+def _is_octave_album(text: str) -> bool:
+    return text.startswith("https://music.octavestreaming.com/album/")
+
+
 def resolve_bulk(
     text: str,
     *,
     spotify_playlist: PlaylistResolver | None = None,
     youtube_playlist: PlaylistResolver | None = None,
+    octave_album: PlaylistResolver | None = None,
 ) -> ResolvedBatch:
     """Dispatch ``text`` to the right resolver and return a :class:`ResolvedBatch`.
 
@@ -88,6 +94,20 @@ def resolve_bulk(
         if not tracks:
             raise ValueError("playlist resolved to no tracks")
         return ResolvedBatch(str(pl.get("name") or "YouTube playlist"), "youtube", "", tracks)
+
+    if _is_octave_album(stripped):
+        if octave_album is None:
+            raise LookupError("Octave album resolver is unavailable")
+        album = octave_album(stripped)
+        tracks = [_as_identity(track) for track in (album.get("tracks") or [])]
+        if not tracks:
+            raise ValueError("Octave album resolved to no tracks")
+        return ResolvedBatch(
+            str(album.get("name") or "Octave album"),
+            "octave",
+            str(album.get("owner") or ""),
+            tracks,
+        )
 
     # pasted list — one identity per non-empty line (title-only, best-effort split)
     lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]

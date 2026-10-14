@@ -948,8 +948,9 @@ def build_spotify_search() -> Callable[[str, int], list[dict[str, Any]]] | None:
 
 def build_bulk_resolver() -> Callable[[str], Any]:  # pragma: no cover - IO wiring
     """Resolve pasted text into a batch: Spotify playlists (if creds present),
-    YouTube playlists (yt-dlp), and plain pasted lists always work."""
+    YouTube playlists (yt-dlp), Octave albums, and plain pasted lists."""
     from crate.application.bulk import ResolvedBatch, resolve_bulk
+    from crate.infrastructure.octave import OctaveClient
     from crate.infrastructure.youtube import resolve_youtube_playlist
 
     spotify_playlist: Callable[[str], dict[str, Any]] | None = None
@@ -975,9 +976,14 @@ def build_bulk_resolver() -> Callable[[str], Any]:  # pragma: no cover - IO wiri
         client = SpotifyClient(client_id, client_secret, post_form=post_form, get_json=get_json)
         spotify_playlist = client.playlist
 
+    octave = OctaveClient()
+
     def resolve(text: str) -> ResolvedBatch:
         return resolve_bulk(
-            text, spotify_playlist=spotify_playlist, youtube_playlist=resolve_youtube_playlist
+            text,
+            spotify_playlist=spotify_playlist,
+            youtube_playlist=resolve_youtube_playlist,
+            octave_album=octave.album,
         )
 
     return resolve

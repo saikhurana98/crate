@@ -154,6 +154,20 @@ jobs:
               print("Antra worker provider healthy: stored credentials loaded")
           PY
 
+      - name: Octave album import smoke test
+        run: |
+          docker compose -f "$STACK" exec -T crate-console python - <<'PY'
+          from crate.composition.sources import build_bulk_resolver
+
+          batch = build_bulk_resolver()(
+              "https://music.octavestreaming.com/album/198977692"
+          )
+          titles = {track.title for track in batch.tracks}
+          if batch.origin != "octave" or len(batch.tracks) != 9 or "Dhunki" not in titles:
+              raise SystemExit("Octave live album import returned unexpected metadata")
+          print(f"Octave live album import healthy: {batch.name} ({len(batch.tracks)} tracks)")
+          PY
+
       - name: Rollback on failure
         if: failure() && steps.prev.outputs.img != 'none'
         run: |

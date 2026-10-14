@@ -183,7 +183,7 @@ export interface BatchCounts {
 export interface Batch {
   id: string;
   name: string;
-  origin: string; // spotify | youtube | paste
+  origin: string; // spotify | youtube | octave | paste
   owner: string;
   total: number;
   paused: boolean;

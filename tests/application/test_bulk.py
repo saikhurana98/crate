@@ -31,6 +31,14 @@ def _youtube(_url: str) -> dict:
     return {"name": "YT mix", "owner": "", "tracks": ["C z"]}
 
 
+def _octave(_url: str) -> dict:
+    return {
+        "name": "Album",
+        "owner": "Artist",
+        "tracks": [{"artist": "Artist", "title": "Song", "duration_s": 201}],
+    }
+
+
 def test_spotify_playlist_link() -> None:
     b = resolve_bulk(
         "https://open.spotify.com/playlist/37i9?si=abc",
@@ -78,6 +86,14 @@ def test_youtube_playlist_link() -> None:
     assert b.tracks == [TrackIdentity(title="C z")]
 
 
+def test_octave_album_link() -> None:
+    b = resolve_bulk(
+        "https://music.octavestreaming.com/album/198977692?ref=share", octave_album=_octave
+    )
+    assert b.origin == "octave" and b.name == "Album" and b.owner == "Artist"
+    assert b.tracks == [TrackIdentity("Artist", "Song", None, 201)]
+
+
 def test_pasted_list() -> None:
     b = resolve_bulk("Daft Punk - Get Lucky\n  Burial Archangel \n\nBonobo Kerala")
     assert b.origin == "paste"
@@ -106,6 +122,11 @@ def test_youtube_link_without_resolver_is_lookup_error() -> None:
         resolve_bulk("https://youtube.com/playlist?list=x")
 
 
+def test_octave_link_without_resolver_is_lookup_error() -> None:
+    with pytest.raises(LookupError):
+        resolve_bulk("https://music.octavestreaming.com/album/198977692")
+
+
 def test_empty_input_is_value_error() -> None:
     with pytest.raises(ValueError):
         resolve_bulk("   \n  ")
@@ -124,4 +145,12 @@ def test_youtube_playlist_with_no_tracks_is_value_error() -> None:
         resolve_bulk(
             "https://youtube.com/playlist?list=x",
             youtube_playlist=lambda _r: {"name": "Empty", "tracks": []},
+        )
+
+
+def test_octave_album_with_no_tracks_is_value_error() -> None:
+    with pytest.raises(ValueError):
+        resolve_bulk(
+            "https://music.octavestreaming.com/album/1",
+            octave_album=lambda _r: {"name": "Empty", "tracks": []},
         )

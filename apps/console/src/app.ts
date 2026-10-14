@@ -774,6 +774,15 @@ async function submitBulk(): Promise<void> {
     render();
   }
 }
+
+function isBulkLink(text: string): boolean {
+  const value = text.trim();
+  return (
+    value.includes("spotify.com/playlist/") ||
+    ((value.includes("youtube.com") || value.includes("youtu.be")) && value.includes("list=")) ||
+    value.startsWith("https://music.octavestreaming.com/album/")
+  );
+}
 async function toggleBatch(id: string): Promise<void> {
   const open = !state.expandedBatches[id];
   state.expandedBatches[id] = open;
@@ -1559,7 +1568,8 @@ function panelHtml(): string {
 
 function searchDropdownHtml(): string {
   const q = state.searchQuery.trim();
-  const open = state.searchFocus && (state.searchBusy || state.searchErr != null || q.length >= 2);
+  const open =
+    !isBulkLink(q) && state.searchFocus && (state.searchBusy || state.searchErr != null || q.length >= 2);
   if (!open) return "";
   let body = "";
   if (state.searchErr)
@@ -1725,7 +1735,7 @@ function headerHtml(): string {
     : `<div style="position:relative;flex:1;max-width:460px;margin-left:16px">
         <div style="display:flex;align-items:center;position:relative">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:13px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
-          <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks or paste a Spotify / YouTube playlist link…" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:8px 14px 8px 34px;transition:border-color .15s"/>
+          <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks or paste a Spotify / YouTube / Octave link…" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:8px 14px 8px 34px;transition:border-color .15s"/>
         </div>
         ${searchDropdownHtml()}
       </div>`;
@@ -1921,7 +1931,7 @@ function mTracksTab(): string {
     ? ""
     : `<div style="position:relative;display:flex;align-items:center">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5d6456" stroke-width="2" stroke-linecap="round" style="position:absolute;left:14px;pointer-events:none"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
-        <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks or paste a Spotify / YouTube playlist link…" style="width:100%;background:#111411;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 13px 'Instrument Sans';padding:11px 15px 11px 38px"/>
+        <input data-inp="spotify" value="${esc(state.searchQuery)}" placeholder="Search tracks or paste a Spotify / YouTube / Octave link…" style="width:100%;background:#111411;border:1px solid #272c25;border-radius:20px;color:#e9ede3;font:400 13px 'Instrument Sans';padding:11px 15px 11px 38px"/>
       </div>${mSearchResults(q)}`;
   return `<h1 style="margin:0 0 12px;font:600 19px 'Instrument Sans';letter-spacing:-.01em">Library</h1>
     ${searchBox}
@@ -2063,7 +2073,8 @@ function viewDesktop(): string {
 function batchActive(b: Batch): number {
   return b.counts.queued + b.counts.downloading;
 }
-const originLabel = (o: string): string => (o === "youtube" ? "YT" : o === "spotify" ? "SPOTIFY" : "PASTE");
+const originLabel = (o: string): string =>
+  o === "youtube" ? "YT" : o === "spotify" ? "SPOTIFY" : o === "octave" ? "OCTAVE" : "PASTE";
 
 function batchTrackRow(t: BatchDetail["tracks"][number]): string {
   const glyph =
@@ -2165,7 +2176,7 @@ function bulkPageHtml(): string {
     !bs.length && !singles.length
       ? `<div style="background:#111411;border:1px dashed #272c25;border-radius:20px;padding:48px 20px;text-align:center">
         <div style="font:600 14px 'Instrument Sans';color:#99a091">Nothing downloading</div>
-        <div style="font:400 12px 'Instrument Sans';color:#5d6456;margin-top:6px">Paste a Spotify / YouTube playlist link or a track list to queue in bulk.</div>
+        <div style="font:400 12px 'Instrument Sans';color:#5d6456;margin-top:6px">Paste a Spotify / YouTube playlist, Octave album, or track list to queue in bulk.</div>
       </div>`
       : "";
   const pad = state.isMobile ? "16px 16px 96px" : "22px 28px 72px";
@@ -2198,7 +2209,7 @@ function bulkPanelHtml(): string {
       <button data-act="closeBulkPanel" style="background:#181c17;border:1px solid #272c25;border-radius:10px;color:#99a091;cursor:pointer;padding:6px 9px;flex-shrink:0;display:inline-flex"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"></path></svg></button>
     </div>
     <div style="flex:1;overflow-y:auto;padding:18px 22px">
-      <textarea data-inp="bulk" rows="5" placeholder="https://open.spotify.com/playlist/…&#10;or paste tracks, one per line" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:12px 14px;resize:vertical;line-height:1.5">${esc(state.bulkText)}</textarea>
+      <textarea data-inp="bulk" rows="5" placeholder="Spotify / YouTube playlist or Octave album URL&#10;or paste tracks, one per line" style="width:100%;background:#0c0e0c;border:1px solid #272c25;border-radius:14px;color:#e9ede3;font:400 12.5px 'Instrument Sans';padding:12px 14px;resize:vertical;line-height:1.5">${esc(state.bulkText)}</textarea>
       <button data-act="submitBulk" ${state.bulkBusy ? "disabled" : ""} style="width:100%;margin-top:10px;background:${state.bulkBusy ? "#272c25" : "#e9ede3"};border:none;border-radius:14px;color:${state.bulkBusy ? "#99a091" : "#14170f"};font:600 13px 'Instrument Sans';padding:12px;cursor:${state.bulkBusy ? "default" : "pointer"};display:flex;align-items:center;justify-content:center;gap:8px">${state.bulkBusy ? `<span style="width:12px;height:12px;border:1.5px solid rgba(20,23,15,.3);border-top-color:#14170f;border-radius:50%;animation:spin .8s linear infinite"></span>Resolving…` : "Start batch"}</button>
       <div style="font:600 9.5px 'JetBrains Mono';letter-spacing:.14em;text-transform:uppercase;color:#5d6456;margin:18px 0 10px">Batches</div>
       ${summaries || `<div style="padding:16px 0;text-align:center;font:400 12px 'Instrument Sans';color:#5d6456">No batches yet.</div>`}
@@ -2963,7 +2974,14 @@ function bindEvents(): void {
       state.searchFocus = true;
       window.clearTimeout(searchTimer);
       const q = el.value.trim();
-      searchTimer = window.setTimeout(() => void runSearch(q), 220);
+      if (isBulkLink(q)) {
+        searchAbort?.abort();
+        state.searchBusy = false;
+        state.searchResults = [];
+        render();
+      } else {
+        searchTimer = window.setTimeout(() => void runSearch(q), 220);
+      }
     } else if (el.dataset.inp === "panelField") {
       state.panelValues[el.dataset.key!] = el.value;
       state.panelSave = "dirty";
@@ -2986,7 +3004,12 @@ function bindEvents(): void {
   root.addEventListener("keydown", (e) => {
     const el = e.target as HTMLInputElement;
     const key = (e as KeyboardEvent).key;
-    if (el.dataset.inp === "reviewq" && key === "Enter") {
+    if (el.dataset.inp === "spotify" && key === "Enter" && isBulkLink(el.value)) {
+      e.preventDefault();
+      state.bulkText = el.value;
+      state.searchFocus = false;
+      void submitBulk();
+    } else if (el.dataset.inp === "reviewq" && key === "Enter") {
       e.preventDefault();
       state.reviewQ[el.dataset.id!] = el.value; // ensure the latest value is used
       void rescanReview(el.dataset.id!);
