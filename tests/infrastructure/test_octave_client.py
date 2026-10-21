@@ -140,10 +140,15 @@ def test_fetch_rejects_missing_account_and_bad_track_id(tmp_path: Path) -> None:
         client.fetch("not-an-id", tmp_path / "bad")
 
 
-def test_playback_authorization_error_is_clear(tmp_path: Path) -> None:
-    transport = httpx.MockTransport(
-        lambda _request: httpx.Response(403, json={"error": "membership required"})
-    )
+def test_playback_locked_error_is_actionable(tmp_path: Path) -> None:
+    transport = httpx.MockTransport(lambda _request: httpx.Response(403, text="Forbidden"))
     client = OctaveClient(account_key="octv_test", transport=transport)
-    with pytest.raises(RuntimeError, match="membership required"):
+    with pytest.raises(RuntimeError, match=r"link Discord.*access role"):
+        client.fetch("1", tmp_path / "denied")
+
+
+def test_rejected_account_key_error_is_actionable(tmp_path: Path) -> None:
+    transport = httpx.MockTransport(lambda _request: httpx.Response(401, json={"ok": False}))
+    client = OctaveClient(account_key="octv_test", transport=transport)
+    with pytest.raises(RuntimeError, match="rejected the saved account key"):
         client.fetch("1", tmp_path / "denied")

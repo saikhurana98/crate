@@ -37,6 +37,12 @@ def test_search_candidates_preserve_catalog_metadata() -> None:
     assert candidate.art_url == "https://img.example/housewife.jpg"
 
 
+def test_validation_candidate_uses_stable_octave_track() -> None:
+    candidate = octave.validation_candidate()
+    assert candidate.ref == "1203801942"
+    assert candidate.title == "Dhunki" and candidate.artist == "SOHAIL SEN"
+
+
 def test_structured_identity_filters_results() -> None:
     want = TrackIdentity("Tate McRae", "Housewife", duration_s=208)
     assert octave.search_candidates("ignored", want, search=_search)[0].ref == "4350411742"

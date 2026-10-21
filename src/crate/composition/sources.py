@@ -1448,7 +1448,20 @@ def build_source_validator() -> Callable[
         if config is not None:
             _apply_stored_secrets(config)
         entry = build_candidate_sources().get(name)
-        if entry is not None:
+        if name == "octave" and query is None and entry is not None:
+            from crate.adapters.sources import octave
+
+            candidate = octave.validation_candidate()
+            client = _configured_octave_client()
+            res = validate_source(
+                search=lambda _query, _want: [candidate],
+                download=lambda cand, dest, want: octave.download_candidate(
+                    cand, dest, want, fetch=client.fetch
+                ),
+                prober=probe,
+                out_dir=out_dir,
+            )
+        elif entry is not None:
             res = validate_source(
                 search=entry[0], download=entry[1], prober=probe, out_dir=out_dir, **kw
             )

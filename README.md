@@ -37,7 +37,8 @@ uv run crate download "Artist Title" -o ./downloads
 ```
 
 Octave uses its official member authorization. Join the free Octave community,
-restore the library with the issued `octv_…` account key, then save it in the
+link Discord, and ensure the Octave access role is active. Restore the library
+with the issued `octv_…` account key, then save it in the
 provider settings or configure it for the CLI:
 
 ```bash

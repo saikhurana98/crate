@@ -106,7 +106,7 @@ const PANELDEF: Record<string, PanelDef> = {
   octave: {
     creds: [["CRATE_OCTAVE_ACCOUNT_KEY", "Octave account key"]],
     settings: [],
-    note: "Lossless downloads through Octave's official member flow. Join Octave, restore your library with its octv_ account key, then save that key here.",
+    note: "Lossless downloads through Octave's official member flow. Link Discord and obtain its access role first, then restore and save the current octv_ account key here.",
     validate: true,
   },
   antra: {

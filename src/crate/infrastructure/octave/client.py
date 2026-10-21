@@ -17,6 +17,7 @@ _ALBUM_PATH_PARTS = 2
 _CHUNK = 64 * 1024
 _TOKEN_SKEW_S = 30
 _UNAUTHORIZED = 401
+_FORBIDDEN = 403
 
 
 def album_id(ref: str) -> str:
@@ -145,6 +146,16 @@ class OctaveClient:
                 headers={"Authorization": f"Bearer {self._account_key}"},
             )
             if not response.is_success:
+                if response.status_code == _FORBIDDEN:
+                    raise RuntimeError(
+                        "Octave playback is locked for this account; link Discord and ensure "
+                        "the Octave access role is active"
+                    )
+                if response.status_code == _UNAUTHORIZED:
+                    raise RuntimeError(
+                        "Octave rejected the saved account key; restore the current key in "
+                        "Octave and save it again"
+                    )
                 raise RuntimeError(f"Octave playback authorization failed: {self._error(response)}")
             data = response.json()
             token = str(data.get("token") or "")

@@ -30,6 +30,16 @@ class OctaveTrack:
     cover_url: str | None
 
 
+_VALIDATION_TRACK = OctaveTrack(
+    id="1203801942",
+    title="Dhunki",
+    artist="SOHAIL SEN",
+    album="Mere Brother Ki Dulhan",
+    duration_s=257,
+    cover_url=None,
+)
+
+
 def _integer(value: Any) -> int | None:
     try:
         return int(value) if value is not None else None
@@ -88,6 +98,11 @@ def _candidate(track: OctaveTrack) -> Candidate:
         size_bytes=None,
         art_url=track.cover_url,
     )
+
+
+def validation_candidate() -> Candidate:
+    """Return a stable Octave track for the provider download test."""
+    return _candidate(_VALIDATION_TRACK)
 
 
 def search_candidates(
