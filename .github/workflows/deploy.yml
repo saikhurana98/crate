@@ -99,15 +99,21 @@ jobs:
 
       - name: Worker readiness check
         run: |
-          for i in $(seq 1 40); do
+          stable=0
+          for i in $(seq 1 60); do
             if docker compose -f "$STACK" exec -T crate-serve true 2>/dev/null; then
-              echo "worker ready after ${i} attempt(s)"
-              exit 0
+              stable=$((stable + 1))
+              if [ "$stable" -ge 20 ]; then
+                echo "worker stayed ready for 60s"
+                exit 0
+              fi
+            else
+              stable=0
             fi
-            echo "waiting for queue worker…"
+            echo "waiting for stable queue worker… (${stable}/20)"
             sleep 3
           done
-          echo "::error::crate-serve did not become ready after ~120s"
+          echo "::error::crate-serve did not remain ready for 60s"
           docker compose -f "$STACK" logs --tail=80 crate-serve || true
           exit 1
 
@@ -194,6 +200,8 @@ jobs:
         if: failure() && steps.prev.outputs.img != 'none'
         run: |
           echo "::warning::deploy failed — rolling back to ${{ steps.prev.outputs.img }}"
+          docker compose -f "$STACK" ps || true
+          docker compose -f "$STACK" logs --tail=120 $SERVICES || true
           docker tag "${{ steps.prev.outputs.img }}" ghcr.io/${{ github.repository_owner }}/crate:latest
           docker compose -f "$STACK" up -d --force-recreate --no-deps $SERVICES
 

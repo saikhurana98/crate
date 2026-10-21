@@ -51,7 +51,13 @@ class OctaveClient:
         self._token_lock = threading.Lock()
         self._search_attempts = max(1, search_attempts)
         self._sleep = sleep
-        resilient_transport = transport or httpx.HTTPTransport(retries=2)
+        # Some Docker hosts advertise an IPv6 route without usable upstream
+        # connectivity. Binding the default transport to IPv4 keeps Cloudflare
+        # backed Octave hosts reachable there while preserving injected test
+        # transports.
+        resilient_transport = transport or httpx.HTTPTransport(
+            retries=2, local_address="0.0.0.0"
+        )
         self._http = httpx.Client(
             timeout=20.0,
             follow_redirects=True,
