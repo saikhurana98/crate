@@ -34,6 +34,7 @@ SOURCES: tuple[SourceSpec, ...] = (
     ),
     SourceSpec("monochrome", 1, "CRATE_MONOCHROME", (), True),  # public API, no env secret
     SourceSpec("tidal", 1, "CRATE_TIDAL", (), True),  # public catalog/manifests, no secret
+    SourceSpec("octave", 1, "CRATE_OCTAVE", ("CRATE_OCTAVE_ACCOUNT_KEY",), True),
     SourceSpec(
         "antra",
         1,

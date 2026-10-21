@@ -157,7 +157,10 @@ jobs:
       - name: Octave album import smoke test
         run: |
           docker compose -f "$STACK" exec -T crate-console python - <<'PY'
+          from crate.adapters.sources.octave import parse_search
+          from crate.composition.catalog import KNOWN
           from crate.composition.sources import build_bulk_resolver
+          from crate.infrastructure.octave import OctaveClient
 
           batch = build_bulk_resolver()(
               "https://music.octavestreaming.com/album/198977692"
@@ -165,7 +168,13 @@ jobs:
           titles = {track.title for track in batch.tracks}
           if batch.origin != "octave" or len(batch.tracks) != 9 or "Dhunki" not in titles:
               raise SystemExit("Octave live album import returned unexpected metadata")
-          print(f"Octave live album import healthy: {batch.name} ({len(batch.tracks)} tracks)")
+          results = parse_search(OctaveClient().search("Tate McRae Housewife"))
+          if "octave" not in KNOWN or not any(track.title == "Housewife" for track in results):
+              raise SystemExit("Octave provider catalog search returned no Housewife match")
+          print(
+              f"Octave album import and provider catalog healthy: "
+              f"{batch.name} ({len(batch.tracks)} tracks)"
+          )
           PY
 
       - name: Rollback on failure

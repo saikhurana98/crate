@@ -8,6 +8,7 @@ via ``CRATE_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
   Tier 1  Qobuz (hi-res FLAC, direct)        opt-in CRATE_QOBUZ=1
           Monochrome (direct FLAC)          opt-in CRATE_MONOCHROME=1
           TIDAL (hi-res FLAC via DASH)      opt-in CRATE_TIDAL=1
+          Octave (member-authorized FLAC)   opt-in CRATE_OCTAVE=1
           Antra (hosted lossless resolver)  opt-in CRATE_ANTRA=1
   Tier 2  Deezer (16-bit FLAC via ARL)       opt-in CRATE_DEEZER=1
           arcod (Qobuz proxy, no auth)       opt-in CRATE_ARCOD=1
@@ -132,6 +133,35 @@ def _tidal_source() -> SourceEntry:  # pragma: no cover - IO wiring
         return tidal_download(query, out_dir, want, search=client.search, fetch=client.fetch)
 
     return SourceEntry(SourceRef("tidal", Tier.ONE), tidal, expected_lossless=True)
+
+
+@lru_cache(maxsize=8)
+def _octave_client(account_key: str, catalog_base: str, api_base: str) -> Any:
+    """Reuse Octave's member token and HTTP connections across requests."""
+    from crate.infrastructure.octave.client import OctaveClient
+
+    return OctaveClient(catalog_base, api_base, account_key=account_key)
+
+
+def _configured_octave_client() -> Any:  # pragma: no cover - IO wiring
+    from crate.infrastructure.octave.client import DEFAULT_API_BASE, DEFAULT_BASE
+
+    return _octave_client(
+        os.environ["CRATE_OCTAVE_ACCOUNT_KEY"],
+        os.environ.get("CRATE_OCTAVE_CATALOG_BASE", DEFAULT_BASE),
+        os.environ.get("CRATE_OCTAVE_API_BASE", DEFAULT_API_BASE),
+    )
+
+
+def _octave_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from crate.adapters.sources.octave import octave_download
+
+    client = _configured_octave_client()
+
+    def octave(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return octave_download(query, out_dir, want, search=client.search, fetch=client.fetch)
+
+    return SourceEntry(SourceRef("octave", Tier.ONE), octave, expected_lossless=True)
 
 
 def _antra_client() -> Any:  # pragma: no cover - IO wiring
@@ -293,6 +323,7 @@ _FACTORIES: dict[str, Callable[[], SourceEntry]] = {
     "qobuz": _qobuz_source,
     "monochrome": _monochrome_source,
     "tidal": _tidal_source,
+    "octave": _octave_source,
     "antra": _antra_source,
     "deezer": _deezer_source,
     "arcod": _arcod_source,
@@ -353,6 +384,20 @@ def _tidal_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
 
     def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return tidal.download_candidate(cand, out_dir, want, fetch=client.fetch)
+
+    return search, download
+
+
+def _octave_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import octave
+
+    client = _configured_octave_client()
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return octave.search_candidates(query, want, search=client.search)
+
+    def download(cand: Candidate, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return octave.download_candidate(cand, out_dir, want, fetch=client.fetch)
 
     return search, download
 
@@ -462,6 +507,7 @@ _CANDIDATE_FACTORIES: dict[str, Callable[[], CandidateSource]] = {
     "qobuz": _qobuz_candidate,
     "monochrome": _monochrome_candidate,
     "tidal": _tidal_candidate,
+    "octave": _octave_candidate,
     "antra": _antra_candidate,
     "deezer": _deezer_candidate,
     "arcod": _arcod_candidate,
@@ -573,6 +619,8 @@ def _tiers_from_env() -> list[TierMux]:  # pragma: no cover - env + IO wiring
         tier1.append(_monochrome_source())
     if _enabled("CRATE_TIDAL"):
         tier1.append(_tidal_source())
+    if _enabled("CRATE_OCTAVE"):
+        tier1.append(_octave_source())
     if _enabled("CRATE_ANTRA"):
         tier1.append(_antra_source())
     tier2: list[SourceEntry] = []

@@ -3,8 +3,8 @@
 Tiered FLAC acquisition as a CLI, compatible with [Explo](https://github.com/LumePart/Explo)
 via an slskd-compatible REST shim.
 
-- **Tier 1** — **Qobuz** (hi-res 24-bit FLAC, direct) · **Monochrome** (direct FLAC) · **Antra** (authenticated multi-source lossless resolver)
-- **Tier 2** — **Deezer** (16-bit FLAC) · **Soulseek** (via slskd) · Telegram bot
+- **Tier 1** — **Qobuz**, **Monochrome**, **TIDAL**, **Octave**, and **Antra** lossless sources
+- **Tier 2** — **Deezer**, **arcod**, **Soulseek** (via slskd), and Telegram
 - **Tier 3** — **yt-dlp** (lossy fallback, always on)
 
 Each tier is a pool of swappable sources with a fan-out strategy (`all` /
@@ -36,11 +36,19 @@ export CRATE_QOBUZ=1 CRATE_QOBUZ_APP_ID=... CRATE_QOBUZ_APP_SECRET=... CRATE_QOB
 uv run crate download "Artist Title" -o ./downloads
 ```
 
+Octave uses its official member authorization. Join the free Octave community,
+restore the library with the issued `octv_…` account key, then save it in the
+provider settings or configure it for the CLI:
+
+```bash
+export CRATE_OCTAVE=1 CRATE_OCTAVE_ACCOUNT_KEY=octv_...
+uv run crate download "Artist - Title" -o ./downloads
+```
+
 ## Deploy (Docker)
 
 A headless image is published to GHCR on every push to `main` and every `v*`
-tag. It ships **Qobuz, Monochrome, Antra, Deezer, Soulseek (via an external slskd),
-and yt-dlp**.
+tag. It ships all provider adapters listed above and yt-dlp.
 
 ```bash
 docker pull ghcr.io/saikhurana98/crate:latest

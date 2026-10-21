@@ -103,6 +103,12 @@ const PANELDEF: Record<string, PanelDef> = {
     note: "Hi-res FLAC through Rhythmax/ODSkyler's public TIDAL service — no credentials required.",
     validate: true,
   },
+  octave: {
+    creds: [["CRATE_OCTAVE_ACCOUNT_KEY", "Octave account key"]],
+    settings: [],
+    note: "Lossless downloads through Octave's official member flow. Join Octave, restore your library with its octv_ account key, then save that key here.",
+    validate: true,
+  },
   antra: {
     creds: [
       ["CRATE_ANTRA_USERNAME", "Username"],
