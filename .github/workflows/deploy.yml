@@ -84,7 +84,10 @@ jobs:
         run: |
           docker compose -f "$STACK" run --rm --no-deps \
             --user 0 --entrypoint sh crate-serve \
-            -ceu 'install -d -o 1000 -g 1000 "$CRATE_SERVE_DOWNLOADS"'
+            -ceu 'if [ ! -d "$CRATE_SERVE_DOWNLOADS" ]; then install -d -o 1000 -g 1000 "$CRATE_SERVE_DOWNLOADS"; fi'
+          docker compose -f "$STACK" run --rm --no-deps \
+            --entrypoint sh crate-serve \
+            -ceu 'test -w "$CRATE_SERVE_DOWNLOADS"'
 
       - name: Recreate services
         # --force-recreate: the :latest tag is stable, so compose must be told to
