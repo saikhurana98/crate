@@ -80,6 +80,12 @@ jobs:
       - name: Pull released image
         run: docker compose -f "$STACK" pull $SERVICES
 
+      - name: Prepare worker staging directory
+        run: |
+          docker compose -f "$STACK" run --rm --no-deps \
+            --user 0 --entrypoint sh crate-serve \
+            -ceu 'install -d -o 1000 -g 1000 "$CRATE_SERVE_DOWNLOADS"'
+
       - name: Recreate services
         # --force-recreate: the :latest tag is stable, so compose must be told to
         # replace the running containers even though the tag string is unchanged.
