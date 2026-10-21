@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -39,6 +40,8 @@ class OctaveClient:
         *,
         account_key: str | None = None,
         transport: httpx.BaseTransport | None = None,
+        search_attempts: int = 3,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._api = api_base.rstrip("/")
@@ -46,6 +49,8 @@ class OctaveClient:
         self._token: str | None = None
         self._token_expires_at = 0.0
         self._token_lock = threading.Lock()
+        self._search_attempts = max(1, search_attempts)
+        self._sleep = sleep
         resilient_transport = transport or httpx.HTTPTransport(retries=2)
         self._http = httpx.Client(
             timeout=20.0,
@@ -89,9 +94,18 @@ class OctaveClient:
         }
 
     def search(self, query: str) -> dict[str, Any]:
-        response = self._http.get(f"{self._base}/api/search", params={"query": query})
-        response.raise_for_status()
-        data = response.json()
+        data: Any = {}
+        for attempt in range(self._search_attempts):
+            response = self._http.get(f"{self._base}/api/search", params={"query": query})
+            response.raise_for_status()
+            data = response.json()
+            if (
+                not isinstance(data, dict)
+                or data.get("tracks")
+                or attempt + 1 >= self._search_attempts
+            ):
+                break
+            self._sleep(2**attempt)
         return dict(data) if isinstance(data, dict) else {}
 
     @staticmethod

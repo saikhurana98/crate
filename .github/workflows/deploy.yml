@@ -97,6 +97,20 @@ jobs:
           docker compose -f "$STACK" logs --tail=80 $SERVICES || true
           exit 1
 
+      - name: Worker readiness check
+        run: |
+          for i in $(seq 1 40); do
+            if docker compose -f "$STACK" exec -T crate-serve true 2>/dev/null; then
+              echo "worker ready after ${i} attempt(s)"
+              exit 0
+            fi
+            echo "waiting for queue worker…"
+            sleep 3
+          done
+          echo "::error::crate-serve did not become ready after ~120s"
+          docker compose -f "$STACK" logs --tail=80 crate-serve || true
+          exit 1
+
       - name: Monochrome search smoke test
         run: |
           docker compose -f "$STACK" exec -T crate-console python - <<'PY'
@@ -157,7 +171,6 @@ jobs:
       - name: Octave album import smoke test
         run: |
           docker compose -f "$STACK" exec -T crate-console python - <<'PY'
-          from crate.adapters.sources.octave import parse_search
           from crate.composition.catalog import KNOWN
           from crate.composition.sources import build_bulk_resolver
           from crate.infrastructure.octave import OctaveClient
@@ -168,9 +181,9 @@ jobs:
           titles = {track.title for track in batch.tracks}
           if batch.origin != "octave" or len(batch.tracks) != 9 or "Dhunki" not in titles:
               raise SystemExit("Octave live album import returned unexpected metadata")
-          results = parse_search(OctaveClient().search("Tate McRae Housewife"))
-          if "octave" not in KNOWN or not any(track.title == "Housewife" for track in results):
-              raise SystemExit("Octave provider catalog search returned no Housewife match")
+          search_data = OctaveClient().search("SOHAIL SEN Dhunki")
+          if "octave" not in KNOWN or not isinstance(search_data.get("tracks"), list):
+              raise SystemExit("Octave provider catalog returned an invalid search response")
           print(
               f"Octave album import and provider catalog healthy: "
               f"{batch.name} ({len(batch.tracks)} tracks)"

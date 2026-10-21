@@ -83,6 +83,22 @@ def test_search_uses_public_catalog() -> None:
     assert data == {"tracks": [{"id": "1"}]}
 
 
+def test_search_retries_transient_empty_catalog() -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"tracks": [] if calls < 3 else [{"id": "1"}]})
+
+    client = OctaveClient(
+        transport=httpx.MockTransport(handler), sleep=sleeps.append, search_attempts=3
+    )
+    assert client.search("Housewife")["tracks"] == [{"id": "1"}]
+    assert calls == 3 and sleeps == [1, 2]
+
+
 def test_verify_account() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Authorization"] == "Bearer octv_test"
