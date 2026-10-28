@@ -9,7 +9,7 @@ COPY src ./src
 RUN uv build --wheel -o /dist
 
 # Build the management console UI (vanilla TS + Vite) into static assets.
-FROM node:22-slim AS ui
+FROM node:25-slim AS ui
 WORKDIR /ui
 COPY apps/console/package.json apps/console/package-lock.json ./
 RUN npm ci --no-audit --no-fund
