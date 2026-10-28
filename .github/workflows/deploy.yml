@@ -152,6 +152,8 @@ jobs:
       - name: TIDAL catalog and manifest smoke test
         run: |
           docker compose -f "$STACK" exec -T crate-console python - <<'PY'
+          import httpx
+
           from crate.composition.sources import build_candidate_sources, _configured_tidal_client
           from crate.domain.identity import TrackIdentity
 
@@ -164,7 +166,22 @@ jobs:
               raise SystemExit("TIDAL live search returned no Ashke match")
           # This older catalog item does not support the legacy HI_RES request;
           # it exercises the combined-lossless/fallback path used in production.
-          manifest = _configured_tidal_client().manifest("236908111")
+          try:
+              manifest = _configured_tidal_client().manifest("236908111")
+          except httpx.HTTPStatusError as exc:
+              if exc.response.status_code >= 500:
+                  print(
+                      f"::warning::TIDAL upstream manifest service returned "
+                      f"HTTP {exc.response.status_code}; catalog search is healthy"
+                  )
+                  raise SystemExit(0) from None
+              raise
+          except httpx.RequestError as exc:
+              print(
+                  f"::warning::TIDAL upstream manifest service is unreachable "
+                  f"({type(exc).__name__}); catalog search is healthy"
+              )
+              raise SystemExit(0) from None
           attrs = (manifest.get("data") or {}).get("attributes") or {}
           if attrs.get("trackPresentation") != "FULL" or not attrs.get("uri"):
               raise SystemExit("TIDAL playback manifest is unavailable")
