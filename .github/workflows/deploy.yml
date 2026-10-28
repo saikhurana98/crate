@@ -1,13 +1,11 @@
 name: deploy
 
-# Deploys to the self-hosted runners on the music-stack hosts. Runs after a
+# Deploys to the project's self-hosted runners. Runs after a
 # green release (image published to GHCR) or on demand. Pulls the released
 # image, recreates the LIVE console + serve containers, health-checks the
 # console, and rolls back to the previous image if it does not come up.
 #
-# Hosts (one runner label each, same stack layout on both):
-#   music-stack      — personal host
-#   lab-music-stack  — Ashoka lab CT (navidrome + music-assistant + crate)
+# Each target uses the same stack layout and receives the same released image.
 on:
   workflow_dispatch:
     inputs:

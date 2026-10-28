@@ -27,6 +27,11 @@
 ## Risk / blast radius
 <!-- low | medium | high. If medium or high, explain. -->
 
+## Security and privacy
+<!-- Confirm that logs, screenshots, fixtures, and configuration contain no credentials or personal data. -->
+- [ ] I reviewed the diff for secrets and sensitive information.
+- [ ] Screenshots and fixtures use sample or redacted data.
+
 ---
 
 <!-- Auto-merge will fire when all required CI checks pass. Do not request manual review unless you also post a `BLOCKED:` comment. -->

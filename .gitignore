@@ -23,6 +23,7 @@ creds/
 config/sources.json
 slskd-downloads/
 *.session
+*.har
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

@@ -1,0 +1,8 @@
+# Reviewed false positives retained only in historical commits. The Monochrome
+# values are synthetic test fixtures; the Spotify value was a public web-player
+# protocol constant rather than a user credential.
+27dd9d7a0101ec74303049e440441af571aab016:tests/adapters/test_monochrome.py:generic-api-key:50
+27dd9d7a0101ec74303049e440441af571aab016:tests/adapters/test_monochrome.py:generic-api-key:135
+86a15762de35407d5d769662b16b211e5e715485:src/lbmd/adapters/metadata/spotify.py:generic-api-key:28
+74cd0b5eda0d8410a52a143aac822e3d734b36e3:tests/adapters/test_monochrome.py:generic-api-key:46
+74cd0b5eda0d8410a52a143aac822e3d734b36e3:tests/adapters/test_monochrome.py:generic-api-key:106
