@@ -1,34 +1,51 @@
-# crate is a CLI, so use `docker compose run`, not `up`:
-#   docker compose run --rm crate download "Daft Punk Get Lucky" -o /downloads
-#
-# Put your creds in a .env file next to this (see keys below). Only the sources
-# you configure are enabled; each is opt-in.
+x-crate-common: &crate-common
+  image: ghcr.io/saikhurana98/crate:latest
+  build: .
+  env_file:
+    - .crate.env
+  environment:
+    CRATE_DB: /data/crate.db
+    CRATE_SERVE_DOWNLOADS: /downloads/staging
+    CRATE_LIBRARY_ROOT: /downloads/library
+  volumes:
+    - ./data:/data
+    - ./downloads:/downloads
+    # Point this bind mount at the same host directory slskd uses when enabling
+    # Soulseek; Crate needs write access because it moves completed files out.
+    - ./slskd-downloads:/slskd-downloads
+  restart: unless-stopped
 
 services:
-  crate:
-    image: ghcr.io/saikhurana98/crate:latest
-    build: .
-    environment:
-      # Tier 1 — Qobuz (hi-res FLAC)
-      CRATE_QOBUZ: "1"
-      CRATE_QOBUZ_APP_ID: ${CRATE_QOBUZ_APP_ID:-}
-      CRATE_QOBUZ_APP_SECRET: ${CRATE_QOBUZ_APP_SECRET:-}
-      CRATE_QOBUZ_TOKEN: ${CRATE_QOBUZ_TOKEN:-}
-      # Tier 1 — Antra hosted lossless resolver
-      CRATE_ANTRA: ${CRATE_ANTRA:-}
-      CRATE_ANTRA_BASE: ${CRATE_ANTRA_BASE:-https://antra.hoshi.cfd}
-      CRATE_ANTRA_USERNAME: ${CRATE_ANTRA_USERNAME:-}
-      CRATE_ANTRA_PASSWORD: ${CRATE_ANTRA_PASSWORD:-}
-      # Tier 2 — Deezer (16-bit FLAC)
-      CRATE_DEEZER: ${CRATE_DEEZER:-}
-      CRATE_DEEZER_ARL: ${CRATE_DEEZER_ARL:-}
-      # Tier 2 — Soulseek (needs a reachable slskd + its downloads dir mounted)
-      CRATE_SOULSEEK: ${CRATE_SOULSEEK:-}
-      CRATE_SLSKD_URL: ${CRATE_SLSKD_URL:-}
-      CRATE_SLSKD_API_KEY: ${CRATE_SLSKD_API_KEY:-}
-      CRATE_SLSKD_DOWNLOADS: /slskd-downloads
-      # multiplex strategy per tier: all | uniform
-      CRATE_MUX_TIER2: ${CRATE_MUX_TIER2:-all}
-    volumes:
-      - ./downloads:/downloads
-      # - /path/to/slskd/downloads:/slskd-downloads:ro   # if using Soulseek
+  crate-console:
+    <<: *crate-common
+    command: ["console", "--host", "0.0.0.0", "--port", "8788"]
+    ports:
+      # Local-only by default. Use an authenticated reverse proxy before
+      # exposing the console to a LAN or the internet.
+      - "127.0.0.1:8788:8788"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/api/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  crate-serve:
+    <<: *crate-common
+    command: ["serve", "--host", "0.0.0.0", "--port", "2416"]
+    ports:
+      - "127.0.0.1:2416:2416"
+    depends_on:
+      crate-console:
+        condition: service_healthy
+
+  crate-cli:
+    <<: *crate-common
+    profiles: ["cli"]
+    restart: "no"
+    command: ["--help"]

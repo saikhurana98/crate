@@ -45,9 +45,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          # amd64 only: both music-stack deployment targets are x86_64.
-          # Re-add arm64 when a native runner or deployment target needs it.
-          platforms: linux/amd64
+          # Publish native images for the x86_64 deployment hosts and Apple
+          # Silicon Docker Desktop users.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

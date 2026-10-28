@@ -19,6 +19,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: validate Docker Compose
+        run: |
+          cp .crate.env.example .crate.env
+          docker compose config --quiet
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -51,5 +55,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/console/package-lock.json
       - run: npm ci
+      - name: dependency audit
+        run: npm audit --audit-level=high
       - name: typecheck + build
         run: npm run build

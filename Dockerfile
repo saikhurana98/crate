@@ -17,7 +17,7 @@ COPY apps/console/ ./
 RUN npm run build
 
 FROM python:3.12-slim
-LABEL org.opencontainers.image.source="https://github.com/saikhurana98/load-balanced-music-downloader"
+LABEL org.opencontainers.image.source="https://github.com/saikhurana98/crate"
 LABEL org.opencontainers.image.description="Load-balanced tiered FLAC music downloader"
 
 # ffmpeg provides ffprobe verification; tini forwards signals as PID 1.

@@ -67,7 +67,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: |
+          for attempt in $(seq 1 5); do
+            if echo "${{ secrets.GITHUB_TOKEN }}" | \
+              docker login ghcr.io -u "${{ github.actor }}" --password-stdin; then
+              exit 0
+            fi
+            echo "GHCR login failed (attempt $attempt/5); retrying…"
+            sleep $((attempt * 3))
+          done
+          exit 1
 
       - name: Snapshot current image (for rollback)
         id: prev
@@ -206,7 +215,7 @@ jobs:
           PY
 
       - name: Rollback on failure
-        if: failure() && steps.prev.outputs.img != 'none'
+        if: failure() && steps.prev.outputs.img != '' && steps.prev.outputs.img != 'none'
         run: |
           echo "::warning::deploy failed — rolling back to ${{ steps.prev.outputs.img }}"
           docker compose -f "$STACK" ps || true
