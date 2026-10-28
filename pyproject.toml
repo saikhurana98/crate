@@ -6,14 +6,14 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-  "typer>=0.15",
-  "httpx>=0.28",
-  "pydantic>=2.10",
-  "pycryptodome>=3.23.0",
-  "fastapi>=0.115",
-  "uvicorn>=0.34",
-  "mutagen>=1.47",
-  "websockets>=13",
+  "typer>=0.27.3",
+  "httpx>=0.28.1",
+  "pydantic>=2.14.1",
+  "pycryptodome>=4.2.0",
+  "fastapi>=0.162.0",
+  "uvicorn>=0.54.0",
+  "mutagen>=1.48.1",
+  "websockets>=17.3",
 ]
 
 [project.scripts]
@@ -21,12 +21,12 @@ crate = "crate.cli.main:app"
 
 [dependency-groups]
 dev = [
-  "pytest>=8.3",
-  "pytest-asyncio>=0.25",
-  "pytest-cov>=6.0",
-  "ruff>=0.9",
-  "mypy>=1.14",
-  "telethon>=1.36",
+  "pytest>=9.1.1",
+  "pytest-asyncio>=1.4.0",
+  "pytest-cov>=7.1.0",
+  "ruff>=0.17.2",
+  "mypy>=2.4.0",
+  "telethon>=1.45.0",
 ]
 
 [build-system]
