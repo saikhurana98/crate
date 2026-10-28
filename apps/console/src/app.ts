@@ -783,11 +783,20 @@ async function submitBulk(): Promise<void> {
 
 function isBulkLink(text: string): boolean {
   const value = text.trim();
-  return (
-    value.includes("spotify.com/playlist/") ||
-    ((value.includes("youtube.com") || value.includes("youtu.be")) && value.includes("list=")) ||
-    value.startsWith("https://music.octavestreaming.com/album/")
-  );
+  if (value.startsWith("spotify:playlist:")) return true;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== "https:") return false;
+    if (host === "open.spotify.com" && url.pathname.includes("/playlist/")) return true;
+    const youtube = ["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"].includes(host);
+    if (youtube && (url.searchParams.has("list") || url.pathname.replace(/\/$/, "") === "/playlist")) {
+      return true;
+    }
+    return host === "music.octavestreaming.com" && url.pathname.startsWith("/album/");
+  } catch {
+    return false;
+  }
 }
 async function toggleBatch(id: string): Promise<void> {
   const open = !state.expandedBatches[id];

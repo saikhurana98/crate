@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from crate.domain.identity import TrackIdentity, from_query
 
@@ -50,16 +51,46 @@ def _as_identity(track: Any) -> TrackIdentity:
 
 
 def _is_spotify_playlist(text: str) -> bool:
-    return "spotify.com/playlist" in text or text.startswith("spotify:playlist:")
+    if text.startswith("spotify:playlist:"):
+        return True
+    try:
+        url = urlsplit(text)
+    except ValueError:
+        return False
+    return (
+        url.scheme == "https"
+        and (url.hostname or "").lower() == "open.spotify.com"
+        and "/playlist/" in url.path
+    )
 
 
 def _is_youtube_playlist(text: str) -> bool:
-    has_list = "list=" in text or "youtube.com/playlist" in text
-    return has_list and ("youtube.com" in text or "youtu.be" in text)
+    try:
+        url = urlsplit(text)
+    except ValueError:
+        return False
+    host = (url.hostname or "").lower()
+    is_youtube = host in {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+    }
+    has_list = "list" in parse_qs(url.query) or url.path.rstrip("/") == "/playlist"
+    return url.scheme == "https" and is_youtube and has_list
 
 
 def _is_octave_album(text: str) -> bool:
-    return text.startswith("https://music.octavestreaming.com/album/")
+    try:
+        url = urlsplit(text)
+    except ValueError:
+        return False
+    return (
+        url.scheme == "https"
+        and (url.hostname or "").lower() == "music.octavestreaming.com"
+        and url.path.startswith("/album/")
+    )
 
 
 def resolve_bulk(

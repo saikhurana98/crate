@@ -54,7 +54,9 @@ def sign_get_file_url(track_id: int, format_id: int, request_ts: int, app_secret
     payload = (
         f"trackgetFileUrlformat_id{format_id}intentstreamtrack_id{track_id}{request_ts}{app_secret}"
     )
-    return hashlib.md5(payload.encode()).hexdigest()
+    # Qobuz requires MD5 for its request-signature protocol. This is not used
+    # for password storage or as an application security primitive.
+    return hashlib.md5(payload.encode(), usedforsecurity=False).hexdigest()
 
 
 def parse_search(data: dict[str, Any]) -> list[QobuzTrack]:

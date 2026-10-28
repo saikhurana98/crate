@@ -86,6 +86,27 @@ def test_youtube_playlist_link() -> None:
     assert b.tracks == [TrackIdentity(title="C z")]
 
 
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://youtube.com.evil.example/playlist?list=PL123",
+        "https://evil.example/?next=https://youtube.com/playlist?list=PL123",
+        "http://youtube.com/playlist?list=PL123",
+        "https://open.spotify.com.evil.example/playlist/37i9",
+        "https://music.octavestreaming.com.evil.example/album/198977692",
+    ],
+)
+def test_lookalike_playlist_hosts_are_pasted_text(link: str) -> None:
+    b = resolve_bulk(
+        link,
+        spotify_playlist=lambda _ref: pytest.fail("Spotify resolver must not run"),
+        youtube_playlist=lambda _ref: pytest.fail("YouTube resolver must not run"),
+        octave_album=lambda _ref: pytest.fail("Octave resolver must not run"),
+    )
+    assert b.origin == "paste"
+    assert b.tracks == [TrackIdentity(title=link)]
+
+
 def test_octave_album_link() -> None:
     b = resolve_bulk(
         "https://music.octavestreaming.com/album/198977692?ref=share", octave_album=_octave
