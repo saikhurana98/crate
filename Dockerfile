@@ -1,7 +1,7 @@
 # crate image. Ships the configured headless sources, including direct Monochrome FLAC:
 #   Tier 1 Qobuz · Monochrome · Antra · Tier 2 Deezer + Soulseek(via slskd) · Tier 3 yt-dlp
 
-FROM python:3.12-slim AS builder
+FROM python:3.15-slim AS builder
 RUN pip install --no-cache-dir uv
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
@@ -16,7 +16,7 @@ RUN npm ci --no-audit --no-fund
 COPY apps/console/ ./
 RUN npm run build
 
-FROM python:3.12-slim
+FROM python:3.15-slim
 LABEL org.opencontainers.image.source="https://github.com/saikhurana98/crate"
 LABEL org.opencontainers.image.description="Load-balanced tiered FLAC music downloader"
 
