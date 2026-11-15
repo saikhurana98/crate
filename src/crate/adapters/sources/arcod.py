@@ -1,7 +1,7 @@
 """Tier-2 source adapter: arcod.xyz -> (requested) FLAC via an async job.
 
-arcod is a public **Qobuz proxy** with no auth (the client only sends a Referer +
-browser User-Agent). Unlike qobuz/deezer the download is a **job**: create it,
+arcod is an authenticated **Qobuz proxy**. Unlike qobuz/deezer the download is a
+**job**: create it,
 poll to ``completed``, then stream the delivered file. arcod *may* downgrade the
 FLAC request to MP3 (observed ~12-18 MB .mp3 despite ``format=FLAC``), so this
 source is wired ``expected_lossless=False`` — request FLAC, accept whatever the

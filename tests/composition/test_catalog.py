@@ -69,11 +69,13 @@ def test_status_never_leaks_values(monkeypatch: pytest.MonkeyPatch) -> None:
     assert deezer["credentials"] == "ok"
 
 
-def test_arcod_has_no_env_secret_but_toggles(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_arcod_requires_token_and_toggles(monkeypatch: pytest.MonkeyPatch) -> None:
     arcod = _by_name(source_status(), "arcod")
     assert arcod["enabled"] is False and arcod["tier"] == 2
-    assert arcod["credentials"] == "none" and arcod["lossless"] is False
+    assert arcod["credentials"] == "missing" and arcod["missing_env"] == ["CRATE_ARCOD_TOKEN"]
+    assert arcod["lossless"] is False
     monkeypatch.setenv("CRATE_ARCOD", "1")
+    monkeypatch.setenv("CRATE_ARCOD_TOKEN", "token")
     assert _by_name(source_status(), "arcod")["enabled"] is True
 
 

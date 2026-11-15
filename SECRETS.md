@@ -19,7 +19,7 @@ together.
 | Octave | `CRATE_OCTAVE_ACCOUNT_KEY` | Link Discord on Octave and restore the current `octv_…` key |
 | Antra | `CRATE_ANTRA_USERNAME`, `CRATE_ANTRA_PASSWORD` | Create an account at the configured Antra service |
 | Deezer | `CRATE_DEEZER_ARL` | Your Deezer browser session cookie |
-| arcod | None | Public proxy |
+| arcod | `CRATE_ARCOD_TOKEN` | Bearer token from your authorized arcod session |
 | Soulseek | `CRATE_SLSKD_URL`, `CRATE_SLSKD_API_KEY`, `CRATE_SLSKD_DOWNLOADS` | A reachable slskd instance and shared download directory |
 | Telegram | `CRATE_TG_API_ID`, `CRATE_TG_API_HASH`, `CRATE_TG_SESSION`, `CRATE_TG_BOT` | Telegram developer credentials, session, and bot username |
 | yt-dlp | None | Always enabled as the final fallback |

@@ -1,8 +1,9 @@
 # arcod.xyz API (reverse-engineered from arcod.xyz.har)
 
-A **Qobuz proxy**. No auth/credentials — requests carry only `Referer: https://arcod.xyz/`
-and a browser `User-Agent`. Guest rate-limited (`/api/v2/guest/rate-limit`). Base
-`https://arcod.xyz`; file host `https://dl.arcod.xyz`.
+A **Qobuz proxy**. The current download API requires a Supabase access token in
+`Authorization: Bearer <token>`; requests also carry `Referer: https://arcod.xyz/`
+and a browser `User-Agent`. Base `https://arcod.xyz`; file host
+`https://dl.arcod.xyz`.
 
 ## 1. Search — `GET /api/get-music?q=<query>&offset=0`
 `q` = free text OR a Spotify track URL. Returns:
@@ -44,7 +45,8 @@ accept whatever the prober reports. → Tier 2, `expected_lossless=False`.)
 ## 5. Download — `GET <downloadUrl>` on `dl.arcod.xyz` → the audio bytes (stream to disk).
 
 ## Implementation notes
-- No env creds; opt-in flag `CRATE_ARCOD=1`; base overridable `CRATE_ARCOD_BASE`.
+- Requires `CRATE_ARCOD_TOKEN`; opt-in flag `CRATE_ARCOD=1`; base overridable
+  with `CRATE_ARCOD_BASE`.
 - Selection reuses the shared gates (ISRC exact → title → artist → duration →
   match_score), same as qobuz/deezer. Metadata (title/artist/album/isrc/duration/
   track_no) flows to `DownloadOutcome`.

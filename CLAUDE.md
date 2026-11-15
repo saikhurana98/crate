@@ -68,7 +68,7 @@ Requests carry a `TrackIdentity` (from Spotify search/playlist: artist/title/ISR
 | Tier | Sources | Enable |
 |---|---|---|
 | 1 (lossless FLAC) | Qobuz (direct), Monochrome (direct Tracks API), Antra (hosted resolver) | `CRATE_QOBUZ=1`, `CRATE_MONOCHROME=1`, `CRATE_ANTRA=1` |
-| 2 (lossless-ish) | Deezer (ARL), Soulseek (via external slskd), Telegram bot, **arcod** (Qobuz proxy, no creds — may serve MP3, so not lossless-gated) | `CRATE_DEEZER=1`, `CRATE_SOULSEEK=1`, `CRATE_TELEGRAM=1`, `CRATE_ARCOD=1` |
+| 2 (lossless-ish) | Deezer (ARL), Soulseek (via external slskd), Telegram bot, **arcod** (authenticated Qobuz proxy — may serve MP3, so not lossless-gated) | `CRATE_DEEZER=1`, `CRATE_SOULSEEK=1`, `CRATE_TELEGRAM=1`, `CRATE_ARCOD=1` |
 | 3 (lossy fallback) | yt-dlp | always on |
 
 Per-source credential env vars are read by the factories in `composition/sources.py`; see [`.crate.env.example`](.crate.env.example) and [`SECRETS.md`](SECRETS.md). **Important:** when `CRATE_DB` is set the **stored config-store tier layout wins over the env flags** — enabling a source needs it added to that layout (env flags only seed the *first* run), so a brand-new source won't appear just from its `CRATE_*=1` flag on an existing deployment. Monochrome now uses the public Tracks API directly; it needs no browser, secret, or decrypt binary.

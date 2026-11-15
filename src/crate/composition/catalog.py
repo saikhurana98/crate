@@ -43,7 +43,7 @@ SOURCES: tuple[SourceSpec, ...] = (
         True,
     ),
     SourceSpec("deezer", 2, "CRATE_DEEZER", ("CRATE_DEEZER_ARL",), True),
-    SourceSpec("arcod", 2, "CRATE_ARCOD", (), False),  # Qobuz proxy, no auth; may serve MP3
+    SourceSpec("arcod", 2, "CRATE_ARCOD", ("CRATE_ARCOD_TOKEN",), False),
     SourceSpec(
         "soulseek",
         2,

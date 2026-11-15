@@ -119,6 +119,12 @@ const PANELDEF: Record<string, PanelDef> = {
     validate: true,
   },
   deezer: { creds: [["CRATE_DEEZER_ARL", "ARL cookie"]], settings: [], validate: true },
+  arcod: {
+    creds: [["CRATE_ARCOD_TOKEN", "Bearer token"]],
+    settings: [],
+    note: "Authenticated Qobuz proxy. Paste the access token from your authorized arcod session.",
+    validate: true,
+  },
   soulseek: {
     creds: [
       ["CRATE_SLSKD_URL", "slskd URL"],

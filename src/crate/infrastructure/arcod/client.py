@@ -1,7 +1,7 @@
 """arcod.xyz client for the Tier-2 adapter.
 
-arcod is a public Qobuz proxy: no credentials, requests only carry a
-``Referer: https://arcod.xyz/`` and a desktop browser ``User-Agent``. Downloads
+arcod is an authenticated Qobuz proxy. Requests carry a Supabase bearer token,
+``Referer: https://arcod.xyz/``, and a desktop browser ``User-Agent``. Downloads
 are async jobs — create one, poll it to ``completed``, then stream the delivered
 file from ``dl.arcod.xyz``. All network I/O; excluded from coverage — the parse,
 payload-building, selection and poll-loop logic live in the adapter and are
@@ -23,12 +23,28 @@ _UA = (
 
 
 class ArcodClient:  # pragma: no cover - network I/O
-    def __init__(self, base_url: str = "https://arcod.xyz") -> None:
+    def __init__(
+        self,
+        base_url: str = "https://arcod.xyz",
+        token: str = "",
+        *,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        if not token.strip():
+            raise ValueError("arcod bearer token is required")
         self._base = base_url.rstrip("/")
+        authorization = token.strip()
+        if not authorization.lower().startswith("bearer "):
+            authorization = f"Bearer {authorization}"
         self._http = httpx.Client(
             timeout=30.0,
-            headers={"Referer": "https://arcod.xyz/", "User-Agent": _UA},
+            headers={
+                "Authorization": authorization,
+                "Referer": "https://arcod.xyz/",
+                "User-Agent": _UA,
+            },
             follow_redirects=True,
+            transport=transport,
         )
 
     def search(self, query: str) -> dict[str, Any]:

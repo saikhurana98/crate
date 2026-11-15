@@ -42,3 +42,34 @@ def test_fetch_rejects_non_numeric_id_before_network(tmp_path: Path) -> None:
             client.fetch("../evil", tmp_path / "track.flac")
     finally:
         client.close()
+
+
+def test_fetch_resumes_after_truncated_response(tmp_path: Path) -> None:
+    calls = 0
+
+    class BrokenStream(httpx.SyncByteStream):
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            yield b"fLaC" + b"a" * 65_532
+            raise httpx.RemoteProtocolError("peer closed early")
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert "range" not in request.headers
+            return httpx.Response(200, stream=BrokenStream())
+        assert request.headers["range"] == "bytes=65536-"
+        return httpx.Response(
+            206,
+            headers={"Content-Range": "bytes 65536-65539/65540"},
+            content=b"done",
+        )
+
+    client = MonochromeClient(transport=httpx.MockTransport(respond))
+    try:
+        dest = tmp_path / "track.flac"
+        client.fetch("123", dest)
+        assert dest.read_bytes() == b"fLaC" + b"a" * 65_532 + b"done"
+        assert calls == 2
+    finally:
+        client.close()

@@ -11,7 +11,7 @@ via ``CRATE_MUX_TIER{1,2,3}`` = ``all`` (default, try every source) or
           Octave (member-authorized FLAC)   opt-in CRATE_OCTAVE=1
           Antra (hosted lossless resolver)  opt-in CRATE_ANTRA=1
   Tier 2  Deezer (16-bit FLAC via ARL)       opt-in CRATE_DEEZER=1
-          arcod (Qobuz proxy, no auth)       opt-in CRATE_ARCOD=1
+          arcod (authenticated Qobuz proxy) opt-in CRATE_ARCOD=1
           Soulseek (via slskd)               opt-in CRATE_SOULSEEK=1
           Telegram music bot                 opt-in CRATE_TELEGRAM=1
   Tier 3  yt-dlp (lossy fallback)            always on
@@ -269,7 +269,10 @@ def _arcod_source() -> SourceEntry:  # pragma: no cover - IO wiring
     from crate.adapters.sources.arcod import arcod_download
     from crate.infrastructure.arcod.client import ArcodClient
 
-    client = ArcodClient(os.environ.get("CRATE_ARCOD_BASE", "https://arcod.xyz"))
+    client = ArcodClient(
+        os.environ.get("CRATE_ARCOD_BASE", "https://arcod.xyz"),
+        os.environ["CRATE_ARCOD_TOKEN"],
+    )
 
     def arcod(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
         return arcod_download(
@@ -443,7 +446,10 @@ def _arcod_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
     from crate.adapters.sources import arcod
     from crate.infrastructure.arcod.client import ArcodClient
 
-    client = ArcodClient(os.environ.get("CRATE_ARCOD_BASE", "https://arcod.xyz"))
+    client = ArcodClient(
+        os.environ.get("CRATE_ARCOD_BASE", "https://arcod.xyz"),
+        os.environ["CRATE_ARCOD_TOKEN"],
+    )
 
     def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
         return arcod.search_candidates(query, want, search=client.search)
