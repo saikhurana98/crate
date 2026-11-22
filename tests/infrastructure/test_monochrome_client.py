@@ -73,3 +73,60 @@ def test_fetch_resumes_after_truncated_response(tmp_path: Path) -> None:
         assert calls == 2
     finally:
         client.close()
+
+
+def test_search_retries_429_using_retry_after() -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(429, headers={"Retry-After": "2"})
+        return httpx.Response(200, json={"tracks": []})
+
+    client = MonochromeClient(transport=httpx.MockTransport(respond), sleep=sleeps.append)
+    try:
+        assert client.search("Song") == {"tracks": []}
+        assert calls == 3
+        assert sleeps == [2.0, 2.0]
+    finally:
+        client.close()
+
+
+def test_fetch_retries_headerless_429_with_bounded_backoff(tmp_path: Path) -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return httpx.Response(429, json={"error": "rate limited"})
+        return httpx.Response(200, content=b"fLaCdone")
+
+    client = MonochromeClient(transport=httpx.MockTransport(respond), sleep=sleeps.append)
+    try:
+        dest = tmp_path / "track.flac"
+        client.fetch("123", dest)
+        assert dest.read_bytes() == b"fLaCdone"
+        assert calls == 3
+        assert sleeps == [1.0, 2.0]
+    finally:
+        client.close()
+
+
+def test_fetch_rate_limit_retries_are_bounded(tmp_path: Path) -> None:
+    sleeps: list[float] = []
+
+    client = MonochromeClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(429)),
+        sleep=sleeps.append,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="rate limited after bounded retries"):
+            client.fetch("123", tmp_path / "track.flac")
+        assert sleeps == [1.0, 2.0]
+    finally:
+        client.close()
