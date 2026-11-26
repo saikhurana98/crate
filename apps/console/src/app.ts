@@ -119,6 +119,12 @@ const PANELDEF: Record<string, PanelDef> = {
     validate: true,
   },
   deezer: { creds: [["CRATE_DEEZER_ARL", "ARL cookie"]], settings: [], validate: true },
+  saavn: {
+    creds: [],
+    settings: [],
+    note: "JioSaavn catalog with AAC downloads.",
+    validate: true,
+  },
   arcod: {
     creds: [["CRATE_ARCOD_TOKEN", "Bearer token"]],
     settings: [],

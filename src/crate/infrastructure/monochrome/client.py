@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from email.utils import parsedate_to_datetime
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ _MAX_RETRY_AFTER_S = 30.0
 
 
 def _retry_after_s(response: httpx.Response, attempt: int, now: Callable[[], float]) -> float:
-    """Return a bounded 429 delay, accepting seconds or an HTTP date."""
+    """Parse the requested cooldown without shortening it."""
     raw = response.headers.get("Retry-After", "").strip()
     if raw:
         try:
@@ -30,7 +31,7 @@ def _retry_after_s(response: httpx.Response, attempt: int, now: Callable[[], flo
                 delay = 2.0**attempt
     else:
         delay = 2.0**attempt
-    return min(_MAX_RETRY_AFTER_S, max(0.0, delay))
+    return max(0.0, delay) if isfinite(delay) else 2.0**attempt
 
 
 class MonochromeClient:  # pragma: no cover - network I/O
@@ -60,8 +61,11 @@ class MonochromeClient:  # pragma: no cover - network I/O
             if resp.status_code != httpx.codes.TOO_MANY_REQUESTS:
                 resp.raise_for_status()
                 return dict(resp.json())
+            delay = _retry_after_s(resp, attempt, self._now)
+            if delay > _MAX_RETRY_AFTER_S:
+                break
             if attempt + 1 < _RATE_LIMIT_ATTEMPTS:
-                self._sleep(_retry_after_s(resp, attempt, self._now))
+                self._sleep(delay)
         raise RuntimeError("Monochrome search remained rate limited after bounded retries")
 
     def fetch(self, track_id: str, dest: Path) -> None:
@@ -79,29 +83,29 @@ class MonochromeClient:  # pragma: no cover - network I/O
                 with self._http.stream("GET", url, headers=headers, timeout=120.0) as resp:
                     if resp.status_code == httpx.codes.TOO_MANY_REQUESTS:
                         rate_limit_attempt += 1
-                        if rate_limit_attempt >= _RATE_LIMIT_ATTEMPTS:
-                            break
-                        self._sleep(_retry_after_s(resp, rate_limit_attempt - 1, self._now))
-                        continue
-                    resp.raise_for_status()
-                    append = offset > 0 and resp.status_code == httpx.codes.PARTIAL_CONTENT
-                    if append:
-                        content_range = resp.headers.get("content-range", "")
-                        if not content_range.startswith(f"bytes {offset}-"):
-                            raise RuntimeError("Monochrome returned an invalid resume range")
-                    mode = "ab" if append else "wb"
-                    # Unbuffered writes make the last received byte immediately
-                    # visible to the next Range request after a transport error.
-                    with dest.open(mode, buffering=0) as fh:
-                        for chunk in resp.iter_bytes(_CHUNK):
-                            fh.write(chunk)
-                return
+                        delay = _retry_after_s(resp, rate_limit_attempt - 1, self._now)
+                    else:
+                        self._write_track(resp, dest, offset)
+                        return
+                if delay > _MAX_RETRY_AFTER_S or rate_limit_attempt >= _RATE_LIMIT_ATTEMPTS:
+                    raise RuntimeError(
+                        "Monochrome download remained rate limited after bounded retries"
+                    )
+                self._sleep(delay)
             except httpx.TransportError as exc:
                 last_error = exc
                 transport_attempt += 1
-        if rate_limit_attempt >= _RATE_LIMIT_ATTEMPTS:
-            raise RuntimeError("Monochrome download remained rate limited after bounded retries")
         raise RuntimeError(f"Monochrome download remained incomplete after retries: {last_error}")
+
+    @staticmethod
+    def _write_track(resp: httpx.Response, dest: Path, offset: int) -> None:
+        resp.raise_for_status()
+        append = offset > 0 and resp.status_code == httpx.codes.PARTIAL_CONTENT
+        if append and not resp.headers.get("content-range", "").startswith(f"bytes {offset}-"):
+            raise RuntimeError("Monochrome returned an invalid resume range")
+        with dest.open("ab" if append else "wb", buffering=0) as output:
+            for chunk in resp.iter_bytes(_CHUNK):
+                output.write(chunk)
 
     def close(self) -> None:
         self._http.close()

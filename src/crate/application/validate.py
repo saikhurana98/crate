@@ -50,6 +50,27 @@ class ValidationResult:
     elapsed_s: float | None = None
 
 
+def report_status(ok: bool, detail: str) -> str:
+    """Classify operator-facing details without exposing provider error text."""
+    if ok:
+        return "Working"
+    error = detail.casefold()
+    categories = (
+        ("Not configured", ("not configured",)),
+        ("Rate limited", ("429 too many requests", "rate limit", "daily limit")),
+        (
+            "Authorization failed",
+            ("401 unauthorized", "403 forbidden", "unauthorized", "playback is locked", "arl"),
+        ),
+        ("Test track unavailable", ("no results", "no title", "no matching", "no playable")),
+        ("Network or timeout failure", ("timed out", "timeout", "connect", "name or service")),
+    )
+    for status, terms in categories:
+        if any(term in error for term in terms):
+            return status
+    return "Check failed"
+
+
 def validate_source(
     *,
     search: SearchFn,

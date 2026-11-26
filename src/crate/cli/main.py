@@ -38,6 +38,37 @@ def version() -> None:
     typer.echo(__version__)
 
 
+@app.command()
+def source_report() -> None:
+    """Print a Markdown report of isolated live provider download checks."""
+    from datetime import UTC, datetime
+
+    from crate.application.validate import report_status
+    from crate.composition.sources import build_source_validator, provider_report_inputs
+
+    sources = provider_report_inputs()
+    validate = build_source_validator()
+    typer.echo(f"# Crate provider health ({datetime.now(UTC):%Y-%m-%d %H:%M UTC})")
+    typer.echo("\n| Source | Layout | Download check |")
+    typer.echo("| --- | --- | --- |")
+    failed = False
+    for source in sources:
+        name = str(source["name"])
+        enabled = bool(source["enabled"])
+        if source["missing_env"]:
+            status = "Not configured"
+        else:
+            try:
+                result = validate(name, None)
+                status = report_status(bool(result["ok"]), str(result["detail"]))
+            except Exception:
+                status = "Check failed"
+        typer.echo(f"| {name} | {'Active' if enabled else 'Unused'} | {status} |")
+        failed |= enabled and status != "Working"
+    if failed:
+        raise typer.Exit(code=1)
+
+
 def _fmt_result(idx: int, res: CascadeResult) -> str:
     trail = (
         " -> ".join(f"T{a.tier}:{a.source}{'✓' if a.ok else '✗'}" for a in res.attempts)

@@ -44,6 +44,7 @@ SOURCES: tuple[SourceSpec, ...] = (
     ),
     SourceSpec("deezer", 2, "CRATE_DEEZER", ("CRATE_DEEZER_ARL",), True),
     SourceSpec("arcod", 2, "CRATE_ARCOD", ("CRATE_ARCOD_TOKEN",), False),
+    SourceSpec("saavn", 2, "CRATE_SAAVN", (), False),
     SourceSpec(
         "soulseek",
         2,

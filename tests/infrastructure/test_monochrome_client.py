@@ -130,3 +130,27 @@ def test_fetch_rate_limit_retries_are_bounded(tmp_path: Path) -> None:
         assert sleeps == [1.0, 2.0]
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("operation", ["search", "fetch"])
+def test_excessive_retry_after_does_not_retry_early(operation: str, tmp_path: Path) -> None:
+    calls = 0
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"Retry-After": "120"})
+
+    client = MonochromeClient(
+        transport=httpx.MockTransport(respond),
+        sleep=lambda _: pytest.fail("should fall through without waiting"),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="rate limited"):
+            if operation == "search":
+                client.search("Song")
+            else:
+                client.fetch("123", tmp_path / "track.flac")
+        assert calls == 1
+    finally:
+        client.close()

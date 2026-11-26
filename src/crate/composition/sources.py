@@ -319,6 +319,37 @@ def _ytdlp_source() -> SourceEntry:  # pragma: no cover - IO wiring
     return SourceEntry(SourceRef("ytdlp", Tier.THREE), ytdlp.download, expected_lossless=False)
 
 
+def _saavn_client() -> Any:  # pragma: no cover - IO wiring
+    from crate.infrastructure.saavn import DEFAULT_BASE, SaavnClient
+
+    return SaavnClient(os.environ.get("CRATE_SAAVN_BASE", DEFAULT_BASE))
+
+
+def _saavn_source() -> SourceEntry:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import saavn
+
+    client = _saavn_client()
+
+    def download(query: str, out_dir: Path, want: TrackIdentity | None) -> DownloadOutcome:
+        return saavn.download(query, out_dir, want, search=client.search, fetch=client.fetch)
+
+    return SourceEntry(SourceRef("saavn", Tier.TWO), download, expected_lossless=False)
+
+
+def _saavn_candidate() -> CandidateSource:  # pragma: no cover - IO wiring
+    from crate.adapters.sources import saavn
+
+    client = _saavn_client()
+
+    def search(query: str, want: TrackIdentity | None) -> list[Candidate]:
+        return saavn.search_candidates(query, want, search=client.search)
+
+    def download(cand: Candidate, out_dir: Path, _want: TrackIdentity | None) -> DownloadOutcome:
+        return saavn.download_candidate(cand, out_dir, fetch=client.fetch)
+
+    return search, download
+
+
 # name -> factory. Each factory reads its creds from the environment (which the
 # config store may have populated via _apply_stored_secrets) and raises if they
 # are absent — a raising source is simply skipped from the cascade.
@@ -330,6 +361,7 @@ _FACTORIES: dict[str, Callable[[], SourceEntry]] = {
     "antra": _antra_source,
     "deezer": _deezer_source,
     "arcod": _arcod_source,
+    "saavn": _saavn_source,
     "soulseek": _soulseek_source,
     "telegram": _telegram_source,
     "ytdlp": _ytdlp_source,
@@ -517,6 +549,7 @@ _CANDIDATE_FACTORIES: dict[str, Callable[[], CandidateSource]] = {
     "antra": _antra_candidate,
     "deezer": _deezer_candidate,
     "arcod": _arcod_candidate,
+    "saavn": _saavn_candidate,
     "ytdlp": _ytdlp_candidate,
     "soulseek": _soulseek_candidate,
 }
@@ -634,6 +667,8 @@ def _tiers_from_env() -> list[TierMux]:  # pragma: no cover - env + IO wiring
         tier2.append(_deezer_source())
     if _enabled("CRATE_ARCOD"):
         tier2.append(_arcod_source())
+    if _enabled("CRATE_SAAVN"):
+        tier2.append(_saavn_source())
     if _enabled("CRATE_SOULSEEK"):
         tier2.append(_soulseek_source())
     if _enabled("CRATE_TELEGRAM"):
@@ -1439,13 +1474,14 @@ def build_source_validator() -> Callable[
     from crate.application.validate import validate_source, validate_source_direct
     from crate.infrastructure.audio.probe import probe
 
-    out_dir = Path(tempfile.gettempdir()) / "crate-validate"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     def fail(detail: str) -> dict[str, Any]:
         return {"ok": False, "detail": detail, "quality_label": None, "elapsed_s": None}
 
     def validate(name: str, query: str | None = None) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="crate-validate-") as directory:
+            return run(name, query, Path(directory))
+
+    def run(name: str, query: str | None, out_dir: Path) -> dict[str, Any]:
         # a custom query carries no known identity; the default test track does
         kw: dict[str, Any] = {"query": query, "want": None} if query else {}
         # console-saved credentials live in the config store, not the environment;
@@ -1453,7 +1489,16 @@ def build_source_validator() -> Callable[
         config = _config_store_if_enabled()
         if config is not None:
             _apply_stored_secrets(config)
-        entry = build_candidate_sources().get(name)
+        if name == "saavn" and query is None:
+            kw = {"query": "Pritam Zara Sa", "want": TrackIdentity("Pritam", "Zara Sa")}
+        candidate_factory = _CANDIDATE_FACTORIES.get(name)
+        # Soulseek's Review search is a separate, manually triggered operation.
+        try:
+            entry = candidate_factory() if candidate_factory and name != "soulseek" else None
+        except KeyError as exc:
+            return fail(f"not configured: {exc.args[0]} is missing")
+        except Exception as exc:
+            return fail(f"could not initialise: {exc}"[:200])
         if name == "octave" and query is None and entry is not None:
             from crate.adapters.sources import octave
 
@@ -1490,6 +1535,17 @@ def build_source_validator() -> Callable[
         }
 
     return validate
+
+
+def provider_report_inputs() -> list[dict[str, object]]:  # pragma: no cover - IO wiring
+    from crate.composition.catalog import source_status
+
+    config = _config_store_if_enabled()
+    enabled = set(_enabled_source_names())
+    return source_status(
+        enabled.__contains__,
+        None if config is None else lambda name, key: key in config.secret_keys(name),
+    )
 
 
 def build_console_app() -> Any:  # pragma: no cover - IO wiring

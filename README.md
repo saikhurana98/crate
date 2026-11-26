@@ -49,12 +49,27 @@ API for [Explo](https://github.com/LumePart/Explo).
 | Tier | Providers | Typical result |
 | --- | --- | --- |
 | 1 | Qobuz, Monochrome, TIDAL, Octave, Antra | Lossless |
-| 2 | Deezer, arcod, Soulseek, Telegram | Lossless or best available |
+| 2 | Deezer, arcod, Soulseek, Telegram, JioSaavn | Lossless or best available (AAC for JioSaavn) |
 | 3 | yt-dlp | Lossy fallback |
 
 Providers can be enabled, ordered, configured, and tested from **Provider
 Settings**. Some services require your own account or API credentials. Use Crate
 only for media you are authorized to download.
+
+JioSaavn can be enabled from **Provider Settings** on an existing stack, or
+with `CRATE_SAAVN=1` when seeding a new layout. It uses the
+[open-source JioSaavn API](https://github.com/sumitkolhe/jiosaavn-api).
+
+### Source health reports
+
+Run `docker compose exec -T crate-serve crate source-report` to run live
+download checks against configured providers, including those in **Unused**.
+The report distinguishes missing configuration from failed checks. Probe files
+are temporary. A failed active provider sets a nonzero exit code.
+
+The **Source health** workflow runs Mondays at 08:17 IST, with a manual run
+available in Actions. Each host publishes a Markdown job summary containing
+provider names, layout status, and normalized outcomes.
 
 ## Quick start on macOS
 

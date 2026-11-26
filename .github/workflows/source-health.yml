@@ -1,0 +1,29 @@
+name: Source health
+
+on:
+  schedule:
+    - cron: "47 2 * * 1"  # Monday 08:17 IST
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: source-health
+  cancel-in-progress: false
+
+jobs:
+  report:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        runner: [music-stack, lab-music-stack]
+    runs-on: [self-hosted, "${{ matrix.runner }}"]
+    timeout-minutes: 35
+    steps:
+      - name: Check providers on ${{ matrix.runner }}
+        run: |
+          docker compose -f /opt/music-stack/docker-compose.yml exec -T crate-serve \
+            crate source-report 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY"
+        shell: bash

@@ -3,6 +3,7 @@ the app wiring, `version`, and the `download` report rendering (no network)."""
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import crate.cli.main as cli
@@ -10,6 +11,7 @@ from crate import __version__
 from crate.application.cascade import CascadeAttempt, CascadeResult
 from crate.application.download import DownloadReport
 from crate.cli.main import app
+from crate.composition import sources
 from crate.domain.audio import AudioInfo, QualityVerdict
 from crate.domain.download import DownloadOutcome
 
@@ -26,6 +28,34 @@ def test_help_lists_the_app() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "crate" in result.stdout.lower()
+
+
+def test_source_report_checks_unused_and_keeps_provider_errors_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sources,
+        "provider_report_inputs",
+        lambda: [
+            {"name": "monochrome", "enabled": True, "missing_env": []},
+            {"name": "saavn", "enabled": False, "missing_env": []},
+            {"name": "telegram", "enabled": False, "missing_env": ["CRATE_TG_SESSION"]},
+        ],
+    )
+    called: list[str] = []
+
+    def validate(name: str, _query: str | None) -> dict[str, object]:
+        called.append(name)
+        return {"ok": name == "saavn", "detail": "429 Too Many Requests: private detail"}
+
+    monkeypatch.setattr(sources, "build_source_validator", lambda: validate)
+    result = runner.invoke(app, ["source-report"])
+    assert result.exit_code == 1
+    assert called == ["monochrome", "saavn"]
+    assert "| monochrome | Active | Rate limited |" in result.stdout
+    assert "| saavn | Unused | Working |" in result.stdout
+    assert "| telegram | Unused | Not configured |" in result.stdout
+    assert "private detail" not in result.stdout
 
 
 def test_download_renders_cascade_trail_and_winner(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
